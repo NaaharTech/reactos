@@ -50,7 +50,7 @@ UDFShutdown(
     )
 {
     NTSTATUS         RC = STATUS_SUCCESS;
-    PIRP_CONTEXT PtrIrpContext = NULL;
+    PIRP_CONTEXT IrpContext = NULL;
     BOOLEAN          AreWeTopLevel = FALSE;
 
     UDFPrint(("UDFShutDown\n"));
@@ -67,9 +67,9 @@ UDFShutdown(
     _SEH2_TRY {
 
         // get an IRP context structure and issue the request
-        PtrIrpContext = UDFAllocateIrpContext(Irp, DeviceObject);
-        if(PtrIrpContext) {
-            RC = UDFCommonShutdown(PtrIrpContext, Irp);
+        IrpContext = UDFCreateIrpContext(Irp, DeviceObject);
+        if(IrpContext) {
+            RC = UDFCommonShutdown(IrpContext, Irp);
         } else {
             RC = STATUS_INSUFFICIENT_RESOURCES;
             Irp->IoStatus.Status = RC;
@@ -78,9 +78,9 @@ UDFShutdown(
             IoCompleteRequest(Irp, IO_DISK_INCREMENT);
         }
 
-    } _SEH2_EXCEPT(UDFExceptionFilter(PtrIrpContext, _SEH2_GetExceptionInformation())) {
+    } _SEH2_EXCEPT(UDFExceptionFilter(IrpContext, _SEH2_GetExceptionInformation())) {
 
-        RC = UDFExceptionHandler(PtrIrpContext, Irp);
+        RC = UDFProcessException(IrpContext, Irp);
 
         UDFLogEvent(UDF_ERROR_INTERNAL_ERROR, RC);
     } _SEH2_END;
@@ -113,7 +113,7 @@ UDFShutdown(
 *************************************************************************/
 NTSTATUS
 UDFCommonShutdown(
-    PIRP_CONTEXT PtrIrpContext,
+    PIRP_CONTEXT IrpContext,
     PIRP             Irp
     )
 {
@@ -163,7 +163,7 @@ UDFCommonShutdown(
             Link = Link->Flink;
             ASSERT(Link != Link->Flink);
 
-            if(Vcb->VCBFlags & UDF_VCB_FLAGS_SHUTDOWN) {
+            if(Vcb->VCBFlags & VCB_STATE_SHUTDOWN) {
                 continue;
             }
 
@@ -223,7 +223,7 @@ UDFCommonShutdown(
 
             ASSERT(!Vcb->OverflowQueueCount);
 
-            if(!(Vcb->VCBFlags & UDF_VCB_FLAGS_SHUTDOWN)) {
+            if(!(Vcb->VCBFlags & VCB_STATE_SHUTDOWN)) {
 
                 UDFDoDismountSequence(Vcb, FALSE);
                 if(Vcb->VCBFlags & UDF_VCB_FLAGS_REMOVABLE_MEDIA) {
@@ -231,8 +231,8 @@ UDFCommonShutdown(
                     delay.QuadPart = -10000000; // 1 sec
                     KeDelayExecutionThread(KernelMode, FALSE, &delay);
                 }
-                Vcb->VCBFlags |= (UDF_VCB_FLAGS_SHUTDOWN |
-                                  UDF_VCB_FLAGS_VOLUME_READ_ONLY);
+                Vcb->VCBFlags |= (VCB_STATE_SHUTDOWN |
+                                  VCB_STATE_VOLUME_READ_ONLY);
             }
 
             UDFReleaseResource(&(Vcb->VCBResource));
@@ -275,7 +275,7 @@ UDFCommonShutdown(
             Irp->IoStatus.Status = RC;
             Irp->IoStatus.Information = 0;
             // Free up the Irp Context
-            UDFReleaseIrpContext(PtrIrpContext);
+            UDFCleanupIrpContext(IrpContext);
                 // complete the IRP
             IoCompleteRequest(Irp, IO_DISK_INCREMENT);
         }

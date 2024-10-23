@@ -53,7 +53,7 @@ UDFCreate(
     PIRP                    Irp)                // I/O Request Packet
 {
     NTSTATUS            RC = STATUS_SUCCESS;
-    PIRP_CONTEXT IrpContext;
+    PIRP_CONTEXT IrpContext = NULL;
     BOOLEAN             AreWeTopLevel = FALSE;
 
     TmPrint(("UDFCreate:\n"));
@@ -88,7 +88,7 @@ UDFCreate(
     _SEH2_TRY {
 
         // get an IRP context structure and issue the request
-        IrpContext = UDFAllocateIrpContext(Irp, DeviceObject);
+        IrpContext = UDFCreateIrpContext(Irp, DeviceObject);
         if(IrpContext) {
             RC = UDFCommonCreate(IrpContext, Irp);
         } else {
@@ -101,7 +101,7 @@ UDFCreate(
 
     } _SEH2_EXCEPT(UDFExceptionFilter(IrpContext, _SEH2_GetExceptionInformation())) {
 
-        RC = UDFExceptionHandler(IrpContext, Irp);
+        RC = UDFProcessException(IrpContext, Irp);
 
         UDFLogEvent(UDF_ERROR_INTERNAL_ERROR, RC);
     } _SEH2_END;
@@ -187,7 +187,7 @@ UDFAcquireParent(
 *************************************************************************/
 NTSTATUS
 UDFCommonCreate(
-    PIRP_CONTEXT PtrIrpContext,
+    PIRP_CONTEXT IrpContext,
     PIRP                            Irp
     )
 {
@@ -267,7 +267,7 @@ UDFCommonCreate(
 
     TmPrint(("UDFCommonCreate:\n"));
 
-    ASSERT(PtrIrpContext);
+    ASSERT(IrpContext);
     ASSERT(Irp);
 
     _SEH2_TRY {
@@ -276,7 +276,7 @@ UDFCommonCreate(
         LocalPath.Buffer = NULL;
         //  If we were called with our file system device object instead of a
         //  volume device object, just complete this request with STATUS_SUCCESS.
-        if (!(PtrIrpContext->TargetDeviceObject->DeviceExtension)) {
+        if (!(IrpContext->TargetDeviceObject->DeviceExtension)) {
 
             ReturnedInformation = FILE_OPENED;
             try_return(RC = STATUS_SUCCESS);
@@ -290,11 +290,11 @@ UDFCommonCreate(
 
         // If the caller cannot block, post the request to be handled
         //  asynchronously
-        if (!(PtrIrpContext->Flags & UDF_IRP_CONTEXT_CAN_BLOCK)) {
+        if (!(IrpContext->Flags & IRP_CONTEXT_FLAG_WAIT)) {
             // We must defer processing of this request since we could
             //  block anytime while performing the create/open ...
             ASSERT(FALSE);
-            RC = UDFPostRequest(PtrIrpContext, Irp);
+            RC = UDFPostRequest(IrpContext, Irp);
             try_return(RC);
         }
 
@@ -465,7 +465,7 @@ UDFCommonCreate(
         IgnoreCase = (IrpSp->Flags & SL_CASE_SENSITIVE) ? FALSE : TRUE;
 
         // Ensure that the operation has been directed to a valid VCB ...
-        Vcb = (PVCB)(PtrIrpContext->TargetDeviceObject->DeviceExtension);
+        Vcb = (PVCB)(IrpContext->TargetDeviceObject->DeviceExtension);
         ASSERT(Vcb);
         ASSERT(Vcb->NodeIdentifier.NodeTypeCode == UDF_NODE_TYPE_VCB);
 //        Vcb->VCBFlags |= UDF_VCB_SKIP_EJECT_CHECK;
@@ -491,7 +491,7 @@ UDFCommonCreate(
         UDFFlushTryBreak(Vcb);
 
         // If the volume has been locked, fail the request
-        if ((Vcb->VCBFlags & UDF_VCB_FLAGS_VOLUME_LOCKED) &&
+        if ((Vcb->VCBFlags & VCB_STATE_VOLUME_LOCKED) &&
             (Vcb->VolumeLockPID != GetCurrentPID())) {
             AdPrint(("    Volume is locked\n"));
             RC = STATUS_ACCESS_DENIED;
@@ -503,7 +503,7 @@ UDFCommonCreate(
 
         // Disk based file systems might decide to verify the logical volume
         //  (if required and only if removable media are supported) at this time
-        RC = UDFVerifyVcb(PtrIrpContext,Vcb);
+        RC = UDFVerifyVcb(IrpContext,Vcb);
         if(!NT_SUCCESS(RC))
             try_return(RC);
 
@@ -518,7 +518,7 @@ UDFCommonCreate(
            (
            ((Vcb->origIntegrityType == INTEGRITY_TYPE_OPEN) &&
             (Vcb->CompatFlags & UDF_VCB_IC_DIRTY_RO)) ||
-             (Vcb->VCBFlags & UDF_VCB_FLAGS_VOLUME_READ_ONLY)
+             (Vcb->VCBFlags & VCB_STATE_VOLUME_READ_ONLY)
             ) &&
             (DeleteOnCloseSpecified ||
              OpenTargetDirectory ||
@@ -593,7 +593,7 @@ UDFCommonCreate(
             } else {
 
                 UDFPrint(("  R/W volume open\n"));
-                if(Vcb->VCBFlags & UDF_VCB_FLAGS_MEDIA_READ_ONLY) {
+                if(Vcb->VCBFlags & VCB_STATE_MEDIA_WRITE_PROTECT) {
                     UDFPrint(("  media-ro\n"));
                     try_return(RC = STATUS_MEDIA_WRITE_PROTECTED);
                 }
@@ -611,7 +611,7 @@ UDFCommonCreate(
                     // we should complete all pending requests (Close)
 
                     UDFPrint(("  set UDF_IRP_CONTEXT_FLUSH2_REQUIRED\n"));
-                    PtrIrpContext->Flags |= UDF_IRP_CONTEXT_FLUSH2_REQUIRED;
+                    IrpContext->Flags |= UDF_IRP_CONTEXT_FLUSH2_REQUIRED;
 
 /*
                     UDFInterlockedIncrement((PLONG)&(Vcb->VCBOpenCount));
@@ -642,10 +642,10 @@ UDFCommonCreate(
                     UDFPrint(("  !FILE_SHARE_READ + open handles (%d)\n", Vcb->VCBHandleCount));
                     try_return(RC = STATUS_SHARING_VIOLATION);
                 }
-                if(PtrIrpContext->Flags & UDF_IRP_CONTEXT_FLUSH2_REQUIRED) {
+                if(IrpContext->Flags & UDF_IRP_CONTEXT_FLUSH2_REQUIRED) {
 
                     UDFPrint(("  perform flush\n"));
-                    PtrIrpContext->Flags &= ~UDF_IRP_CONTEXT_FLUSH2_REQUIRED;
+                    IrpContext->Flags &= ~UDF_IRP_CONTEXT_FLUSH2_REQUIRED;
 
                     UDFInterlockedIncrement((PLONG)&(Vcb->VCBOpenCount));
                     UDFReleaseResource(&(Vcb->VCBResource));
@@ -676,13 +676,13 @@ UDFCommonCreate(
                 // Lock the volume
                 if(!(ShareAccess & FILE_SHARE_READ)) {
                     UDFPrint(("  set Lock\n"));
-                    Vcb->VCBFlags |= UDF_VCB_FLAGS_VOLUME_LOCKED;
+                    Vcb->VCBFlags |= VCB_STATE_VOLUME_LOCKED;
                     Vcb->VolumeLockFileObject = PtrNewFileObject;
                     UndoLock = TRUE;
                 } else
                 if(DesiredAccess & ((GENERIC_WRITE | FILE_GENERIC_WRITE) & ~(SYNCHRONIZE | READ_CONTROL))) {
                     UDFPrint(("  set UDF_IRP_CONTEXT_FLUSH_REQUIRED\n"));
-                    PtrIrpContext->Flags |= UDF_IRP_CONTEXT_FLUSH_REQUIRED;
+                    IrpContext->Flags |= UDF_IRP_CONTEXT_FLUSH_REQUIRED;
                 }
             }
 
@@ -707,7 +707,7 @@ UDFCommonCreate(
                 AdPrint(("    Sharing violation (Volume)\n"));
 op_vol_accs_dnd:
                 if(UndoLock) {
-                    Vcb->VCBFlags &= ~UDF_VCB_FLAGS_VOLUME_LOCKED;
+                    Vcb->VCBFlags &= ~VCB_STATE_VOLUME_LOCKED;
                     Vcb->VolumeLockFileObject = NULL;
                 }
                 try_return(RC);
@@ -1512,7 +1512,7 @@ Skip_open_attempt:
                 try_return(RC);
             }
             // Check Volume ReadOnly attr
-            if((Vcb->VCBFlags & UDF_VCB_FLAGS_VOLUME_READ_ONLY)) {
+            if((Vcb->VCBFlags & VCB_STATE_VOLUME_READ_ONLY)) {
                 ReturnedInformation = 0;
                 AdPrint(("    Write protected\n"));
                 try_return(RC = STATUS_MEDIA_WRITE_PROTECTED);
@@ -2233,7 +2233,7 @@ try_exit:   NOTHING;
                 // complete the IRP
                 IoCompleteRequest(Irp, IO_DISK_INCREMENT);
                 // Free up the Irp Context
-                UDFReleaseIrpContext(PtrIrpContext);
+                UDFCleanupIrpContext(IrpContext);
             }
         } else {
             UDFReleaseResFromCreate(&PagingIoRes, &Res1, &Res2);
@@ -2525,8 +2525,7 @@ UDFInitializeFCB(
         PtrNewFcb->Header.Resource = &PtrNewFcb->MainResource;
         PtrNewFcb->Header.PagingIoResource = &PtrNewFcb->PagingIoResource;
         FsRtlSetupAdvancedHeader(&PtrNewFcb->Header, &PtrNewFcb->AdvancedFCBHeaderMutex);
-        // Itialize byte-range locks support structure
-        FsRtlInitializeFileLock(&(PtrNewFcb->FileLock), NULL, NULL);
+        PtrNewFcb->FileLock = NULL;
         // Init reference counter
         PtrNewFcb->CommonRefCount = 0;
         Linked = FALSE;
@@ -2541,7 +2540,11 @@ UDFInitializeFCB(
             UDFDeleteResource(&PtrNewFcb->MainResource);
             PtrNewFcb->Header.Resource =
             PtrNewFcb->Header.PagingIoResource = NULL;
-            FsRtlUninitializeFileLock(&PtrNewFcb->FileLock);
+
+            if (PtrNewFcb->FileLock != NULL) {
+
+                FsRtlFreeFileLock(PtrNewFcb->FileLock);
+            }
         }
         return status;
     }

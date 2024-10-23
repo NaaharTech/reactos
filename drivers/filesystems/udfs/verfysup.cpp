@@ -286,8 +286,8 @@ UDFVerifyVolume(
             RC = UDFGetDiskInfo(NewVcb->TargetDeviceObject,NewVcb);
             if(!NT_SUCCESS(RC)) try_return(RC);
             // Prevent modification attempts durring Verify
-            NewVcb->VCBFlags |= UDF_VCB_FLAGS_VOLUME_READ_ONLY |
-                                UDF_VCB_FLAGS_MEDIA_READ_ONLY;
+            NewVcb->VCBFlags |= VCB_STATE_VOLUME_READ_ONLY |
+                                VCB_STATE_MEDIA_WRITE_PROTECT;
             // Compare physical parameters (phase 1)
             UDFPrint(("UDFVerifyVolume: Modified=%d\n", Vcb->Modified));
             RC = UDFCompareVcb(Vcb,NewVcb, TRUE);
@@ -360,7 +360,7 @@ skip_logical_check:;
 
         UDFPrint(("UDFVerifyVolume: compared\n"));
         UDFPrint(("UDFVerifyVolume: Modified=%d\n", Vcb->Modified));
-        if(!(Vcb->VCBFlags & UDF_VCB_FLAGS_VOLUME_LOCKED)) {
+        if(!(Vcb->VCBFlags & VCB_STATE_VOLUME_LOCKED)) {
             UDFPrint(("UDFVerifyVolume: set UDF_VCB_FLAGS_VOLUME_MOUNTED\n"));
             Vcb->VcbCondition = VcbMounted;
         }
@@ -417,7 +417,7 @@ try_exit: NOTHING;
             if(NT_SUCCESS(RC)) {
 
                 if(!CacheInitialized) {
-                    if(!(Vcb->VCBFlags & UDF_VCB_FLAGS_MEDIA_READ_ONLY)) {
+                    if(!(Vcb->VCBFlags & VCB_STATE_MEDIA_WRITE_PROTECT)) {
                         if(!Vcb->CDR_Mode) {
                             if(Vcb->TargetDeviceObject->DeviceType == FILE_DEVICE_DISK) {
                                 UDFPrint(("UDFMountVolume: RAM mode\n"));
@@ -542,9 +542,7 @@ UDFPerformVerify(
 
             //  If the verify operation completed it will return
             //  either STATUS_SUCCESS or STATUS_WRONG_VOLUME, exactly.
-            if (RC == STATUS_SUCCESS) {
-                IrpContext->Flags &= ~UDF_IRP_CONTEXT_EXCEPTION;
-            }
+
             //  If UDFVerifyVolume encountered an error during
             //  processing, it will return that error.  If we got
             //  STATUS_WRONG_VOLUME from the verify, and our volume
@@ -583,7 +581,7 @@ UDFPerformVerify(
                 Irp->IoStatus.Status = STATUS_REPARSE;
                 IoCompleteRequest(Irp,IO_DISK_INCREMENT);
 
-                UDFReleaseIrpContext(IrpContext);
+                UDFCleanupIrpContext(IrpContext);
 
                 RC = STATUS_REPARSE;
                 Irp = NULL;
@@ -613,7 +611,7 @@ UDFPerformVerify(
         //  We had some trouble trying to perform the verify or raised
         //  an error ourselves.  So we'll abort the I/O request with
         //  the error status that we get back from the execption code.
-        RC = UDFExceptionHandler( IrpContext, Irp);
+        RC = UDFProcessException( IrpContext, Irp);
     } _SEH2_END;
 
     UDFPrint(("UDFPerformVerify: RC = %x\n", RC));

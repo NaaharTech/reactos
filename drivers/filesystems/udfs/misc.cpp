@@ -210,7 +210,7 @@ UDFIsIrpTopLevel(
 *************************************************************************/
 long
 UDFExceptionFilter(
-    PIRP_CONTEXT PtrIrpContext,
+    PIRP_CONTEXT IrpContext,
     PEXCEPTION_POINTERS PtrExceptionPointers
     )
 {
@@ -256,16 +256,15 @@ UDFExceptionFilter(
         ExceptionCode = PtrExceptionPointers->ExceptionRecord->ExceptionInformation[2];
     }
 
-    if (PtrIrpContext) {
-        PtrIrpContext->SavedExceptionCode = ExceptionCode;
-        SetFlag(PtrIrpContext->Flags, UDF_IRP_CONTEXT_EXCEPTION);
+    if (IrpContext) {
+        IrpContext->ExceptionCode = ExceptionCode;
     }
 
     // check if we should propagate this exception or not
     if (!(FsRtlIsNtstatusExpected(ExceptionCode))) {
 
         // better free up the IrpContext now ...
-        if (PtrIrpContext) {
+        if (IrpContext) {
             UDFPrint(("    UDF Driver internal error\n"));
             BrutePoint();
         } else {
@@ -302,8 +301,8 @@ UDFExceptionFilter(
 *
 *************************************************************************/
 NTSTATUS
-UDFExceptionHandler(
-    PIRP_CONTEXT PtrIrpContext,
+UDFProcessException(
+    PIRP_CONTEXT IrpContext,
     PIRP             Irp
     )
 {
@@ -319,16 +318,16 @@ UDFExceptionHandler(
 
     if (!Irp) {
         UDFPrint(("  !Irp, return\n"));
-        ASSERT(!PtrIrpContext);
+        ASSERT(!IrpContext);
         return ExceptionCode;
     }
     // If it was a queued close (or something like this) then we need not
     // completing it because of MUST_SUCCEED requirement.
 
-    if (PtrIrpContext) {
-        ExceptionCode = PtrIrpContext->SavedExceptionCode;
+    if (IrpContext) {
+        ExceptionCode = IrpContext->ExceptionCode;
         // Free irp context here
-//        UDFReleaseIrpContext(PtrIrpContext);
+//        UDFReleaseIrpContext(IrpContext);
     } else {
         UDFPrint(("  complete Irp and return\n"));
         // must be insufficient resources ...?
@@ -356,7 +355,7 @@ UDFExceptionHandler(
     if (ExceptionCode == STATUS_VERIFY_REQUIRED) {
         if (KeGetCurrentIrql() >= APC_LEVEL) {
             UDFPrint(("  use UDFPostRequest()\n"));
-            ExceptionCode = UDFPostRequest( PtrIrpContext, Irp );
+            ExceptionCode = UDFPostRequest(IrpContext, Irp);
         }
     }
 
@@ -402,7 +401,7 @@ UDFExceptionHandler(
                     // complete the IRP
                     IoCompleteRequest(Irp, IO_NO_INCREMENT);
 
-                    UDFReleaseIrpContext(PtrIrpContext);
+                    UDFCleanupIrpContext(IrpContext);
 
                     return ExceptionCode;
                 }
@@ -412,7 +411,7 @@ UDFExceptionHandler(
             //  UDFPerformVerify() will do the right thing with the Irp.
             //  If we return STATUS_CANT_WAIT then the current thread
             //  can retry the request.
-            return UDFPerformVerify( PtrIrpContext, Irp, Device );
+            return UDFPerformVerify( IrpContext, Irp, Device );
         }
 
         //
@@ -420,7 +419,7 @@ UDFExceptionHandler(
         //  they have been disabled for this request.
         //
 
-        if (FlagOn(PtrIrpContext->Flags, UDF_IRP_CONTEXT_FLAG_DISABLE_POPUPS)) {
+        if (FlagOn(IrpContext->Flags, IRP_CONTEXT_FLAG_DISABLE_POPUPS)) {
 
             UDFPrint(("  DISABLE_POPUPS, complete Irp and return\n"));
             Irp->IoStatus.Status = ExceptionCode;
@@ -428,7 +427,7 @@ UDFExceptionHandler(
             // complete the IRP
             IoCompleteRequest(Irp, IO_NO_INCREMENT);
 
-            UDFReleaseIrpContext(PtrIrpContext);
+            UDFCleanupIrpContext(IrpContext);
             return ExceptionCode;
         } else {
 
@@ -459,7 +458,7 @@ UDFExceptionHandler(
                     // complete the IRP
                     IoCompleteRequest(Irp, IO_NO_INCREMENT);
 
-                    UDFReleaseIrpContext(PtrIrpContext);
+                    UDFCleanupIrpContext(IrpContext);
 
                     return ExceptionCode;
                 }
@@ -480,7 +479,7 @@ UDFExceptionHandler(
             //  The Irp will be completed by Io or resubmitted.  In either
             //  case we must clean up the IrpContext here.
 
-            UDFReleaseIrpContext(PtrIrpContext);
+            UDFCleanupIrpContext(IrpContext);
             return STATUS_PENDING;
         }
     }
@@ -495,7 +494,7 @@ UDFExceptionHandler(
         // complete the IRP
         IoCompleteRequest(Irp, IO_NO_INCREMENT);
 
-        UDFReleaseIrpContext(PtrIrpContext);
+        UDFCleanupIrpContext(IrpContext);
     }
 
     UDFPrint(("  return from exception handler with code %x\n", ExceptionCode));
@@ -837,7 +836,7 @@ UDFCleanUpFCB(
 
 /*************************************************************************
 *
-* Function: UDFAllocateIrpContext()
+* Function: UDFCreateIrpContext()
 *
 * Description:
 *   The UDF FSD creates an IRP context for each request received. This
@@ -853,16 +852,41 @@ UDFCleanUpFCB(
 *
 *************************************************************************/
 PIRP_CONTEXT
-UDFAllocateIrpContext(
+UDFCreateIrpContext(
     PIRP           Irp,
     PDEVICE_OBJECT PtrTargetDeviceObject
     )
 {
-    PIRP_CONTEXT NewIrpContext = NULL;
-    PIO_STACK_LOCATION IrpSp = NULL;
-
     ASSERT(Irp);
-    IrpSp = IoGetCurrentIrpStackLocation(Irp);
+
+    PIRP_CONTEXT NewIrpContext = NULL;
+    PIO_STACK_LOCATION IrpSp = IoGetCurrentIrpStackLocation(Irp);
+
+    //  The only operations a filesystem device object should ever receive
+    //  are create/teardown of fsdo handles and operations which do not
+    //  occur in the context of fileobjects (i.e., mount).
+
+    if (UdfDeviceIsFsdo(IrpSp->DeviceObject)) {
+
+        if (IrpSp->FileObject != NULL &&
+            IrpSp->MajorFunction != IRP_MJ_CREATE &&
+            IrpSp->MajorFunction != IRP_MJ_CLEANUP &&
+            IrpSp->MajorFunction != IRP_MJ_CLOSE) {
+
+            ExRaiseStatus(STATUS_INVALID_DEVICE_REQUEST);
+        }
+
+        NT_ASSERT( IrpSp->FileObject != NULL ||
+
+                (IrpSp->MajorFunction == IRP_MJ_FILE_SYSTEM_CONTROL &&
+                 IrpSp->MinorFunction == IRP_MN_USER_FS_REQUEST &&
+                 IrpSp->Parameters.FileSystemControl.FsControlCode == FSCTL_INVALIDATE_VOLUMES) ||
+
+                (IrpSp->MajorFunction == IRP_MJ_FILE_SYSTEM_CONTROL &&
+                 IrpSp->MinorFunction == IRP_MN_MOUNT_VOLUME ) ||
+
+                IrpSp->MajorFunction == IRP_MJ_SHUTDOWN );
+    }
 
     NewIrpContext = (PIRP_CONTEXT)ExAllocateFromNPagedLookasideList(&UDFGlobalData.IrpContextLookasideList);
 
@@ -873,31 +897,62 @@ UDFAllocateIrpContext(
     // zero out the allocated memory block
     RtlZeroMemory(NewIrpContext, sizeof(IRP_CONTEXT));
 
-    // set up some fields ...
+    // Set the proper node type code and node byte size
     NewIrpContext->NodeIdentifier.NodeTypeCode = UDF_NODE_TYPE_IRP_CONTEXT;
     NewIrpContext->NodeIdentifier.NodeByteSize = sizeof(IRP_CONTEXT);
 
+    // Set the originating Irp field
     NewIrpContext->Irp = Irp;
+
     NewIrpContext->TargetDeviceObject = PtrTargetDeviceObject;
 
-    // copy over some fields from the IRP and set appropriate flag values
-    if (Irp) {
+    // TODO: fix
+    if (false && IrpSp->FileObject != NULL) {
 
-        NewIrpContext->MajorFunction = IrpSp->MajorFunction;
-        NewIrpContext->MinorFunction = IrpSp->MinorFunction;
+        PFILE_OBJECT FileObject = IrpSp->FileObject;
 
-        // Often, a FSD cannot honor a request for asynchronous processing
-        // of certain critical requests. For example, a "close" request on
-        // a file object can typically never be deferred. Therefore, do not
-        // be surprised if sometimes our FSD (just like all other FSD
-        // implementations on the Windows NT system) has to override the flag
-        // below.
-        if (IrpSp->FileObject == NULL) {
-            NewIrpContext->Flags |= UDF_IRP_CONTEXT_CAN_BLOCK;
-        } else {
-            if (IoIsOperationSynchronous(Irp)) {
-                NewIrpContext->Flags |= UDF_IRP_CONTEXT_CAN_BLOCK;
-            }
+        ASSERT(FileObject->DeviceObject == PtrTargetDeviceObject);
+        NewIrpContext->TargetDeviceObject = FileObject->DeviceObject;
+
+        //
+        //  See if the request is Write Through. Look for both FileObjects opened
+        //  as write through, and non-cached requests with the SL_WRITE_THROUGH flag set.
+        //
+        //  The latter can only originate from kernel components. (Note - NtWriteFile()
+        //  does redundantly set the SL_W_T flag for all requests it issues on write
+        //  through file objects)
+        //
+
+        if (IsFileWriteThrough( FileObject, NewIrpContext->Vcb ) ||
+            ( (IrpSp->MajorFunction == IRP_MJ_WRITE) &&
+              BooleanFlagOn( Irp->Flags, IRP_NOCACHE) &&
+              BooleanFlagOn( IrpSp->Flags, SL_WRITE_THROUGH))) {
+
+            SetFlag(NewIrpContext->Flags, IRP_CONTEXT_FLAG_WRITE_THROUGH);
+        }
+    }
+
+    if (!UdfDeviceIsFsdo(IrpSp->DeviceObject)) {
+
+        // TODO: use IrpContext->Vcb
+        //NewIrpContext->Vcb = &((PVOLUME_DEVICE_OBJECT)IrpSp->DeviceObject)->Vcb;
+    }
+
+    //  Major/Minor Function codes
+    NewIrpContext->MajorFunction = IrpSp->MajorFunction;
+    NewIrpContext->MinorFunction = IrpSp->MinorFunction;
+
+    // Often, a FSD cannot honor a request for asynchronous processing
+    // of certain critical requests. For example, a "close" request on
+    // a file object can typically never be deferred. Therefore, do not
+    // be surprised if sometimes our FSD (just like all other FSD
+    // implementations on the Windows NT system) has to override the flag
+    // below.
+    if (IrpSp->FileObject == NULL) {
+        NewIrpContext->Flags |= IRP_CONTEXT_FLAG_WAIT;
+    } else {
+        if (IoIsOperationSynchronous(Irp)) {
+            NewIrpContext->Flags |= IRP_CONTEXT_FLAG_WAIT;
         }
     }
 
@@ -909,12 +964,12 @@ UDFAllocateIrpContext(
     }
 
     return NewIrpContext;
-} // end UDFAllocateIrpContext()
+} // end UDFCreateIrpContext()
 
 
 /*************************************************************************
 *
-* Function: UDFReleaseIrpContext()
+* Function: UDFCleanupIrpContext()
 *
 * Description:
 *   Deallocate a previously allocated structure.
@@ -927,17 +982,89 @@ UDFAllocateIrpContext(
 *
 *************************************************************************/
 VOID
-UDFReleaseIrpContext(
+UDFCleanupIrpContext(
     PIRP_CONTEXT IrpContext)
 {
     ASSERT(IrpContext);
 
-    if (!FlagOn(IrpContext->Flags, UDF_IRP_CONTEXT_FLAG_ON_STACK)) {
+    if (!FlagOn(IrpContext->Flags, IRP_CONTEXT_FLAG_ON_STACK)) {
 
         ExFreeToNPagedLookasideList(&UDFGlobalData.IrpContextLookasideList, IrpContext);
     }
-} // end UDFReleaseIrpContext()
+} // end UDFCleanupIrpContext()
 
+_When_(RaiseOnError || return, _At_(Fcb->FileLock, _Post_notnull_))
+_When_(RaiseOnError, _At_(IrpContext, _Pre_notnull_))
+BOOLEAN
+UDFCreateFileLock (
+    _In_opt_ PIRP_CONTEXT IrpContext,
+    _Inout_ PFCB Fcb,
+    _In_ BOOLEAN RaiseOnError
+    )
+
+/*++
+
+Routine Description:
+
+    This routine is called when we want to attach a file lock structure to the
+    given Fcb.  It is possible the file lock is already attached.
+
+    This routine is sometimes called from the fast path and sometimes in the
+    Irp-based path.  We don't want to raise in the fast path, just return FALSE.
+
+Arguments:
+
+    Fcb - This is the Fcb to create the file lock for.
+
+    RaiseOnError - If TRUE, we will raise on an allocation failure.  Otherwise we
+        return FALSE on an allocation failure.
+
+Return Value:
+
+    BOOLEAN - TRUE if the Fcb has a filelock, FALSE otherwise.
+
+--*/
+
+{
+    BOOLEAN Result = TRUE;
+    PFILE_LOCK FileLock;
+
+    PAGED_CODE();
+
+    ASSERT(RaiseOnError == FALSE);
+
+    //  Lock the Fcb and check if there is really any work to do.
+
+    //TODO: impl
+    //UDFLockFcb( IrpContext, Fcb );
+
+    if (Fcb->FileLock != NULL) {
+
+        //TODO: impl
+        //UDFUnlockFcb( IrpContext, Fcb );
+        return TRUE;
+    }
+
+    Fcb->FileLock = FileLock = FsRtlAllocateFileLock(NULL, NULL);
+
+    //TODO: impl
+    //UDFUnlockFcb( IrpContext, Fcb );
+
+    //  Return or raise as appropriate.
+    if (FileLock == NULL) {
+         
+        if (RaiseOnError) {
+
+            NT_ASSERT(ARGUMENT_PRESENT(IrpContext));
+
+            UDFRaiseStatus(IrpContext, STATUS_INSUFFICIENT_RESOURCES);
+        }
+
+        Result = FALSE;
+    }
+
+    return Result;
+}
 
 /*************************************************************************
 *
@@ -956,7 +1083,7 @@ UDFReleaseIrpContext(
 *************************************************************************/
 NTSTATUS
 UDFPostRequest(
-    IN PIRP_CONTEXT PtrIrpContext,
+    IN PIRP_CONTEXT IrpContext,
     IN PIRP             Irp
     )
 {
@@ -973,7 +1100,7 @@ UDFPostRequest(
             Irp->IoStatus.Information = 0;
             IoCompleteRequest(Irp, IO_DISK_INCREMENT);
         }
-        UDFReleaseIrpContext(PtrIrpContext);
+        UDFReleaseIrpContext(IrpContext);
         return STATUS_WRONG_VOLUME;
     }
 */
@@ -981,7 +1108,7 @@ UDFPostRequest(
     if(Irp)
         IoMarkIrpPending(Irp);
 
-    Vcb = (PVCB)(PtrIrpContext->TargetDeviceObject->DeviceExtension);
+    Vcb = (PVCB)(IrpContext->TargetDeviceObject->DeviceExtension);
     KeAcquireSpinLock(&(Vcb->OverflowQueueSpinLock), &SavedIrql);
 
     if ( Vcb->PostedRequestCount > FSP_PER_DEVICE_THRESHOLD) {
@@ -991,7 +1118,7 @@ UDFPostRequest(
         //  Note: we just reuse LIST_ITEM field inside WorkQueueItem, this
         //  doesn't matter to regular processing of WorkItems.
         InsertTailList( &(Vcb->OverflowQueue),
-                        &(PtrIrpContext->WorkQueueItem.List) );
+                        &(IrpContext->WorkQueueItem.List) );
         Vcb->OverflowQueueCount++;
         KeReleaseSpinLock( &(Vcb->OverflowQueueSpinLock), SavedIrql );
 
@@ -1004,10 +1131,10 @@ UDFPostRequest(
         KeReleaseSpinLock( &(Vcb->OverflowQueueSpinLock), SavedIrql );
 
         // queue up the request
-        ExInitializeWorkItem(&(PtrIrpContext->WorkQueueItem), UDFCommonDispatch, PtrIrpContext);
+        ExInitializeWorkItem(&(IrpContext->WorkQueueItem), UDFFspDispatch, IrpContext);
 
-        ExQueueWorkItem(&(PtrIrpContext->WorkQueueItem), CriticalWorkQueue);
-    //    ExQueueWorkItem(&(PtrIrpContext->WorkQueueItem), DelayedWorkQueue);
+        ExQueueWorkItem(&(IrpContext->WorkQueueItem), CriticalWorkQueue);
+    //    ExQueueWorkItem(&(IrpContext->WorkQueueItem), DelayedWorkQueue);
 
     }
 
@@ -1018,7 +1145,7 @@ UDFPostRequest(
 
 /*************************************************************************
 *
-* Function: UDFCommonDispatch()
+* Function: UDFFspDispatch()
 *
 * Description:
 *   The common dispatch routine invoked in the context of a system worker
@@ -1035,12 +1162,12 @@ UDFPostRequest(
 *************************************************************************/
 VOID
 NTAPI
-UDFCommonDispatch(
+UDFFspDispatch(
     IN PVOID Context   // actually is a pointer to IRPContext structure
     )
 {
     NTSTATUS         RC = STATUS_SUCCESS;
-    PIRP_CONTEXT PtrIrpContext = NULL;
+    PIRP_CONTEXT IrpContext = NULL;
     PIRP             Irp = NULL;
     PVCB             Vcb;
     KIRQL            SavedIrql;
@@ -1048,19 +1175,19 @@ UDFCommonDispatch(
     BOOLEAN          SpinLock = FALSE;
 
     // The context must be a pointer to an IrpContext structure
-    PtrIrpContext = (PIRP_CONTEXT)Context;
+    IrpContext = (PIRP_CONTEXT)Context;
 
     // Assert that the Context is legitimate
-    if ( !PtrIrpContext ||
-         (PtrIrpContext->NodeIdentifier.NodeTypeCode != UDF_NODE_TYPE_IRP_CONTEXT) ||
-         (PtrIrpContext->NodeIdentifier.NodeByteSize != sizeof(IRP_CONTEXT)) /*||
-        !(PtrIrpContext->Irp)*/) {
+    if ( !IrpContext ||
+         (IrpContext->NodeIdentifier.NodeTypeCode != UDF_NODE_TYPE_IRP_CONTEXT) ||
+         (IrpContext->NodeIdentifier.NodeByteSize != sizeof(IRP_CONTEXT)) /*||
+        !(IrpContext->Irp)*/) {
         UDFPrint(("    Invalid Context\n"));
         BrutePoint();
         return;
     }
 
-    Vcb = (PVCB)(PtrIrpContext->TargetDeviceObject->DeviceExtension);
+    Vcb = (PVCB)(IrpContext->TargetDeviceObject->DeviceExtension);
     ASSERT(Vcb);
 
     UDFPrint(("  *** Thr: %x  ThCnt: %x  QCnt: %x  Started!\n", PsGetCurrentThread(), Vcb->PostedRequestCount, Vcb->OverflowQueueCount));
@@ -1072,10 +1199,10 @@ UDFCommonDispatch(
 
         //  Get a pointer to the IRP structure
         // in some cases we can get Zero pointer to Irp
-        Irp = PtrIrpContext->Irp;
+        Irp = IrpContext->Irp;
         // Now, check if the FSD was top level when the IRP was originally invoked
         // and set the thread context (for the worker thread) appropriately
-        if (PtrIrpContext->Flags & UDF_IRP_CONTEXT_NOT_TOP_LEVEL) {
+        if (IrpContext->Flags & UDF_IRP_CONTEXT_NOT_TOP_LEVEL) {
             // The FSD is not top level for the original request
             // Set a constant value in TLS to reflect this fact
             IoSetTopLevelIrp((PIRP)FSRTL_FSP_TOP_LEVEL_IRP);
@@ -1086,7 +1213,7 @@ UDFCommonDispatch(
         // Since the FSD routine will now be invoked in the context of this worker
         // thread, we should inform the FSD that it is perfectly OK to block in
         // the context of this thread
-        PtrIrpContext->Flags |= UDF_IRP_CONTEXT_CAN_BLOCK;
+        IrpContext->Flags |= IRP_CONTEXT_FLAG_WAIT;
 
         _SEH2_TRY {
 
@@ -1094,67 +1221,67 @@ UDFCommonDispatch(
             // either in the IrpContext (copied from the IRP), or directly from the
             //  IRP itself (we will need a pointer to the stack location to do that),
             //  Then, switch based on the value on the Major Function code
-            UDFPrint(("  *** MJ: %x, Thr: %x\n", PtrIrpContext->MajorFunction, PsGetCurrentThread()));
-            switch (PtrIrpContext->MajorFunction) {
+            UDFPrint(("  *** MJ: %x, Thr: %x\n", IrpContext->MajorFunction, PsGetCurrentThread()));
+            switch (IrpContext->MajorFunction) {
             case IRP_MJ_CREATE:
                 // Invoke the common create routine
-                RC = UDFCommonCreate(PtrIrpContext, Irp);
+                RC = UDFCommonCreate(IrpContext, Irp);
                 break;
             case IRP_MJ_READ:
                 // Invoke the common read routine
-                RC = UDFCommonRead(PtrIrpContext, Irp);
+                RC = UDFCommonRead(IrpContext, Irp);
                 break;
             case IRP_MJ_WRITE:
                 // Invoke the common write routine
-                RC = UDFCommonWrite(PtrIrpContext, Irp);
+                RC = UDFCommonWrite(IrpContext, Irp);
                 break;
             case IRP_MJ_CLEANUP:
                 // Invoke the common cleanup routine
-                RC = UDFCommonCleanup(PtrIrpContext, Irp);
+                RC = UDFCommonCleanup(IrpContext, Irp);
                 break;
             case IRP_MJ_CLOSE:
                 // Invoke the common close routine
-                RC = UDFCommonClose(PtrIrpContext, Irp, TRUE);
+                RC = UDFCommonClose(IrpContext, Irp, TRUE);
                 break;
             case IRP_MJ_DIRECTORY_CONTROL:
                 // Invoke the common directory control routine
-                RC = UDFCommonDirControl(PtrIrpContext, Irp);
+                RC = UDFCommonDirControl(IrpContext, Irp);
                 break;
             case IRP_MJ_QUERY_INFORMATION:
                 // Invoke the common query information routine
-                RC = UDFCommonQueryInfo(PtrIrpContext, Irp);
+                RC = UDFCommonQueryInfo(IrpContext, Irp);
                 break;
             case IRP_MJ_SET_INFORMATION:
                 // Invoke the common set information routine
-                RC = UDFCommonSetInfo(PtrIrpContext, Irp);
+                RC = UDFCommonSetInfo(IrpContext, Irp);
                 break;
             case IRP_MJ_QUERY_VOLUME_INFORMATION:
                 // Invoke the common query volume routine
-                RC = UDFCommonQueryVolInfo(PtrIrpContext, Irp);
+                RC = UDFCommonQueryVolInfo(IrpContext, Irp);
                 break;
             case IRP_MJ_SET_VOLUME_INFORMATION:
                 // Invoke the common set volume routine
-                RC = UDFCommonSetVolInfo(PtrIrpContext, Irp);
+                RC = UDFCommonSetVolInfo(IrpContext, Irp);
                 break;
             // Continue with the remaining possible dispatch routines below ...
             default:
-                UDFPrint(("  unhandled *** MJ: %x, Thr: %x\n", PtrIrpContext->MajorFunction, PsGetCurrentThread()));
+                UDFPrint(("  unhandled *** MJ: %x, Thr: %x\n", IrpContext->MajorFunction, PsGetCurrentThread()));
                 // This is the case where we have an invalid major function
                 Irp->IoStatus.Status = STATUS_INVALID_DEVICE_REQUEST;
                 Irp->IoStatus.Information = 0;
 
                 IoCompleteRequest(Irp, IO_NO_INCREMENT);
                 // Free up the Irp Context
-                UDFReleaseIrpContext(PtrIrpContext);
+                UDFCleanupIrpContext(IrpContext);
                 break;
             }
 
-            // Note: PtrIrpContext is invalid here
+            // Note: IrpContext is invalid here
             UDFPrint(("  *** Thr: %x  Done!\n", PsGetCurrentThread()));
 
-        } _SEH2_EXCEPT(UDFExceptionFilter(PtrIrpContext, _SEH2_GetExceptionInformation())) {
+        } _SEH2_EXCEPT(UDFExceptionFilter(IrpContext, _SEH2_GetExceptionInformation())) {
 
-            RC = UDFExceptionHandler(PtrIrpContext, Irp);
+            RC = UDFProcessException(IrpContext, Irp);
 
             UDFLogEvent(UDF_ERROR_INTERNAL_ERROR, RC);
         }  _SEH2_END;
@@ -1182,7 +1309,7 @@ UDFCommonDispatch(
         KeReleaseSpinLock(&(Vcb->OverflowQueueSpinLock), SavedIrql);
         SpinLock = FALSE;
 
-        PtrIrpContext = CONTAINING_RECORD(Entry,
+        IrpContext = CONTAINING_RECORD(Entry,
                                           IRP_CONTEXT,
                                           WorkQueueItem.List);
     }
@@ -1195,7 +1322,7 @@ UDFCommonDispatch(
     UDFPrint(("  *** Thr: %x  ThCnt: %x  QCnt: %x  Terminated!\n", PsGetCurrentThread(), Vcb->PostedRequestCount, Vcb->OverflowQueueCount));
 
     return;
-} // end UDFCommonDispatch()
+} // end UDFFspDispatch()
 
 
 /*************************************************************************
@@ -1403,8 +1530,6 @@ UDFInitializeVCB(
     //CcInitializeCacheMap(Vcb->PtrStreamFileObject, (PCC_FILE_SIZES)(&(Vcb->AllocationSize)),
     //                            TRUE,       // We will use pinned access.
     //                            &(UDFGlobalData.CacheMgrCallBacks), Vcb);
-
-read_reg:
 
     UDFReleaseResource(&(UDFGlobalData.GlobalDataResource));
 
@@ -2117,10 +2242,10 @@ UDFInitializeStackIrpContextFromLite(
     IrpContext->TargetDeviceObject = IrpContextLite->RealDevice;
 
     // Note that this is from the stack.
-    SetFlag(IrpContext->Flags, UDF_IRP_CONTEXT_FLAG_ON_STACK);
+    SetFlag(IrpContext->Flags, IRP_CONTEXT_FLAG_ON_STACK);
 
     // Set the wait parameter
-    SetFlag(IrpContext->Flags, UDF_IRP_CONTEXT_CAN_BLOCK);
+    SetFlag(IrpContext->Flags, IRP_CONTEXT_FLAG_WAIT);
 
 } // end UDFInitializeStackIrpContextFromLite()
 

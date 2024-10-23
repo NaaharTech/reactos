@@ -42,7 +42,7 @@ UDFFSControl(
     )
 {
     NTSTATUS            RC = STATUS_SUCCESS;
-    PIRP_CONTEXT PtrIrpContext;
+    PIRP_CONTEXT IrpContext = NULL;
     BOOLEAN             AreWeTopLevel = FALSE;
 
     UDFPrint(("\nUDFFSControl: \n\n"));
@@ -57,9 +57,9 @@ UDFFSControl(
     _SEH2_TRY {
 
         // get an IRP context structure and issue the request
-        PtrIrpContext = UDFAllocateIrpContext(Irp, DeviceObject);
-        if(PtrIrpContext) {
-            RC = UDFCommonFSControl(PtrIrpContext, Irp);
+        IrpContext = UDFCreateIrpContext(Irp, DeviceObject);
+        if(IrpContext) {
+            RC = UDFCommonFSControl(IrpContext, Irp);
         } else {
             RC = STATUS_INSUFFICIENT_RESOURCES;
             Irp->IoStatus.Status = RC;
@@ -68,10 +68,10 @@ UDFFSControl(
             IoCompleteRequest(Irp, IO_DISK_INCREMENT);
         }
 
-    } _SEH2_EXCEPT(UDFExceptionFilter(PtrIrpContext, _SEH2_GetExceptionInformation())) {
+    } _SEH2_EXCEPT(UDFExceptionFilter(IrpContext, _SEH2_GetExceptionInformation())) {
 
         UDFPrintErr(("UDFFSControl: exception ***"));
-        RC = UDFExceptionHandler(PtrIrpContext, Irp);
+        RC = UDFProcessException(IrpContext, Irp);
 
         UDFLogEvent(UDF_ERROR_INTERNAL_ERROR, RC);
     } _SEH2_END;
@@ -101,7 +101,7 @@ UDFFSControl(
 NTSTATUS
 NTAPI
 UDFCommonFSControl(
-    PIRP_CONTEXT PtrIrpContext,
+    PIRP_CONTEXT IrpContext,
     PIRP                Irp                // I/O Request Packet
     )
 {
@@ -122,13 +122,13 @@ UDFCommonFSControl(
         case IRP_MN_USER_FS_REQUEST:
             UDFPrint(("  UDFFSControl: UserFsReq request ....\n"));
 
-            RC = UDFUserFsCtrlRequest(PtrIrpContext,Irp);
+            RC = UDFUserFsCtrlRequest(IrpContext,Irp);
             break;
         case IRP_MN_MOUNT_VOLUME:
 
             UDFPrint(("  UDFFSControl: MOUNT_VOLUME request ....\n"));
 
-            RC = UDFMountVolume(PtrIrpContext,Irp);
+            RC = UDFMountVolume(IrpContext,Irp);
             break;
         case IRP_MN_VERIFY_VOLUME:
 
@@ -152,7 +152,7 @@ UDFCommonFSControl(
         if (!_SEH2_AbnormalTermination()) {
             // Free up the Irp Context
             UDFPrint(("  UDFCommonFSControl: finally\n"));
-            UDFReleaseIrpContext(PtrIrpContext);
+            UDFCleanupIrpContext(IrpContext);
         } else {
             UDFPrint(("  UDFCommonFSControl: finally after exception ***\n"));
         }
@@ -313,7 +313,7 @@ Return Value:
 NTSTATUS
 NTAPI
 UDFMountVolume(
-    IN PIRP_CONTEXT PtrIrpContext,
+    IN PIRP_CONTEXT IrpContext,
     IN PIRP Irp
     )
 {
@@ -340,7 +340,7 @@ UDFMountVolume(
     ASSERT(IrpSp);
     UDFPrint(("\n !!! UDFMountVolume\n"));
 
-    fsDeviceObject = PtrIrpContext->TargetDeviceObject;
+    fsDeviceObject = IrpContext->TargetDeviceObject;
     UDFPrint(("Mount on device object %x\n", fsDeviceObject));
 
     PFILTER_DEV_EXTENSION filterDevExt = (PFILTER_DEV_EXTENSION)fsDeviceObject->DeviceExtension;
@@ -382,7 +382,7 @@ UDFMountVolume(
 
     _SEH2_TRY {
 
-        UDFScanForDismountedVcb(PtrIrpContext);
+        UDFScanForDismountedVcb(IrpContext);
 
         if(WrongMedia) try_return(RC = STATUS_UNRECOGNIZED_VOLUME);
 
@@ -584,7 +584,7 @@ try_raw_mount:
             Vcb->MountPhErrorCount = -1;
 
             // set cache mode according to media type
-            if(!(Vcb->VCBFlags & UDF_VCB_FLAGS_MEDIA_READ_ONLY)) {
+            if(!(Vcb->VCBFlags & VCB_STATE_MEDIA_WRITE_PROTECT)) {
                 UDFPrint(("UDFMountVolume: writable volume\n"));
                 if(!Vcb->CDR_Mode) {
                     if(FsDeviceType == FILE_DEVICE_DISK_FILE_SYSTEM) {
@@ -634,9 +634,9 @@ try_raw_mount:
             Vcb->VCBFlags &= ~UDF_VCB_FLAGS_RAW_DISK;
         }
 
-        if((Vcb->VCBFlags & UDF_VCB_FLAGS_MEDIA_READ_ONLY)) {
+        if((Vcb->VCBFlags & VCB_STATE_MEDIA_WRITE_PROTECT)) {
             UDFPrint(("UDFMountVolume: RO mount\n"));
-            Vcb->VCBFlags |= UDF_VCB_FLAGS_VOLUME_READ_ONLY;
+            Vcb->VCBFlags |= VCB_STATE_VOLUME_READ_ONLY;
         }
 
         Vcb->Vpb->SerialNumber = Vcb->PhSerialNumber;
@@ -653,8 +653,8 @@ try_raw_mount:
 
         // unlock media
         if(RemovableMedia) {
-            if(Vcb->VCBFlags & UDF_VCB_FLAGS_MEDIA_READ_ONLY || 
-               Vcb->VCBFlags & UDF_VCB_FLAGS_VOLUME_READ_ONLY) {
+            if(Vcb->VCBFlags & VCB_STATE_MEDIA_WRITE_PROTECT || 
+               Vcb->VCBFlags & VCB_STATE_VOLUME_READ_ONLY) {
 
                 UDFPrint(("UDFMountVolume: unlock media on RO volume\n"));
                 UDFToggleMediaEjectDisable(Vcb, FALSE);
@@ -1345,10 +1345,10 @@ UDFIsVolumeMounted(
 
     if(Fcb &&
        !(Fcb->Vcb->VCBFlags & UDF_VCB_FLAGS_RAW_DISK) &&
-       !(Fcb->Vcb->VCBFlags & UDF_VCB_FLAGS_VOLUME_LOCKED) ) {
+       !(Fcb->Vcb->VCBFlags & VCB_STATE_VOLUME_LOCKED) ) {
 
         // Disable PopUps, we want to return any error.
-        IrpContext->Flags |= UDF_IRP_CONTEXT_FLAG_DISABLE_POPUPS;
+        IrpContext->Flags |= IRP_CONTEXT_FLAG_DISABLE_POPUPS;
 
         // Verify the Vcb.  This will raise in the error condition.
         UDFVerifyVcb( IrpContext, Fcb->Vcb );
@@ -1513,7 +1513,7 @@ UDFUnlockVolumeInternal (
 
         // This one locked it, unlock the volume
         ClearFlag(Vcb->Vpb->Flags, VPB_LOCKED | VPB_DIRECT_WRITES_ALLOWED);
-        ClearFlag(Vcb->VCBFlags, UDF_VCB_FLAGS_VOLUME_LOCKED);
+        ClearFlag(Vcb->VCBFlags, VCB_STATE_VOLUME_LOCKED);
         Vcb->VolumeLockFileObject = NULL;
 
         Status = STATUS_SUCCESS;
@@ -1634,7 +1634,7 @@ UDFLockVolume(
         if(PID == (ULONG)-1) {
             Vcb->Vpb->Flags |= VPB_LOCKED;
         }
-        Vcb->VCBFlags |= UDF_VCB_FLAGS_VOLUME_LOCKED;
+        Vcb->VCBFlags |= VCB_STATE_VOLUME_LOCKED;
         Vcb->VolumeLockFileObject = IrpSp->FileObject;
         Vcb->VolumeLockPID        = PID;
 
@@ -1787,7 +1787,7 @@ UDFDismountVolume(
             RC = STATUS_VOLUME_DISMOUNTED;
         } else
         if(/*!(Vcb->VCBFlags & UDF_VCB_FLAGS_VOLUME_MOUNTED) ||*/
-           !(Vcb->VCBFlags & UDF_VCB_FLAGS_VOLUME_LOCKED) ||
+           !(Vcb->VCBFlags & VCB_STATE_VOLUME_LOCKED) ||
             (Vcb->VCBOpenCount > (UDF_RESIDUAL_REFERENCE+1))) {
 
             RC = STATUS_NOT_LOCKED;
