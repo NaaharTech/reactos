@@ -11,7 +11,7 @@
 #define MY_HEAP_FLAG_LEN_MASK   0xfffffffe
 
 #define MyFreeMemoryAndPointer(ptr) \
-    if(ptr) {                   \
+    if (ptr) {                   \
         MyFreePool__(ptr);      \
         ptr = NULL;             \
     }
@@ -45,13 +45,6 @@ extern ULONG MemTotalAllocated;
 #define MY_HEAP_FRAME_SIZE          (256*1024)
 #define MY_HEAP_MAX_FRAMES          512
 #define MY_HEAP_MAX_BLOCKS          4*1024  // blocks per frame
-
-#ifdef USE_THREAD_HEAPS
-//extern HANDLE MemLock;
-extern "C" VOID ExInitThreadPools();
-extern "C" VOID ExDeInitThreadPools();
-extern "C" VOID ExFreeThreadPool();
-#endif //USE_THREAD_HEAPS
 
 // Mem
 BOOLEAN MyAllocInit(VOID);
@@ -174,7 +167,7 @@ PVOID inline MyAllocatePool__(ULONG type, ULONG len) {
 #else //TRACK_SYS_ALLOC_CALLERS
     newaddr = (PCHAR)MyAllocatePool_(type,len+MY_HEAP_ALIGN+1);
 #endif //TRACK_SYS_ALLOC_CALLERS
-    if(!newaddr)
+    if (!newaddr)
         return NULL;
     for(i=0; i<MY_HEAP_ALIGN+1; i++) {
         newaddr[len+i] = (UCHAR)('A'+i);
@@ -192,7 +185,7 @@ PVOID inline MyAllocatePoolTag__(ULONG type, ULONG len, /*PCHAR*/ULONG tag) {
 #else //TRACK_SYS_ALLOC_CALLERS
     newaddr = (PCHAR)MyAllocatePoolTag_(type,len+MY_HEAP_ALIGN+1, tag);
 #endif //TRACK_SYS_ALLOC_CALLERS
-    if(!newaddr)
+    if (!newaddr)
         return NULL;
     for(i=0; i<MY_HEAP_ALIGN+1; i++) {
         newaddr[len+i] = (UCHAR)('A'+i);
@@ -204,13 +197,13 @@ VOID inline MyFreePool__(PVOID addr) {
     PCHAR newaddr;
 //    ULONG i;
     newaddr = (PCHAR)addr;
-    if(!newaddr) {
+    if (!newaddr) {
         __asm int 3;
         return;
     }
 /*
     for(i=0; i<MY_HEAP_ALIGN+1; i++) {
-        if(newaddr[len+i] != (UCHAR)('A'+i)) {
+        if (newaddr[len+i] != (UCHAR)('A'+i)) {
             __asm int 3;
             break;
         }
@@ -239,7 +232,7 @@ ULONG inline MyReallocPool__(PCHAR addr, ULONG len, PCHAR *pnewaddr, ULONG newle
     ULONG i;
 
     for(i=0; i<MY_HEAP_ALIGN+1; i++) {
-        if((UCHAR)(addr[len+i]) != (UCHAR)('A'+i)) {
+        if ((UCHAR)(addr[len+i]) != (UCHAR)('A'+i)) {
             __asm int 3;
             break;
         }
@@ -267,7 +260,7 @@ ULONG inline MyReallocPool__(PCHAR addr, ULONG len, PCHAR *pnewaddr, ULONG newle
         }
 #endif //MY_MEM_BOUNDS_CHECK
         *pnewaddr = newaddr;
-        if(_newlen <= _len) {
+        if (_newlen <= _len) {
             RtlCopyMemory(newaddr, addr, newlen);
         } else {
             RtlCopyMemory(newaddr, addr, len);
@@ -275,7 +268,7 @@ ULONG inline MyReallocPool__(PCHAR addr, ULONG len, PCHAR *pnewaddr, ULONG newle
         }
 #ifdef MY_MEM_BOUNDS_CHECK
         for(i=0; i<MY_HEAP_ALIGN+1; i++) {
-            if((UCHAR)(newaddr[newlen+i]) != (UCHAR)('A'+i)) {
+            if ((UCHAR)(newaddr[newlen+i]) != (UCHAR)('A'+i)) {
                 __asm int 3;
                 break;
             }
@@ -286,7 +279,7 @@ ULONG inline MyReallocPool__(PCHAR addr, ULONG len, PCHAR *pnewaddr, ULONG newle
     } else {
         *pnewaddr = addr;
     }
-    if(newlen > len) {
+    if (newlen > len) {
         //RtlZeroMemory(newaddr+len, newlen - len);
     }
 /*

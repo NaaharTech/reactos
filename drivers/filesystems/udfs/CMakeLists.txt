@@ -36,6 +36,8 @@ list(APPEND SOURCE
     volinfo.cpp
     wcache.cpp
     write.cpp
+    strucsup.cpp
+    filobsup.cpp
     udffs.h)
 
 add_library(udfs MODULE ${SOURCE} udffs.rc)

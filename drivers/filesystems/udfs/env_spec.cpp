@@ -128,6 +128,7 @@ UDFSyncCompletionRoutine2(
 NTSTATUS
 NTAPI
 UDFPhReadSynchronous(
+    PIRP_CONTEXT IrpContext,
     PDEVICE_OBJECT      DeviceObject,   // the physical device object
     PVOID               Buffer,
     SIZE_T              Length,
@@ -139,7 +140,8 @@ UDFPhReadSynchronous(
     NTSTATUS            RC = STATUS_SUCCESS;
     LARGE_INTEGER       ROffset;
     PUDF_PH_CALL_CONTEXT Context;
-    PIRP                irp;
+    PIRP                Irp;
+    PIO_STACK_LOCATION IrpSp;
     KIRQL               CurIrql = KeGetCurrentIrql();
     PVOID               IoBuf = NULL;
 //    ULONG i;
@@ -151,7 +153,7 @@ UDFPhReadSynchronous(
 #endif //MEASURE_IO_PERFORMANCE
 #ifdef _BROWSE_UDF_
     PVCB Vcb = NULL;
-    if(Flags & PH_VCB_IN_RETLEN) {
+    if (Flags & PH_VCB_IN_RETLEN) {
         Vcb = (PVCB)(*ReadBytes);
     }
 #endif //_BROWSE_UDF_
@@ -169,7 +171,7 @@ UDFPhReadSynchronous(
     // DEBUG !!!
     Flags |= PH_TMP_BUFFER;
 */
-    if(Flags & PH_TMP_BUFFER) {
+    if (Flags & PH_TMP_BUFFER) {
         IoBuf = Buffer;
     } else {
         IoBuf = DbgAllocatePoolWithTag(NonPagedPool, Length, 'bNWD');
@@ -187,27 +189,41 @@ UDFPhReadSynchronous(
     KeInitializeEvent(&(Context->event), NotificationEvent, FALSE);
 
     if (TRUE || CurIrql > PASSIVE_LEVEL) {
-        irp = IoBuildAsynchronousFsdRequest(IRP_MJ_READ, DeviceObject, IoBuf,
+        Irp = IoBuildAsynchronousFsdRequest(IRP_MJ_READ, DeviceObject, IoBuf,
                                                Length, &ROffset, &(Context->IosbToUse) );
-        if (!irp) {
+        if (!Irp) {
             UDFPrint(("    !irp Async\n"));
             try_return(RC = STATUS_INSUFFICIENT_RESOURCES);
         }
-        MmPrint(("    Alloc async Irp MDL=%x, ctx=%x\n", irp->MdlAddress, Context));
-        IoSetCompletionRoutine( irp, &UDFAsyncCompletionRoutine,
+        MmPrint(("    Alloc async Irp MDL=%x, ctx=%x\n", Irp->MdlAddress, Context));
+        IoSetCompletionRoutine(Irp, &UDFAsyncCompletionRoutine,
                                 Context, TRUE, TRUE, TRUE );
     } else {
-        irp = IoBuildSynchronousFsdRequest(IRP_MJ_READ, DeviceObject, IoBuf,
+        Irp = IoBuildSynchronousFsdRequest(IRP_MJ_READ, DeviceObject, IoBuf,
                                                Length, &ROffset, &(Context->event), &(Context->IosbToUse) );
-        if (!irp) {
+        if (!Irp) {
             UDFPrint(("    !irp Sync\n"));
             try_return(RC = STATUS_INSUFFICIENT_RESOURCES);
         }
-        MmPrint(("    Alloc Irp MDL=%x, ctx=%x\n", irp->MdlAddress, Context));
+        MmPrint(("    Alloc Irp MDL=%x, ctx=%x\n", Irp->MdlAddress, Context));
     }
 
-    (IoGetNextIrpStackLocation(irp))->Flags |= SL_OVERRIDE_VERIFY_VOLUME;
-    RC = IoCallDriver(DeviceObject, irp);
+    // Setup the next IRP stack location in the associated Irp for the disk
+    // driver beneath us.
+
+    IrpSp = IoGetNextIrpStackLocation(Irp);
+
+    //  If this Irp is the result of a WriteThough operation,
+    //  tell the device to write it through.
+
+    if (FlagOn(IrpContext->Flags, IRP_CONTEXT_FLAG_WRITE_THROUGH)) {
+
+        SetFlag(IrpSp->Flags, SL_WRITE_THROUGH);
+    }
+
+    SetFlag(IrpSp->Flags, SL_OVERRIDE_VERIFY_VOLUME);
+
+    RC = IoCallDriver(DeviceObject, Irp);
 
     if (RC == STATUS_PENDING) {
         DbgWaitForSingleObject(&(Context->event), NULL);
@@ -218,21 +234,21 @@ UDFPhReadSynchronous(
     } else {
 //        *ReadBytes = irp->IoStatus.Information;
     }
-    if(NT_SUCCESS(RC)) {
+    if (NT_SUCCESS(RC)) {
         (*ReadBytes) = Context->IosbToUse.Information;
     }
-    if(!(Flags & PH_TMP_BUFFER)) {
+    if (!(Flags & PH_TMP_BUFFER)) {
         RtlCopyMemory(Buffer, IoBuf, *ReadBytes);
     }
 
-    if(NT_SUCCESS(RC)) {
+    if (NT_SUCCESS(RC)) {
 /*
         for(i=0; i<(*ReadBytes); i+=2048) {
             UDFPrint(("IOCRC %8.8x R %x\n", crc32((PUCHAR)Buffer+i, 2048), (ULONG)((Offset+i)/2048) ));
         }
 */
 #ifdef _BROWSE_UDF_
-        if(Vcb) {
+        if (Vcb) {
             RC = UDFVRead(Vcb, IoBuf, Length >> Vcb->BlockSizeBits, (ULONG)(Offset >> Vcb->BlockSizeBits), Flags);
         }
 #endif //_BROWSE_UDF_
@@ -240,8 +256,8 @@ UDFPhReadSynchronous(
 
 try_exit: NOTHING;
 
-    if(Context) MyFreePool__(Context);
-    if(IoBuf && !(Flags & PH_TMP_BUFFER)) DbgFreePool(IoBuf);
+    if (Context) MyFreePool__(Context);
+    if (IoBuf && !(Flags & PH_TMP_BUFFER)) DbgFreePool(IoBuf);
 
 #ifdef MEASURE_IO_PERFORMANCE
     KeQuerySystemTime((PLARGE_INTEGER)&IoExitTime);
@@ -298,7 +314,7 @@ UDFPhWriteSynchronous(
 #endif //MEASURE_IO_PERFORMANCE
 #ifdef _BROWSE_UDF_
     PVCB Vcb = NULL;
-    if(Flags & PH_VCB_IN_RETLEN) {
+    if (Flags & PH_VCB_IN_RETLEN) {
         Vcb = (PVCB)(*WrittenBytes);
     }
 #endif //_BROWSE_UDF_
@@ -315,7 +331,7 @@ UDFPhWriteSynchronous(
 #endif //DBG
 
 #ifdef DBG
-    if(UDF_SIMULATE_WRITES) {
+    if (UDF_SIMULATE_WRITES) {
 /* FIXME ReactOS
    If this function is to force a read from the bufffer to simulate any segfaults, then it makes sense.
    Else, this forloop is useless.
@@ -334,7 +350,7 @@ UDFPhWriteSynchronous(
 
    // Utilizing a temporary buffer to circumvent the situation where the IO buffer contains TransitionPage pages.
    // This typically occurs during IRP_NOCACHE. Otherwise, an assert occurs within IoBuildAsynchronousFsdRequest.
-    if(Flags & PH_TMP_BUFFER) {
+    if (Flags & PH_TMP_BUFFER) {
         IoBuf = Buffer;
     } else {
         IoBuf = DbgAllocatePool(NonPagedPool, Length);
@@ -369,7 +385,7 @@ UDFPhWriteSynchronous(
     }
 */
 #ifdef _BROWSE_UDF_
-    if(Vcb) {
+    if (Vcb) {
         UDFVWrite(Vcb, IoBuf, Length >> Vcb->BlockSizeBits, (ULONG)(Offset >> Vcb->BlockSizeBits), Flags);
     }
 #endif //_BROWSE_UDF_
@@ -383,15 +399,15 @@ UDFPhWriteSynchronous(
     } else {
 //        *WrittenBytes = irp->IoStatus.Information;
     }
-    if(NT_SUCCESS(RC)) {
+    if (NT_SUCCESS(RC)) {
         (*WrittenBytes) = Context->IosbToUse.Information;
     }
 
 try_exit: NOTHING;
 
-    if(Context) MyFreePool__(Context);
-    if(IoBuf && !(Flags & PH_TMP_BUFFER)) DbgFreePool(IoBuf);
-    if(!NT_SUCCESS(RC)) {
+    if (Context) MyFreePool__(Context);
+    if (IoBuf && !(Flags & PH_TMP_BUFFER)) DbgFreePool(IoBuf);
+    if (!NT_SUCCESS(RC)) {
         UDFPrint(("WriteError\n"));
     }
 
@@ -431,18 +447,18 @@ UDFPhWriteVerifySynchronous(
 
     RC = UDFPhWriteSynchronous(DeviceObject, Buffer, Length, Offset, WrittenBytes, Flags);
 /*
-    if(!Verify)
+    if (!Verify)
         return RC;
     v_buff = (PUCHAR)DbgAllocatePoolWithTag(NonPagedPool, Length, 'bNWD');
-    if(!v_buff)
+    if (!v_buff)
         return RC;
     RC = UDFPhReadSynchronous(DeviceObject, v_buff, Length, Offset, &ReadBytes, Flags);
-    if(!NT_SUCCESS(RC)) {
+    if (!NT_SUCCESS(RC)) {
         BrutePoint();
         DbgFreePool(v_buff);
         return RC;
     }
-    if(RtlCompareMemory(v_buff, Buffer, ReadBytes) == Length) {
+    if (RtlCompareMemory(v_buff, Buffer, ReadBytes) == Length) {
         DbgFreePool(v_buff);
         return RC;
     }
@@ -485,7 +501,7 @@ UDFTSendIOCTL(
                             );
 
     } _SEH2_FINALLY {
-        if(Acquired)
+        if (Acquired)
             UDFReleaseResource(&(Vcb->IoResource));
     } _SEH2_END;
 
@@ -542,7 +558,7 @@ UDFPhSendIOCTL(
                                 Context, TRUE, TRUE, TRUE );
     }
 */
-    if(OverrideVerify) {
+    if (OverrideVerify) {
         (IoGetNextIrpStackLocation(irp))->Flags |= SL_OVERRIDE_VERIFY_VOLUME;
     }
 
@@ -569,52 +585,59 @@ UDFPhSendIOCTL(
             RC = STATUS_SUCCESS;
         }
         UDFPrint(("Exit wait state on evt %x, status %8.8x\n", Context, RC));
-/*        if(Iosb) {
+/*        if (Iosb) {
             (*Iosb) = Context->IosbToUse;
         }*/
     } else {
         UDFPrint(("No wait completion on evt %x\n", Context));
-/*        if(Iosb) {
+/*        if (Iosb) {
             (*Iosb) = irp->IoStatus;
         }*/
     }
 
-    if(Iosb) {
+    if (Iosb) {
         (*Iosb) = Context->IosbToUse;
     }
 
 try_exit: NOTHING;
 
-    if(Context) MyFreePool__(Context);
+    if (Context) MyFreePool__(Context);
     return(RC);
 } // end UDFPhSendIOCTL()
 
-
-#ifdef UDF_DBG
 VOID
 UDFNotifyFullReportChange(
-    PVCB V,
-    PUDF_FILE_INFO FI,
-    ULONG E,
-    ULONG A
+    PVCB Vcb,
+    PFCB Fcb,
+    ULONG Filter,
+    ULONG Action
     )
 {
-    if((FI)->ParentFile) {
-        FsRtlNotifyFullReportChange( (V)->NotifyIRPMutex, &((V)->NextNotifyIRP),
-                                     (PSTRING)&((FI)->Fcb->FCBName->ObjectName),
-                                     ((FI)->ParentFile->Fcb->FCBName->ObjectName.Length + sizeof(WCHAR)),
-                                     NULL,NULL,
-                                     E, A,
-                                     NULL);
-    } else {
-        FsRtlNotifyFullReportChange( (V)->NotifyIRPMutex, &((V)->NextNotifyIRP),
-                                     (PSTRING)&((FI)->Fcb->FCBName->ObjectName),
-                                     0,
-                                     NULL,NULL,
-                                     E, A,
-                                     NULL);
-    }
-} // end UDFNotifyFullReportChange()
+    USHORT TargetNameOffset = 0;
 
-#endif // UDF_DBG
+    // Skip parent name length and leading backslash from the beginning of object name
+
+    if (Fcb->ParentFcb) {
+
+        if (Fcb->ParentFcb->FCBName->ObjectName.Length == 2) {
+
+            ASSERT(Fcb->ParentFcb->FCBName->ObjectName.Buffer[0] == L'\\');
+            TargetNameOffset = Fcb->ParentFcb->FCBName->ObjectName.Length;
+        }
+        else {
+
+            TargetNameOffset = Fcb->ParentFcb->FCBName->ObjectName.Length + sizeof(WCHAR);
+        }
+    }
+
+    FsRtlNotifyFullReportChange(Vcb->NotifyIRPMutex,
+                                &Vcb->NextNotifyIRP,
+                                (PSTRING)&Fcb->FCBName->ObjectName,
+                                TargetNameOffset,
+                                NULL,
+                                NULL,
+                                Filter,
+                                Action,
+                                NULL);
+}
 

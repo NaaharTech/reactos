@@ -28,7 +28,7 @@ UDFDebugAcquireResourceSharedLite(
 
     BOOLEAN Success = ExAcquireResourceSharedLite(Resource,Wait);
 
-    if(Success) {
+    if (Success) {
 #ifdef TRACK_RESOURCES
         UDFPrint(("Res:Sha:Ok:Resource:%x:BugCheckId:%x:Line:%d:ThId:%x\n",Resource,
             BugCheckId,Line,PsGetCurrentThread()));
@@ -58,7 +58,7 @@ UDFDebugAcquireSharedStarveExclusive(
 
     BOOLEAN Success = ExAcquireResourceSharedLite(Resource,Wait);
 
-    if(Success) {
+    if (Success) {
 #ifdef TRACK_RESOURCES
         UDFPrint(("Res:Sha*:Ok:Resource:%x:BugCheckId:%x:Line:%d:ThId:%x\n",Resource,
             BugCheckId,Line,PsGetCurrentThread()));
@@ -89,7 +89,7 @@ UDFDebugAcquireResourceExclusiveLite(
 
     BOOLEAN Success = ExAcquireResourceExclusiveLite(Resource,Wait);
 
-    if(Success) {
+    if (Success) {
 #ifdef TRACK_RESOURCES
         UDFPrint(("Res:Exc:OK:Resource:%x:BugCheckId:%x:Line:%d:ThId:%x\n",Resource,
             BugCheckId,Line,PsGetCurrentThread()));
@@ -176,7 +176,7 @@ UDFDebugInitializeResourceLite(
     UDFPrint(("Res:Ini:Ok:Resource:%x:BugCheckId:%x:Line:%d:ThId:%x\n",Resource,
         BugCheckId,Line,ResourceThreadId));
 #endif
-    if(NT_SUCCESS(RC)) {
+    if (NT_SUCCESS(RC)) {
         ResCounter++;
     }
     return RC;
@@ -217,7 +217,7 @@ UDFDebugAcquireSharedWaitForExclusive(
 
     BOOLEAN Success = ExAcquireSharedWaitForExclusive(Resource,Wait);
 
-    if(Success) {
+    if (Success) {
 #ifdef TRACK_RESOURCES
         UDFPrint(("Res:Sha*:OK:Resource:%x:BugCheckId:%x:Line:%d:ThId:%x\n",Resource,
             BugCheckId,Line,PsGetCurrentThread()));
@@ -316,7 +316,7 @@ DebugAllocatePool(
 ) {
     ULONG i;
 //    UDFPrint(("SysAllocated: %x\n",AllocCount));
-    if(!MemDescInited) {
+    if (!MemDescInited) {
         RtlZeroMemory(&MemDesc, sizeof(MemDesc));
         MemDescInited = 1;
     }
@@ -326,8 +326,8 @@ DebugAllocatePool(
 
             ASSERT(MemDesc[i].Addr);
 
-            if(MemDesc[i].Addr) {
-                if(Type == PagedPool) {
+            if (MemDesc[i].Addr) {
+                if (Type == PagedPool) {
                     AllocCountPaged += (size+7) & ~7;
                 } else {
                     AllocCountNPaged += (size+7) & ~7;
@@ -343,15 +343,15 @@ DebugAllocatePool(
             return MemDesc[i].Addr;
         }
     }
-    if(cur_max == MAX_MEM_DEBUG_DESCRIPTORS) {
+    if (cur_max == MAX_MEM_DEBUG_DESCRIPTORS) {
         UDFPrint(("Debug memory descriptor list full\n"));
         return ExAllocatePoolWithTag(Type, (size) , 'Fnwd');
     }
 
     MemDesc[i].Addr = (PCHAR)ExAllocatePoolWithTag(Type, (size) , 'Fnwd');
 
-    if(MemDesc[i].Addr) {
-        if(Type == PagedPool) {
+    if (MemDesc[i].Addr) {
+        if (Type == PagedPool) {
             AllocCountPaged += (size+7) & ~7;
         } else {
             AllocCountNPaged += (size+7) & ~7;
@@ -377,7 +377,7 @@ VOID DebugFreePool(PVOID addr) {
     for (i=0;i<cur_max;i++) {
         if (MemDesc[i].Addr == addr)  {
 
-            if(MemDesc[i].Type == PagedPool) {
+            if (MemDesc[i].Type == PagedPool) {
                 AllocCountPaged -= (MemDesc[i].Length+7) & ~7;
             } else {
                 AllocCountNPaged -= (MemDesc[i].Length+7) & ~7;
@@ -415,8 +415,8 @@ DbgWaitForSingleObject_(
 
     dto.QuadPart = -5LL*1000000LL*10LL; // 5 sec
 //    cto.QuadPart = Timeout->QuadPart;
-    if(Timeout) {
-        if(dto.QuadPart > Timeout->QuadPart) {
+    if (Timeout) {
+        if (dto.QuadPart > Timeout->QuadPart) {
             to = Timeout;
         } else {
             to = &dto;
@@ -427,10 +427,10 @@ DbgWaitForSingleObject_(
 
     for(; c--; c) {
         RC = KeWaitForSingleObject(Object, Executive, KernelMode, FALSE, to);
-        if(RC == STATUS_SUCCESS)
+        if (RC == STATUS_SUCCESS)
             break;
         UDFPrint(("No response ?\n"));
-        if(c<2)
+        if (c<2)
             BrutePoint();
     }
     return RC;

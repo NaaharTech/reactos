@@ -54,7 +54,7 @@ UDFTimeToUDF(
     OUT PUDF_TIME_STAMP UdfTime
     )
 {
-    if(!NtTime) return;
+    if (!NtTime) return;
     LONGLONG LocalTime;
 
     TIME_FIELDS TimeFields;
@@ -86,7 +86,7 @@ UDFAttributesToNT(
     )
 {
     ASSERT(FileDirNdx);
-    if( (FileDirNdx->FI_Flags & UDF_FI_FLAG_SYS_ATTR) &&
+    if ( (FileDirNdx->FI_Flags & UDF_FI_FLAG_SYS_ATTR) &&
        !(FileDirNdx->FI_Flags & UDF_FI_FLAG_LINKED))
         return FileDirNdx->SysAttr;
 
@@ -96,30 +96,30 @@ UDFAttributesToNT(
     USHORT Type = 0;
     UCHAR FCharact = 0;
 
-    if(!FileEntry) {
-        if(!FileDirNdx->FileInfo)
+    if (!FileEntry) {
+        if (!FileDirNdx->FileInfo)
             return 0;
         ValidateFileInfo(FileDirNdx->FileInfo);
         FileEntry = FileDirNdx->FileInfo->Dloc->FileEntry;
     }
-    if(FileEntry->tagIdent == TID_FILE_ENTRY) {
+    if (FileEntry->tagIdent == TID_FILE_ENTRY) {
         attr = ((PFILE_ENTRY)FileEntry)->permissions;
         Flags = ((PFILE_ENTRY)FileEntry)->icbTag.flags;
         Type = ((PFILE_ENTRY)FileEntry)->icbTag.fileType;
-        if(((PFILE_ENTRY)FileEntry)->fileLinkCount > 1)
+        if (((PFILE_ENTRY)FileEntry)->fileLinkCount > 1)
             FileDirNdx->FI_Flags |= UDF_FI_FLAG_LINKED;
     } else {
         attr = ((PEXTENDED_FILE_ENTRY)FileEntry)->permissions;
         Flags = ((PEXTENDED_FILE_ENTRY)FileEntry)->icbTag.flags;
         Type = ((PEXTENDED_FILE_ENTRY)FileEntry)->icbTag.fileType;
-        if(((PEXTENDED_FILE_ENTRY)FileEntry)->fileLinkCount > 1)
+        if (((PEXTENDED_FILE_ENTRY)FileEntry)->fileLinkCount > 1)
             FileDirNdx->FI_Flags |= UDF_FI_FLAG_LINKED;
     }
     FCharact = FileDirNdx->FileCharacteristics;
 
-    if(Flags & ICB_FLAG_SYSTEM) NTAttr |= FILE_ATTRIBUTE_SYSTEM;
-    if(Flags & ICB_FLAG_ARCHIVE) NTAttr |= FILE_ATTRIBUTE_ARCHIVE;
-    if((Type == UDF_FILE_TYPE_DIRECTORY) ||
+    if (Flags & ICB_FLAG_SYSTEM) NTAttr |= FILE_ATTRIBUTE_SYSTEM;
+    if (Flags & ICB_FLAG_ARCHIVE) NTAttr |= FILE_ATTRIBUTE_ARCHIVE;
+    if ((Type == UDF_FILE_TYPE_DIRECTORY) ||
        (Type == UDF_FILE_TYPE_STREAMDIR) ||
        (FCharact & FILE_DIRECTORY)) {
         NTAttr |= FILE_ATTRIBUTE_DIRECTORY;
@@ -128,8 +128,8 @@ UDFAttributesToNT(
         //NTAttr |= FILE_ATTRIBUTE_NORMAL;
 #endif
     }
-    if(FCharact & FILE_HIDDEN) NTAttr |= FILE_ATTRIBUTE_HIDDEN;
-    if( !(attr & PERM_O_WRITE) &&
+    if (FCharact & FILE_HIDDEN) NTAttr |= FILE_ATTRIBUTE_HIDDEN;
+    if ( !(attr & PERM_O_WRITE) &&
         !(attr & PERM_G_WRITE) &&
         !(attr & PERM_U_WRITE) &&
         !(attr & PERM_O_DELETE) &&
@@ -157,15 +157,15 @@ UDFAttributesToUDF(
 
     NTAttr &= UDF_VALID_FILE_ATTRIBUTES;
 
-    if(!FileEntry) {
+    if (!FileEntry) {
         ASSERT(FileDirNdx);
-        if(!FileDirNdx->FileInfo)
+        if (!FileDirNdx->FileInfo)
             return;
         ValidateFileInfo(FileDirNdx->FileInfo);
         FileEntry = FileDirNdx->FileInfo->Dloc->FileEntry;
         FileDirNdx->FileInfo->Dloc->FE_Flags |= UDF_FE_FLAG_FE_MODIFIED;
     }
-    if(FileEntry->tagIdent == TID_FILE_ENTRY) {
+    if (FileEntry->tagIdent == TID_FILE_ENTRY) {
         attr = &((PFILE_ENTRY)FileEntry)->permissions;
         Flags = &((PFILE_ENTRY)FileEntry)->icbTag.flags;
         Type = &((PFILE_ENTRY)FileEntry)->icbTag.fileType;
@@ -176,11 +176,11 @@ UDFAttributesToUDF(
     }
     FCharact = &(FileDirNdx->FileCharacteristics);
 
-    if((*FCharact & FILE_DIRECTORY) ||
+    if ((*FCharact & FILE_DIRECTORY) ||
        (*Type == UDF_FILE_TYPE_STREAMDIR) ||
        (*Type == UDF_FILE_TYPE_DIRECTORY)) {
         *FCharact |= FILE_DIRECTORY;
-        if(*Type != UDF_FILE_TYPE_STREAMDIR)
+        if (*Type != UDF_FILE_TYPE_STREAMDIR)
             *Type = UDF_FILE_TYPE_DIRECTORY;
         *attr |= (PERM_O_EXEC | PERM_G_EXEC | PERM_U_EXEC);
         NTAttr |= FILE_ATTRIBUTE_DIRECTORY;
@@ -191,23 +191,23 @@ UDFAttributesToUDF(
         *attr &= ~(PERM_O_EXEC | PERM_G_EXEC | PERM_U_EXEC);
     }
 
-    if(NTAttr & FILE_ATTRIBUTE_SYSTEM) {
+    if (NTAttr & FILE_ATTRIBUTE_SYSTEM) {
         *Flags |= ICB_FLAG_SYSTEM;
     } else {
         *Flags &= ~ICB_FLAG_SYSTEM;
     }
-    if(NTAttr & FILE_ATTRIBUTE_ARCHIVE) {
+    if (NTAttr & FILE_ATTRIBUTE_ARCHIVE) {
         *Flags |= ICB_FLAG_ARCHIVE;
     } else {
         *Flags &= ~ICB_FLAG_ARCHIVE;
     }
-    if(NTAttr & FILE_ATTRIBUTE_HIDDEN) {
+    if (NTAttr & FILE_ATTRIBUTE_HIDDEN) {
        *FCharact |= FILE_HIDDEN;
     } else {
        *FCharact &= ~FILE_HIDDEN;
     }
     *attr |= (PERM_O_READ | PERM_G_READ | PERM_U_READ);
-    if(!(NTAttr & FILE_ATTRIBUTE_READONLY)) {
+    if (!(NTAttr & FILE_ATTRIBUTE_READONLY)) {
         *attr |= (PERM_O_WRITE  | PERM_G_WRITE  | PERM_U_WRITE |
                   PERM_O_DELETE | PERM_G_DELETE | PERM_U_DELETE |
                   PERM_O_CHATTR | PERM_G_CHATTR | PERM_U_CHATTR);
@@ -217,7 +217,7 @@ UDFAttributesToUDF(
                    PERM_O_CHATTR | PERM_G_CHATTR | PERM_U_CHATTR);
     }
     FileDirNdx->SysAttr = NTAttr;
-    if(FileDirNdx->FileInfo)
+    if (FileDirNdx->FileInfo)
         FileDirNdx->FileInfo->Dloc->FE_Flags |= UDF_FE_FLAG_FE_MODIFIED;
     FileDirNdx->FI_Flags |= UDF_FI_FLAG_FI_MODIFIED;
     return;
@@ -228,6 +228,7 @@ UDFAttributesToUDF(
  */
 NTSTATUS
 UDFFileDirInfoToNT(
+    IN PIRP_CONTEXT IrpContext,
     IN PVCB Vcb,
     IN PDIR_INDEX_ITEM FileDirNdx,
     OUT PFILE_BOTH_DIR_INFORMATION NTFileInfo
@@ -256,16 +257,16 @@ UDFFileDirInfoToNT(
         UDFPrint(("  DirInfoToNT: exception when printing file name\n"));
     } _SEH2_END;
 
-    if(FileDirNdx->FileInfo) {
+    if (FileDirNdx->FileInfo) {
         UDFPrint(("    FileInfo\n"));
         // validate FileInfo
         ValidateFileInfo(FileDirNdx->FileInfo);
-        if(UDFGetFileLinkCount(FileDirNdx->FileInfo) > 1)
+        if (UDFGetFileLinkCount(FileDirNdx->FileInfo) > 1)
             FileDirNdx->FI_Flags |= UDF_FI_FLAG_LINKED;
         FileEntry = (PFILE_ENTRY)(FileDirNdx->FileInfo->Dloc->FileEntry);
         // read required sizes from Fcb (if any) if file is not linked
         // otherwise we should read them from FileEntry
-        if(FileDirNdx->FileInfo->Fcb) {
+        if (FileDirNdx->FileInfo->Fcb) {
             UDFPrint(("    Fcb\n"));
             Fcb = FileDirNdx->FileInfo->Fcb;
             NTFileInfo->CreationTime.QuadPart   = Fcb->CreationTime.QuadPart;
@@ -276,7 +277,7 @@ UDFFileDirInfoToNT(
             NTFileInfo->AllocationSize.QuadPart = UDFGetFileAllocationSize(Vcb, FileDirNdx->FileInfo);
             NTFileInfo->EndOfFile.QuadPart = UDFGetFileSize(FileDirNdx->FileInfo);
 
-            if(FileDirNdx->FI_Flags & UDF_FI_FLAG_SYS_ATTR) {
+            if (FileDirNdx->FI_Flags & UDF_FI_FLAG_SYS_ATTR) {
                 UDFPrint(("    SYS_ATTR\n"));
                 NTFileInfo->FileAttributes = FileDirNdx->SysAttr;
                 goto get_name_only;
@@ -292,18 +293,18 @@ UDFFileDirInfoToNT(
             goto get_attr_only;
         }
         ASSERT(FileEntry);
-    } else if(!(FileDirNdx->FI_Flags & UDF_FI_FLAG_SYS_ATTR) ||
+    } else if (!(FileDirNdx->FI_Flags & UDF_FI_FLAG_SYS_ATTR) ||
                (FileDirNdx->FI_Flags & UDF_FI_FLAG_LINKED)) {
         LONG_AD feloc;
 
         UDFPrint(("  !SYS_ATTR\n"));
         FileEntry = (PFILE_ENTRY)MyAllocatePool__(NonPagedPool, Vcb->LBlockSize);
-        if(!FileEntry) return STATUS_INSUFFICIENT_RESOURCES;
+        if (!FileEntry) return STATUS_INSUFFICIENT_RESOURCES;
 
         feloc.extLength = Vcb->LBlockSize;
         feloc.extLocation = FileDirNdx->FileEntryLoc;
 
-        if(!NT_SUCCESS(status = UDFReadFileEntry(Vcb, &feloc, FileEntry, &Ident))) {
+        if (!NT_SUCCESS(status = UDFReadFileEntry(IrpContext, Vcb, &feloc, FileEntry, &Ident))) {
             UDFPrint(("    !UDFReadFileEntry\n"));
             MyFreePool__(FileEntry);
             FileEntry = NULL;
@@ -324,13 +325,10 @@ UDFFileDirInfoToNT(
         goto get_name_only;
     }
 
-    if(Vcb->VCBFlags & UDF_VCB_FLAGS_RAW_DISK)
-        goto get_name_only;
-
     UDFPrint(("  direct\n"));
-    if(FileEntry->descTag.tagIdent == TID_FILE_ENTRY) {
+    if (FileEntry->descTag.tagIdent == TID_FILE_ENTRY) {
         UDFPrint(("  TID_FILE_ENTRY\n"));
-        if(ReadSizes) {
+        if (ReadSizes) {
             UDFPrint(("    ReadSizes\n"));
             // Times
             FileDirNdx->CreationTime   = NTFileInfo->CreationTime.QuadPart   =
@@ -351,10 +349,10 @@ UDFFileDirInfoToNT(
                 (FileEntry->informationLength + Vcb->LBlockSize - 1) & ~((LONGLONG)(Vcb->LBlockSize) - 1);
         }
 //        NTFileInfo->EaSize = 0;//FileEntry->lengthExtendedAttr;
-    } else if(FileEntry->descTag.tagIdent == TID_EXTENDED_FILE_ENTRY) {
+    } else if (FileEntry->descTag.tagIdent == TID_EXTENDED_FILE_ENTRY) {
         ExFileEntry = (PEXTENDED_FILE_ENTRY)FileEntry;
         UDFPrint(("  PEXTENDED_FILE_ENTRY\n"));
-        if(ReadSizes) {
+        if (ReadSizes) {
             UDFPrint(("    ReadSizes\n"));
             // Times
             FileDirNdx->CreationTime   = NTFileInfo->CreationTime.QuadPart   = UDFTimeToNT(&(ExFileEntry->createTime));
@@ -384,16 +382,16 @@ get_attr_only:
 
     UDFPrint(("  get_attr"));
     // do some substitutions
-    if(!FileDirNdx->CreationTime) {
+    if (!FileDirNdx->CreationTime) {
         FileDirNdx->CreationTime = NTFileInfo->CreationTime.QuadPart = Vcb->VolCreationTime;
     }
-    if(!FileDirNdx->LastAccessTime) {
+    if (!FileDirNdx->LastAccessTime) {
         FileDirNdx->LastAccessTime = NTFileInfo->LastAccessTime.QuadPart = FileDirNdx->CreationTime;
     }
-    if(!FileDirNdx->LastWriteTime) {
+    if (!FileDirNdx->LastWriteTime) {
         FileDirNdx->LastWriteTime = NTFileInfo->LastWriteTime.QuadPart = FileDirNdx->CreationTime;
     }
-    if(!FileDirNdx->ChangeTime) {
+    if (!FileDirNdx->ChangeTime) {
         FileDirNdx->ChangeTime = NTFileInfo->ChangeTime.QuadPart = FileDirNdx->CreationTime;
     }
 
@@ -406,14 +404,14 @@ get_name_only:
     UdfName = FileDirNdx->FName;
     NTFileInfo->FileNameLength = UdfName.Length;
     RtlCopyMemory((PCHAR)&(NTFileInfo->FileName), (PCHAR)(UdfName.Buffer), UdfName.MaximumLength);
-    if(!(FileDirNdx->FI_Flags & UDF_FI_FLAG_DOS)) {
+    if (!(FileDirNdx->FI_Flags & UDF_FI_FLAG_DOS)) {
         UDFPrint(("  !UDF_FI_FLAG_DOS"));
         UDFDOSName(Vcb, &DosName, &UdfName,
             (FileDirNdx->FI_Flags & UDF_FI_FLAG_KEEP_NAME) ? TRUE : FALSE);
         NTFileInfo->ShortNameLength = (UCHAR)DosName.Length;
     }
     // report zero EOF & AllocSize for Dirs
-    if(FileDirNdx->FileCharacteristics & FILE_DIRECTORY) {
+    if (FileDirNdx->FileCharacteristics & FILE_DIRECTORY) {
         UDFPrint(("  FILE_DIRECTORY"));
         NTFileInfo->AllocationSize.QuadPart =
         NTFileInfo->EndOfFile.QuadPart = 0;
@@ -421,7 +419,7 @@ get_name_only:
     UDFPrint(("  AllocationSize=%I64x, NTFileInfo->EndOfFile=%I64x", NTFileInfo->AllocationSize.QuadPart, NTFileInfo->EndOfFile.QuadPart));
     // free tmp buffer (if any)
     UDFPrint(("\n"));
-    if(FileEntry && !FileDirNdx->FileInfo)
+    if (FileEntry && !FileDirNdx->FileInfo)
         MyFreePool__(FileEntry);
     return STATUS_SUCCESS;
 } // end UDFFileDirInfoToNT()
@@ -448,45 +446,45 @@ UDFSetFileXTime(
     DirNdx = UDFDirIndex(UDFGetDirIndexByFileInfo(FileInfo), FileInfo->Index);
     Ident = FileInfo->Dloc->FileEntry->tagIdent;
 
-    if(Ident == TID_FILE_ENTRY) {
+    if (Ident == TID_FILE_ENTRY) {
         PFILE_ENTRY fe = (PFILE_ENTRY)(FileInfo->Dloc->FileEntry);
 
-        if(AccTime) {
-            if(DirNdx && *AccTime) DirNdx->LastAccessTime = *AccTime;
+        if (AccTime) {
+            if (DirNdx && *AccTime) DirNdx->LastAccessTime = *AccTime;
             UDFTimeToUDF(*AccTime, &(fe->accessTime));
         }
-        if(AttrTime) {
-            if(DirNdx && *AttrTime) DirNdx->ChangeTime = *AttrTime;
+        if (AttrTime) {
+            if (DirNdx && *AttrTime) DirNdx->ChangeTime = *AttrTime;
             UDFTimeToUDF(*AttrTime, &(fe->attrTime));
         }
-        if(ChgTime) {
-            if(DirNdx && *ChgTime) DirNdx->CreationTime =
+        if (ChgTime) {
+            if (DirNdx && *ChgTime) DirNdx->CreationTime =
                 DirNdx->LastWriteTime = *ChgTime;
             UDFTimeToUDF(*ChgTime, &(fe->modificationTime));
         } else
-        if(CrtTime) {
-            if(DirNdx && *CrtTime) DirNdx->CreationTime =
+        if (CrtTime) {
+            if (DirNdx && *CrtTime) DirNdx->CreationTime =
                 DirNdx->LastWriteTime = *CrtTime;
             UDFTimeToUDF(*CrtTime, &(fe->modificationTime));
         }
 
-    } else if(Ident == TID_EXTENDED_FILE_ENTRY) {
+    } else if (Ident == TID_EXTENDED_FILE_ENTRY) {
         PEXTENDED_FILE_ENTRY fe = (PEXTENDED_FILE_ENTRY)(FileInfo->Dloc->FileEntry);
 
-        if(AccTime) {
-            if(DirNdx && *AccTime) DirNdx->LastAccessTime = *AccTime;
+        if (AccTime) {
+            if (DirNdx && *AccTime) DirNdx->LastAccessTime = *AccTime;
             UDFTimeToUDF(*AccTime, &(fe->accessTime));
         }
-        if(AttrTime) {
-            if(DirNdx && *AttrTime) DirNdx->ChangeTime = *AttrTime;
+        if (AttrTime) {
+            if (DirNdx && *AttrTime) DirNdx->ChangeTime = *AttrTime;
             UDFTimeToUDF(*AttrTime, &(fe->attrTime));
         }
-        if(ChgTime) {
-            if(DirNdx && *ChgTime) DirNdx->LastWriteTime = *ChgTime;
+        if (ChgTime) {
+            if (DirNdx && *ChgTime) DirNdx->LastWriteTime = *ChgTime;
             UDFTimeToUDF(*ChgTime, &(fe->modificationTime));
         }
-        if(CrtTime) {
-            if(DirNdx && *CrtTime) DirNdx->CreationTime = *CrtTime;
+        if (CrtTime) {
+            if (DirNdx && *CrtTime) DirNdx->CreationTime = *CrtTime;
             UDFTimeToUDF(*CrtTime, &(fe->createTime));
         }
 
@@ -512,31 +510,31 @@ UDFGetFileXTime(
 
     Ident = FileInfo->Dloc->FileEntry->tagIdent;
 
-    if(Ident == TID_FILE_ENTRY) {
+    if (Ident == TID_FILE_ENTRY) {
         PFILE_ENTRY fe = (PFILE_ENTRY)(FileInfo->Dloc->FileEntry);
 
-        if(AccTime) *AccTime = UDFTimeToNT(&(fe->accessTime));
-        if(AttrTime) *AttrTime = UDFTimeToNT(&(fe->attrTime));
-        if(ChgTime) *ChgTime = UDFTimeToNT(&(fe->modificationTime));
-        if(CrtTime) {
+        if (AccTime) *AccTime = UDFTimeToNT(&(fe->accessTime));
+        if (AttrTime) *AttrTime = UDFTimeToNT(&(fe->attrTime));
+        if (ChgTime) *ChgTime = UDFTimeToNT(&(fe->modificationTime));
+        if (CrtTime) {
             (*CrtTime) = *ChgTime;
         }
 
-    } else if(Ident == TID_EXTENDED_FILE_ENTRY) {
+    } else if (Ident == TID_EXTENDED_FILE_ENTRY) {
         PEXTENDED_FILE_ENTRY fe = (PEXTENDED_FILE_ENTRY)(FileInfo->Dloc->FileEntry);
 
-        if(AccTime) *AccTime = UDFTimeToNT(&(fe->accessTime));
-        if(AttrTime) *AttrTime = UDFTimeToNT(&(fe->attrTime));
-        if(ChgTime) *ChgTime = UDFTimeToNT(&(fe->modificationTime));
-        if(CrtTime) *CrtTime = UDFTimeToNT(&(fe->createTime));
+        if (AccTime) *AccTime = UDFTimeToNT(&(fe->accessTime));
+        if (AttrTime) *AttrTime = UDFTimeToNT(&(fe->attrTime));
+        if (ChgTime) *ChgTime = UDFTimeToNT(&(fe->modificationTime));
+        if (CrtTime) *CrtTime = UDFTimeToNT(&(fe->createTime));
 
     }
-    if(CrtTime) {
-        if(!(*CrtTime))
+    if (CrtTime) {
+        if (!(*CrtTime))
             KeQuerySystemTime((PLARGE_INTEGER)CrtTime);
-        if(AccTime && !(*AccTime)) (*AccTime) = *CrtTime;
-        if(AttrTime && !(*AttrTime)) (*AttrTime) = *CrtTime;
-        if(AccTime && !(*AccTime)) (*AccTime) = *CrtTime;
+        if (AccTime && !(*AccTime)) (*AccTime) = *CrtTime;
+        if (AttrTime && !(*AttrTime)) (*AttrTime) = *CrtTime;
+        if (AccTime && !(*AccTime)) (*AccTime) = *CrtTime;
     }
 } // end UDFGetFileXTime()
 
@@ -553,20 +551,20 @@ UDFNormalizeFileName(
     buffer = FName->Buffer;
 
     // check for '',  '.'  &  '..'
-    if(!len) return;
-    if(!buffer[len-1]) {
+    if (!len) return;
+    if (!buffer[len-1]) {
         FName->Length-=sizeof(WCHAR);
         len--;
     }
-    if(!len) return;
-    if(buffer[0] == UNICODE_PERIOD) {
-        if(len == 1) return;
-        if((buffer[1] == UNICODE_PERIOD) && (len == 2)) return;
+    if (!len) return;
+    if (buffer[0] == UNICODE_PERIOD) {
+        if (len == 1) return;
+        if ((buffer[1] == UNICODE_PERIOD) && (len == 2)) return;
     }
 
     // check for trailing '.'
     for(len--;len;len--) {
-        if( ((buffer[len] == UNICODE_PERIOD) || (buffer[len] == UNICODE_SPACE)) ) {
+        if ( ((buffer[len] == UNICODE_PERIOD) || (buffer[len] == UNICODE_SPACE)) ) {
             FName->Length-=sizeof(WCHAR);
             buffer[len] = 0;
         } else
@@ -574,31 +572,6 @@ UDFNormalizeFileName(
     }
 } // end UDFNormalizeFileName()
 
-void
-__fastcall
-UDFDOSNameOsNative(
-    IN OUT PUNICODE_STRING DosName,
-    IN PUNICODE_STRING UdfName,
-    IN BOOLEAN KeepIntact
-    )
-{
-    PWCHAR dosName = DosName->Buffer;
-    PWCHAR udfName = UdfName->Buffer;
-    uint32 udfLen = UdfName->Length / sizeof(WCHAR);
-    GENERATE_NAME_CONTEXT Ctx;
-
-    if(KeepIntact &&
-       (udfLen <= 2) && (udfName[0] == UNICODE_PERIOD)) {
-        if((udfLen != 2) || (udfName[1] == UNICODE_PERIOD)) {
-            RtlCopyMemory(dosName, udfName, UdfName->Length);
-            DosName->Length = UdfName->Length;
-            return;
-        }
-    }
-    RtlZeroMemory(&Ctx, sizeof(GENERATE_NAME_CONTEXT));
-    RtlGenerate8dot3Name(UdfName, FALSE, &Ctx, DosName);
-
-} // UDFDOSNameOsNative()
 
 /*VOID
 UDFNormalizeFileName(
@@ -616,8 +589,8 @@ UDFNormalizeFileName(
     WCHAR ext[UDF_EXT_SIZE], current;
 
     // handle CurrentDir ('.') and ParentDir ('..') cases
-    if((udfLen <= 2) && (udfName[0] == UNICODE_PERIOD)) {
-        if((udfLen != 2) || (udfName[1] == UNICODE_PERIOD))
+    if ((udfLen <= 2) && (udfName[0] == UNICODE_PERIOD)) {
+        if ((udfLen != 2) || (udfName[1] == UNICODE_PERIOD))
             return;
     }
 
@@ -647,7 +620,7 @@ UDFNormalizeFileName(
                 extIndex = index;
                 newExtIndex = newIndex;
             }
-        } else if((current != UNICODE_PERIOD) && (current != UNICODE_SPACE)) {
+        } else if ((current != UNICODE_PERIOD) && (current != UNICODE_SPACE)) {
             trailIndex = index;
         }
 
@@ -712,13 +685,13 @@ UDFNormalizeFileName(
         }
     }
 
-    if(FName->Length == (USHORT)newIndex*sizeof(WCHAR)) {
+    if (FName->Length == (USHORT)newIndex*sizeof(WCHAR)) {
         RtlCopyMemory(FName->Buffer, newName, newIndex*sizeof(WCHAR));
         return;
     }
     MyFreePool__(FName->Buffer);
     FName->Buffer = (PWCHAR)MyAllocatePool__(UDF_FILENAME_MT, (newIndex+1)*sizeof(WCHAR));
-    if(FName->Buffer) {
+    if (FName->Buffer) {
         FName->Buffer[newIndex] = 0;
         RtlCopyMemory(FName->Buffer, newName, newIndex*sizeof(WCHAR));
     }
@@ -755,8 +728,8 @@ MyAppendUnicodeStringToString_(
     tmp = Str1->Buffer;
     i = Str1->Length + Str2->Length + sizeof(WCHAR);
     ASSERT(Str1->MaximumLength);
-    if(i > Str1->MaximumLength) {
-        if(!MyReallocPool__((PCHAR)tmp, Str1->MaximumLength,
+    if (i > Str1->MaximumLength) {
+        if (!MyReallocPool__((PCHAR)tmp, Str1->MaximumLength,
                          (PCHAR*)&tmp, STRING_BUFFER_ALIGN(i)*2) ) {
             return STATUS_INSUFFICIENT_RESOURCES;
         }
@@ -766,7 +739,7 @@ MyAppendUnicodeStringToString_(
     RtlCopyMemory(((PCHAR)tmp)+Str1->Length, Str2->Buffer, Str2->Length);
 
 /*    tmp = (PWCHAR)MyAllocatePoolTag__(NonPagedPool, i = Str1->Length + Str2->Length + sizeof(WCHAR), UDF_UNC_STR_TAG);
-    if(!tmp)
+    if (!tmp)
         return STATUS_INSUFFICIENT_RESOURCES;
     RtlCopyMemory(tmp, Str1->Buffer, Str1->Length);
     RtlCopyMemory(((PCHAR)tmp)+Str1->Length, Str2->Buffer, Str2->Length);*/
@@ -774,7 +747,7 @@ MyAppendUnicodeStringToString_(
     Str1->Length = i - sizeof(WCHAR);
     //MyFreePool__(Str1->Buffer);
 #ifdef UDF_DBG
-    if(Str1->Buffer && (Str1->Length >= 2*sizeof(WCHAR))) {
+    if (Str1->Buffer && (Str1->Length >= 2*sizeof(WCHAR))) {
         ASSERT((Str1->Buffer[0] != L'\\') || (Str1->Buffer[1] != L'\\'));
     }
 #endif // UDF_DBG
@@ -832,8 +805,8 @@ EO_Scan:
 
     tmp = Str1->Buffer;
     ASSERT(Str1->MaximumLength);
-    if((Str1->Length+i+sizeof(WCHAR)) > Str1->MaximumLength) {
-        if(!MyReallocPool__((PCHAR)tmp, Str1->MaximumLength,
+    if ((Str1->Length+i+sizeof(WCHAR)) > Str1->MaximumLength) {
+        if (!MyReallocPool__((PCHAR)tmp, Str1->MaximumLength,
                          (PCHAR*)&tmp, STRING_BUFFER_ALIGN(i + Str1->Length + sizeof(WCHAR))*2 ) ) {
             return STATUS_INSUFFICIENT_RESOURCES;
         }
@@ -845,7 +818,7 @@ EO_Scan:
     tmp[(i / sizeof(WCHAR))] = 0;
     Str1->Length = i;
 #ifdef UDF_DBG
-/*    if(Str1->Buffer && (Str1->Length >= 2*sizeof(WCHAR))) {
+/*    if (Str1->Buffer && (Str1->Length >= 2*sizeof(WCHAR))) {
         ASSERT((Str1->Buffer[0] != L'\\') || (Str1->Buffer[1] != L'\\'));
     }*/
 #endif // UDF_DBG
@@ -894,7 +867,7 @@ EO_Scan:
 
     Str1->MaximumLength = STRING_BUFFER_ALIGN((Str1->Length = i) + sizeof(WCHAR));
     Str1->Buffer = (PWCHAR)MyAllocatePool__(NonPagedPool, Str1->MaximumLength);
-    if(!Str1->Buffer)
+    if (!Str1->Buffer)
         return STATUS_INSUFFICIENT_RESOURCES;
     RtlCopyMemory(Str1->Buffer, Str2, i);
     Str1->Buffer[i/sizeof(WCHAR)] = 0;
@@ -910,7 +883,7 @@ MyCloneUnicodeString(
 {
     Str1->MaximumLength = STRING_BUFFER_ALIGN((Str1->Length = Str2->Length) + sizeof(WCHAR));
     Str1->Buffer = (PWCHAR)MyAllocatePool__(NonPagedPool, Str1->MaximumLength);
-    if(!Str1->Buffer)
+    if (!Str1->Buffer)
         return STATUS_INSUFFICIENT_RESOURCES;
     ASSERT(Str2->Buffer);
     RtlCopyMemory(Str1->Buffer, Str2->Buffer, Str2->Length);
@@ -932,7 +905,7 @@ UDFIsDirInfoCached(
     PDIR_INDEX_HDR hDirNdx = DirInfo->Dloc->DirIndex;
     PDIR_INDEX_ITEM DirNdx;
     for(uint_di i=2; (DirNdx = UDFDirIndex(hDirNdx,i)); i++) {
-        if(!(DirNdx->FI_Flags & UDF_FI_FLAG_SYS_ATTR) ||
+        if (!(DirNdx->FI_Flags & UDF_FI_FLAG_SYS_ATTR) ||
             (DirNdx->FI_Flags & UDF_FI_FLAG_LINKED)) return FALSE;
     }
     return TRUE;
@@ -946,30 +919,30 @@ UDFDoesOSAllowFileToBeTargetForRename__(
 {
     NTSTATUS RC;
 
-    if(UDFIsADirectory(FileInfo))
+    if (UDFIsADirectory(FileInfo))
         return STATUS_ACCESS_DENIED;
-    if(!FileInfo->ParentFile)
+    if (!FileInfo->ParentFile)
         return STATUS_ACCESS_DENIED;
 
-    if(UDFAttributesToNT(UDFDirIndex(UDFGetDirIndexByFileInfo(FileInfo),FileInfo->Index),
+    if (UDFAttributesToNT(UDFDirIndex(UDFGetDirIndexByFileInfo(FileInfo),FileInfo->Index),
                          FileInfo->Dloc->FileEntry) & FILE_ATTRIBUTE_READONLY)
         return STATUS_ACCESS_DENIED;
 
-    if(!FileInfo->Fcb)
+    if (!FileInfo->Fcb)
         return STATUS_SUCCESS;
 
     RC = UDFCheckAccessRights(NULL, NULL, FileInfo->Fcb, NULL, DELETE, 0);
-    if(!NT_SUCCESS(RC))
+    if (!NT_SUCCESS(RC))
         return RC;
 
-    if(!FileInfo->Fcb)
+    if (!FileInfo->Fcb)
         return STATUS_SUCCESS;
 //    RC = UDFMarkStreamsForDeletion(FileInfo->Fcb->Vcb, FileInfo->Fcb, TRUE); // Delete
 /*    RC = UDFSetDispositionInformation(FileInfo->Fcb, NULL,
                 FileInfo->Fcb->Vcb, NULL, TRUE);
-    if(NT_SUCCESS(RC)) {
+    if (NT_SUCCESS(RC)) {
         FileInfo->Fcb->FCBFlags |= UDF_FCB_DELETED;
-        if(UDFGetFileLinkCount(FileInfo) <= 1) {
+        if (UDFGetFileLinkCount(FileInfo) <= 1) {
             FileInfo->Fcb->NTRequiredFCB->NtReqFCBFlags |= UDF_NTREQ_FCB_DELETED;
         }
     }*/
@@ -989,11 +962,11 @@ UDFDoesOSAllowFileToBeUnlinked__(
 
     ASSERT(FileInfo->Dloc);
 
-    if(!FileInfo->ParentFile)
+    if (!FileInfo->ParentFile)
         return STATUS_CANNOT_DELETE;
-    if(FileInfo->Dloc->SDirInfo)
+    if (FileInfo->Dloc->SDirInfo)
         return STATUS_CANNOT_DELETE;
-    if(!UDFIsADirectory(FileInfo))
+    if (!UDFIsADirectory(FileInfo))
         return STATUS_SUCCESS;
 
 //    UDFFlushAFile(FileInfo->Fcb, NULL, &IoStatus, 0);
@@ -1001,7 +974,7 @@ UDFDoesOSAllowFileToBeUnlinked__(
     // check if we can delete all files
     for(i=2; (CurDirNdx = UDFDirIndex(hCurDirNdx,i)); i++) {
         // try to open Stream
-        if(CurDirNdx->FileInfo)
+        if (CurDirNdx->FileInfo)
             return STATUS_CANNOT_DELETE;
     }
 //    return UDFCheckAccessRights(NULL, NULL, FileInfo->Fcb, NULL, DELETE, 0);
@@ -1014,14 +987,14 @@ UDFDoesOSAllowFilePretendDeleted__(
     )
 {
     PDIR_INDEX_HDR hDirNdx = UDFGetDirIndexByFileInfo(FileInfo);
-    if(!hDirNdx) return STATUS_CANNOT_DELETE;
+    if (!hDirNdx) return STATUS_CANNOT_DELETE;
     PDIR_INDEX_ITEM DirNdx = UDFDirIndex(hDirNdx, FileInfo->Index);
-    if(!DirNdx) return STATUS_CANNOT_DELETE;
+    if (!DirNdx) return STATUS_CANNOT_DELETE;
     // we can't hide file that is not marked as deleted
-    if(!(DirNdx->FileCharacteristics & FILE_DELETED)) {
+    if (!(DirNdx->FileCharacteristics & FILE_DELETED)) {
         BrutePoint();
 
-        if(!(FileInfo->Fcb->FCBFlags & (UDF_FCB_DELETE_ON_CLOSE |
+        if (!(FileInfo->Fcb->FcbState & (UDF_FCB_DELETE_ON_CLOSE |
                                         UDF_FCB_DELETED) )) {
 
             return STATUS_CANNOT_DELETE;

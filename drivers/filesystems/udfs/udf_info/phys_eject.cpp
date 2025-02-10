@@ -17,18 +17,18 @@
 // define the file specific bug-check id
 #define         UDF_BUG_CHECK_ID        UDF_FILE_PHYS_EJECT
 
-OSSTATUS
+NTSTATUS
 UDFDoDismountSequence(
     IN PVCB Vcb,
     IN BOOLEAN Eject
     )
 {
     LARGE_INTEGER delay;
-//    OSSTATUS      RC;
+//    NTSTATUS      RC;
     ULONG i;
 
     // flush system cache
-    UDFFlushLogicalVolume(NULL, NULL, Vcb, 0);
+    UDFFlushVolume(NULL, Vcb);
     UDFPrint(("UDFDoDismountSequence:\n"));
 
     delay.QuadPart = -1000000; // 0.1 sec
@@ -40,7 +40,7 @@ UDFDoDismountSequence(
     UDFAcquireResourceExclusive(&(Vcb->IoResource), TRUE);
 
     // unlock media, drop our own Locks
-    if(Vcb->VCBFlags & UDF_VCB_FLAGS_REMOVABLE_MEDIA) {
+    if (Vcb->VcbState & VCB_STATE_REMOVABLE_MEDIA) {
         UDFPrint(("  cleanup tray-lock (%d+2):\n", Vcb->MediaLockCount));
         for(i=0; i<Vcb->MediaLockCount+2; i++) {
 
@@ -50,11 +50,11 @@ UDFDoDismountSequence(
         delay.QuadPart = -2000000; // 0.2 sec
     }
 
-    if(!Vcb->ForgetVolume) {
+    if (!Vcb->ForgetVolume) {
 
         // eject media
-        if(Eject &&
-           (Vcb->VCBFlags & UDF_VCB_FLAGS_REMOVABLE_MEDIA)) {
+        if (Eject &&
+           (Vcb->VcbState & VCB_STATE_REMOVABLE_MEDIA)) {
 
             UDFPhSendIOCTL(IOCTL_STORAGE_EJECT_MEDIA,
                            Vcb->TargetDeviceObject,
@@ -66,19 +66,10 @@ UDFDoDismountSequence(
     UDFReleaseResource(&(Vcb->IoResource));
     // allow media change checks (this will lead to dismount)
     // ... and make it Read-Only...  :-\~
-    Vcb->VCBFlags &= ~UDF_VCB_FLAGS_MEDIA_LOCKED;
+    Vcb->VcbState &= ~UDF_VCB_FLAGS_MEDIA_LOCKED;
 
-    // Return back XP CD Burner Volume
-/*
-    if (Vcb->CDBurnerVolumeValid) {
-        RtlWriteRegistryValue(RTL_REGISTRY_USER | RTL_REGISTRY_OPTIONAL,
-                      REG_CD_BURNER_KEY_NAME,REG_CD_BURNER_VOLUME_NAME,
-                      REG_SZ,(PVOID)&(Vcb->CDBurnerVolume),sizeof(Vcb->CDBurnerVolume));
-        ExFreePool(Vcb->CDBurnerVolume.Buffer);
-    }
-*/
     UDFPrint(("  set UnsafeIoctl\n"));
-    Vcb->VCBFlags |= UDF_VCB_FLAGS_UNSAFE_IOCTL;
+    Vcb->VcbState |= UDF_VCB_FLAGS_UNSAFE_IOCTL;
 
     return STATUS_SUCCESS;
 } // end UDFDoDismountSequence()

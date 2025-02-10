@@ -7,8 +7,12 @@
 #ifndef __UDF_NAME_SUP__H__
 #define __UDF_NAME_SUP__H__
 
-extern PWCHAR __fastcall UDFDissectName(IN  PWCHAR   Buffer,
-                             OUT PUSHORT  Length);
+PWCHAR
+UDFDissectName(
+    _In_ PIRP_CONTEXT IrpContext,
+    _In_ PWCHAR Buffer,
+    OUT PUSHORT  Length
+    );
 
 extern BOOLEAN UDFIsNameInExpression(IN PVCB Vcb,
                                      IN PUNICODE_STRING FileName,

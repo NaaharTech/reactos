@@ -6,36 +6,71 @@
 
 /*********************************************************************/
 
-OSSTATUS __fastcall WCacheCheckLimits(IN PW_CACHE Cache,
-                             IN PVOID Context,
-                             IN lba_t ReqLba,
-                             IN ULONG BCount);
+NTSTATUS
+__fastcall
+WCacheCheckLimits(
+    IN PIRP_CONTEXT IrpContext,
+    IN PW_CACHE Cache,
+    IN PVOID Context,
+    IN lba_t ReqLba,
+    IN ULONG BCount
+    );
 
-OSSTATUS __fastcall WCacheCheckLimitsRAM(IN PW_CACHE Cache,
-                             IN PVOID Context,
-                             IN lba_t ReqLba,
-                             IN ULONG BCount);
+NTSTATUS
+__fastcall
+WCacheCheckLimitsRAM(
+    IN PIRP_CONTEXT IrpContext,
+    IN PW_CACHE Cache,
+    IN PVOID Context,
+    IN lba_t ReqLba,
+    IN ULONG BCount
+    );
 
-OSSTATUS __fastcall WCacheCheckLimitsRW(IN PW_CACHE Cache,
-                             IN PVOID Context,
-                             IN lba_t ReqLba,
-                             IN ULONG BCount);
+NTSTATUS
+__fastcall
+WCacheCheckLimitsRW(
+    IN PIRP_CONTEXT IrpContext,
+    IN PW_CACHE Cache,
+    IN PVOID Context,
+    IN lba_t ReqLba,
+    IN ULONG BCount
+    );
 
-OSSTATUS __fastcall WCacheCheckLimitsR(IN PW_CACHE Cache,
-                             IN PVOID Context,
-                             IN lba_t ReqLba,
-                             IN ULONG BCount);
+NTSTATUS
+__fastcall
+WCacheCheckLimitsR(
+    IN PIRP_CONTEXT IrpContext,
+    IN PW_CACHE Cache,
+    IN PVOID Context,
+    IN lba_t ReqLba,
+    IN ULONG BCount
+    );
 
-VOID     __fastcall WCachePurgeAllRW(IN PW_CACHE Cache,
-                             IN PVOID Context);
+VOID
+__fastcall
+WCachePurgeAllRW(
+    IN PIRP_CONTEXT IrpContext,
+    IN PW_CACHE Cache,
+    IN PVOID Context
+    );
 
-VOID     __fastcall WCacheFlushAllRW(IN PW_CACHE Cache,
-                             IN PVOID Context);
+VOID
+__fastcall
+WCacheFlushAllRW(
+    IN PIRP_CONTEXT IrpContext,
+    IN PW_CACHE Cache,
+    IN PVOID Context
+    );
 
-VOID     __fastcall WCachePurgeAllR(IN PW_CACHE Cache,
-                             IN PVOID Context);
+VOID
+__fastcall
+WCachePurgeAllR(
+    IN PIRP_CONTEXT IrpContext,
+    IN PW_CACHE Cache,
+    IN PVOID Context
+    );
 
-OSSTATUS __fastcall WCacheDecodeFlags(IN PW_CACHE Cache,
+NTSTATUS __fastcall WCacheDecodeFlags(IN PW_CACHE Cache,
                              IN ULONG Flags);
 
 #define ASYNC_STATE_NONE      0
@@ -79,6 +114,7 @@ typedef struct _W_CACHE_ASYNC {
 
 VOID
 WCacheUpdatePacketComplete(
+    IN PIRP_CONTEXT IrpContext,
     IN PW_CACHE Cache,        // pointer to the Cache Control structure
     IN PVOID Context,         // user-supplied context for IO callbacks
     IN OUT PW_CACHE_ASYNC* FirstWContext, // pointer to head async IO context
@@ -117,7 +153,7 @@ ULONG WCache_random;
 
   Public routine
  */
-OSSTATUS
+NTSTATUS
 WCacheInit__(
     IN PW_CACHE Cache,        // pointer to the Cache Control structure to be initialized
     IN ULONG MaxFrames,       // maximum number of Frames to be kept in memory
@@ -178,7 +214,7 @@ WCacheInit__(
     ULONG PacketSize = (1) << PacketSizeSh;
     ULONG BlockSize = (1) << BlockSizeSh;
     ULONG BlocksPerFrame = (1) << BlocksPerFrameSh;
-    OSSTATUS RC = STATUS_SUCCESS;
+    NTSTATUS RC = STATUS_SUCCESS;
     LARGE_INTEGER rseed;
     ULONG res_init_flags = 0;
 
@@ -186,40 +222,40 @@ WCacheInit__(
 
     _SEH2_TRY {
         // check input parameters
-        if(Mode == WCACHE_MODE_R) {
+        if (Mode == WCACHE_MODE_R) {
             UDFPrint(("Disable Async-Write for WORM media\n"));
             WriteProcAsync = NULL;
         }
-        if((MaxBlocks % PacketSize) || !MaxBlocks) {
+        if ((MaxBlocks % PacketSize) || !MaxBlocks) {
             UDFPrint(("Total number of sectors must be packet-size-aligned\n"));
             try_return(RC = STATUS_INVALID_PARAMETER);
         }
-        if(BlocksPerFrame % PacketSize) {
+        if (BlocksPerFrame % PacketSize) {
             UDFPrint(("Number of sectors per Frame must be packet-size-aligned\n"));
             try_return(RC = STATUS_INVALID_PARAMETER);
         }
-        if(!ReadProc) {
+        if (!ReadProc) {
             UDFPrint(("Read routine pointer must be valid\n"));
             try_return(RC = STATUS_INVALID_PARAMETER);
         }
-        if(FirstLba >= LastLba) {
+        if (FirstLba >= LastLba) {
             UDFPrint(("Invalid cached area parameters: (%x - %x)\n",FirstLba, LastLba));
             try_return(RC = STATUS_INVALID_PARAMETER);
         }
-        if(!MaxFrames) {
+        if (!MaxFrames) {
             UDFPrint(("Total frame number must be non-zero\n",FirstLba, LastLba));
             try_return(RC = STATUS_INVALID_PARAMETER);
         }
-        if(Mode > WCACHE_MODE_MAX) {
+        if (Mode > WCACHE_MODE_MAX) {
             UDFPrint(("Invalid media mode. Should be 0-%x\n",WCACHE_MODE_MAX));
             try_return(RC = STATUS_INVALID_PARAMETER);
         }
-        if(FramesToKeepFree >= MaxFrames/2) {
+        if (FramesToKeepFree >= MaxFrames/2) {
             UDFPrint(("Invalid FramesToKeepFree (%x). Should be Less or equal to MaxFrames/2 (%x)\n", FramesToKeepFree, MaxFrames/2));
             try_return(RC = STATUS_INVALID_PARAMETER);
         }
         // check 'features'
-        if(!WriteProc) {
+        if (!WriteProc) {
             UDFPrint(("Write routine not specified\n"));
             UDFPrint(("Read-only mode enabled\n"));
         }
@@ -227,22 +263,22 @@ WCacheInit__(
         // initialize required structures
         // we'll align structure size on system page size to
         // avoid system crashes caused by pool fragmentation
-        if(!(Cache->FrameList =
+        if (!(Cache->FrameList =
             (PW_CACHE_FRAME)MyAllocatePoolTag__(NonPagedPool, l1 = (((LastLba >> BlocksPerFrameSh)+1)*sizeof(W_CACHE_FRAME)), MEM_WCFRM_TAG) )) {
             UDFPrint(("Cache init err 1\n"));
             try_return(RC = STATUS_INSUFFICIENT_RESOURCES);
         }
-        if(!(Cache->CachedBlocksList =
+        if (!(Cache->CachedBlocksList =
             (PULONG)MyAllocatePoolTag__(NonPagedPool, l2 = ((MaxBlocks+2)*sizeof(lba_t)), MEM_WCFRM_TAG) )) {
             UDFPrint(("Cache init err 2\n"));
             try_return(RC = STATUS_INSUFFICIENT_RESOURCES);
         }
-        if(!(Cache->CachedModifiedBlocksList =
+        if (!(Cache->CachedModifiedBlocksList =
             (PULONG)MyAllocatePoolTag__(NonPagedPool, l2, MEM_WCFRM_TAG) )) {
             UDFPrint(("Cache init err 3\n"));
             try_return(RC = STATUS_INSUFFICIENT_RESOURCES);
         }
-        if(!(Cache->CachedFramesList =
+        if (!(Cache->CachedFramesList =
             (PULONG)MyAllocatePoolTag__(NonPagedPool, l3 = ((MaxFrames+2)*sizeof(lba_t)), MEM_WCFRM_TAG) )) {
             UDFPrint(("Cache init err 4\n"));
             try_return(RC = STATUS_INSUFFICIENT_RESOURCES);
@@ -268,7 +304,7 @@ WCacheInit__(
         Cache->LastLba = LastLba;
         Cache->Mode = Mode;
 
-        if(!OS_SUCCESS(RC = WCacheDecodeFlags(Cache, Flags))) {
+        if (!NT_SUCCESS(RC = WCacheDecodeFlags(Cache, Flags))) {
             return RC;
         }
 
@@ -281,22 +317,22 @@ WCacheInit__(
         Cache->UpdateRelocProc = UpdateRelocProc;
         Cache->ErrorHandlerProc = ErrorHandlerProc;
         // init permanent tmp buffers
-        if(!(Cache->tmp_buff =
+        if (!(Cache->tmp_buff =
             (PCHAR)MyAllocatePoolTag__(NonPagedPool, PacketSize*BlockSize, MEM_WCFRM_TAG))) {
             UDFPrint(("Cache init err 5.W\n"));
             try_return(RC = STATUS_INSUFFICIENT_RESOURCES);
         }
-        if(!(Cache->tmp_buff_r =
+        if (!(Cache->tmp_buff_r =
             (PCHAR)MyAllocatePoolTag__(NonPagedPool, PacketSize*BlockSize, MEM_WCFRM_TAG))) {
             UDFPrint(("Cache init err 5.R\n"));
             try_return(RC = STATUS_INSUFFICIENT_RESOURCES);
         }
-        if(!(Cache->reloc_tab =
+        if (!(Cache->reloc_tab =
             (PULONG)MyAllocatePoolTag__(NonPagedPool, Cache->PacketSize*sizeof(ULONG), MEM_WCFRM_TAG))) {
             UDFPrint(("Cache init err 6\n"));
             try_return(RC = STATUS_INSUFFICIENT_RESOURCES);
         }
-        if(!OS_SUCCESS(RC = ExInitializeResourceLite(&(Cache->WCacheLock)))) {
+        if (!NT_SUCCESS(RC = ExInitializeResourceLite(&(Cache->WCacheLock)))) {
             UDFPrint(("Cache init err (res)\n"));
             try_return(RC);
         }
@@ -308,22 +344,22 @@ try_exit: NOTHING;
 
     } _SEH2_FINALLY {
 
-        if(!OS_SUCCESS(RC)) {
-            if(res_init_flags & WCLOCK_RES)
+        if (!NT_SUCCESS(RC)) {
+            if (res_init_flags & WCLOCK_RES)
                 ExDeleteResourceLite(&(Cache->WCacheLock));
-            if(Cache->FrameList)
+            if (Cache->FrameList)
                 MyFreePool__(Cache->FrameList);
-            if(Cache->CachedBlocksList)
+            if (Cache->CachedBlocksList)
                 MyFreePool__(Cache->CachedBlocksList);
-            if(Cache->CachedModifiedBlocksList)
+            if (Cache->CachedModifiedBlocksList)
                 MyFreePool__(Cache->CachedModifiedBlocksList);
-            if(Cache->CachedFramesList)
+            if (Cache->CachedFramesList)
                 MyFreePool__(Cache->CachedFramesList);
-            if(Cache->tmp_buff_r)
+            if (Cache->tmp_buff_r)
                 MyFreePool__(Cache->tmp_buff_r);
-            if(Cache->tmp_buff)
+            if (Cache->tmp_buff)
                 MyFreePool__(Cache->tmp_buff);
-            if(Cache->reloc_tab)
+            if (Cache->reloc_tab)
                 MyFreePool__(Cache->reloc_tab);
             RtlZeroMemory(Cache, sizeof(W_CACHE));
         } else {
@@ -358,7 +394,7 @@ WCacheFindLbaToRelease(
     IN PW_CACHE Cache
     )
 {
-    if(!(Cache->BlockCount))
+    if (!(Cache->BlockCount))
         return WCACHE_INVALID_LBA;
     return(Cache->CachedBlocksList[((ULONG)WCacheRandom() % Cache->BlockCount)]);
 } // end WCacheFindLbaToRelease()
@@ -375,7 +411,7 @@ WCacheFindModifiedLbaToRelease(
     IN PW_CACHE Cache
     )
 {
-    if(!(Cache->WriteCount))
+    if (!(Cache->WriteCount))
         return WCACHE_INVALID_LBA;
     return(Cache->CachedModifiedBlocksList[((ULONG)WCacheRandom() % Cache->WriteCount)]);
 } // end WCacheFindModifiedLbaToRelease()
@@ -399,7 +435,7 @@ WCacheFindFrameToRelease(
     lba_t lba;
     BOOLEAN mod = FALSE;
 
-    if(!(Cache->FrameCount))
+    if (!(Cache->FrameCount))
         return 0;
     /*
     return(Cache->CachedFramesList[((ULONG)WCacheRandom() % Cache->FrameCount)]);
@@ -412,12 +448,12 @@ WCacheFindFrameToRelease(
         mod |= (Cache->FrameList[j].UpdateCount != 0);
         uc = Cache->FrameList[j].UpdateCount*32 + Cache->FrameList[j].AccessCount;
 
-        if(prev_uc > uc) {
+        if (prev_uc > uc) {
             prev_uc = uc;
             frame = j;
         }
     }
-    if(!mod) {
+    if (!mod) {
         frame = Cache->CachedFramesList[((ULONG)WCacheRandom() % Cache->FrameCount)];
         lba = frame << Cache->BlocksPerFrameSh;
         WcPrint(("WC:-frm %x\n", lba));
@@ -457,14 +493,14 @@ WCacheGetSortedListIndex(
     IN lba_t Lba              // ULONG value to be searched for
     )
 {
-    if(!BlockCount)
+    if (!BlockCount)
         return 0;
 
     ULONG pos;
     ULONG left;
     ULONG right;
 
-    if(!BlockCount)
+    if (!BlockCount)
         return 0;
 
     left = 0;
@@ -472,20 +508,20 @@ WCacheGetSortedListIndex(
     pos = 0;
     while(left != right) {
         pos = (left + right) >> 1;
-        if(List[pos] == Lba)
+        if (List[pos] == Lba)
             return pos;
-        if(right - left == 1) {
-            if(List[pos+1] < Lba)
+        if (right - left == 1) {
+            if (List[pos+1] < Lba)
                 return (pos+2);
             break;
         }
-        if(List[pos] < Lba) {
+        if (List[pos] < Lba) {
             left = pos;
         } else {
             right = pos;
         }
     }
-    if((List[pos] < Lba) && ((pos+1) <= BlockCount)) pos++;
+    if ((List[pos] < Lba) && ((pos+1) <= BlockCount)) pos++;
 
     return pos;
 }
@@ -515,7 +551,7 @@ WCacheInsertRangeToList(
     IN ULONG BCount           // number of sequentially incremented values to be inserted
     )
 {
-    if(!BCount)
+    if (!BCount)
         return;
 
     ASSERT(!(BCount & 0x80000000));
@@ -524,10 +560,10 @@ WCacheInsertRangeToList(
     ULONG lastPos = WCacheGetSortedListIndex(*BlockCount, List, Lba+BCount);
     ULONG offs = firstPos + BCount - lastPos;
 
-    if(offs) {
+    if (offs) {
         // move list tail
 //        ASSERT(lastPos+offs + ((*BlockCount) - lastPos) <= qq);
-        if(*BlockCount) {
+        if (*BlockCount) {
 #ifdef WCACHE_BOUND_CHECKS
             MyCheckArray(List, lastPos+offs+(*BlockCount)-lastPos-1);
 #endif //WCACHE_BOUND_CHECKS
@@ -564,11 +600,11 @@ WCacheInsertItemToList(
     )
 {
     ULONG firstPos = WCacheGetSortedListIndex(*BlockCount, List, Lba+1);
-    if(firstPos && (List[firstPos-1] == Lba))
+    if (firstPos && (List[firstPos-1] == Lba))
         return;
 
     // move list tail
-    if(*BlockCount) {
+    if (*BlockCount) {
 #ifdef WCACHE_BOUND_CHECKS
         MyCheckArray(List, firstPos+1+(*BlockCount)-firstPos-1);
 #endif //WCACHE_BOUND_CHECKS
@@ -606,7 +642,7 @@ WCacheRemoveRangeFromList(
     ULONG lastPos = WCacheGetSortedListIndex(*BlockCount, List, Lba+BCount);
     ULONG offs = lastPos - firstPos;
 
-    if(offs) {
+    if (offs) {
         // move list tail
         DbgMoveMemory(&(List[lastPos-offs]), &(List[lastPos]), ((*BlockCount) - lastPos) * sizeof(ULONG));
         (*BlockCount) -= offs;
@@ -630,9 +666,9 @@ WCacheRemoveItemFromList(
     IN lba_t Lba              // value to be removed
     )
 {
-    if(!(*BlockCount)) return;
+    if (!(*BlockCount)) return;
     ULONG lastPos = WCacheGetSortedListIndex(*BlockCount, List, Lba+1);
-    if(!lastPos || (lastPos && (List[lastPos-1] != Lba)))
+    if (!lastPos || (lastPos && (List[lastPos-1] != Lba)))
         return;
 
     // move list tail
@@ -652,6 +688,7 @@ WCacheRemoveItemFromList(
 PW_CACHE_ENTRY
 __fastcall
 WCacheInitFrame(
+    IN PIRP_CONTEXT IrpContext,
     IN PW_CACHE Cache,        // pointer to the Cache Control structure
     IN PVOID Context,         // caller's context (currently unused)
     IN ULONG frame            // frame index
@@ -666,9 +703,9 @@ WCacheInitFrame(
     // We are about to add new cache frame.
     // Thus check if we have enough free entries and
     // flush unused ones if it is neccessary.
-    if(Cache->FrameCount >= Cache->MaxFrames) {
+    if (Cache->FrameCount >= Cache->MaxFrames) {
         BrutePoint();
-        WCacheCheckLimits(Cache, Context, frame << Cache->BlocksPerFrameSh, Cache->PacketSize*2);
+        WCacheCheckLimits(IrpContext, Cache, Context, frame << Cache->BlocksPerFrameSh, Cache->PacketSize*2);
     }
     ASSERT(Cache->FrameCount < Cache->MaxFrames);
     block_array = (PW_CACHE_ENTRY)MyAllocatePoolTag__(NonPagedPool, l = sizeof(W_CACHE_ENTRY) << Cache->BlocksPerFrameSh, MEM_WCFRM_TAG);
@@ -679,7 +716,7 @@ WCacheInitFrame(
     //Cache->FrameList[frame].UpdateCount = 0;
     //Cache->FrameList[frame].AccessCount = 0;
 
-    if(block_array) {
+    if (block_array) {
         ASSERT((ULONG_PTR)block_array > 0x1000);
         WCacheInsertItemToList(Cache->CachedFramesList, &(Cache->FrameCount), frame);
         RtlZeroMemory(block_array, l);
@@ -825,25 +862,25 @@ WCacheAllocAsyncEntry(
     PCHAR Buffer;
 
     WContext = (PW_CACHE_ASYNC)MyAllocatePoolTag__(NonPagedPool,sizeof(W_CACHE_ASYNC), MEM_WCCTX_TAG);
-    if(!WContext)
+    if (!WContext)
         return NULL;
     Buffer = (PCHAR)DbgAllocatePoolWithTag(NonPagedPool, BufferSize*(2-Cache->Chained), MEM_WCBUF_TAG);
-    if(!Buffer) {
+    if (!Buffer) {
         MyFreePool__(WContext);
         return NULL;
     }
 
-    if(!Cache->Chained)
+    if (!Cache->Chained)
         KeInitializeEvent(&(WContext->PhContext.event), SynchronizationEvent, FALSE);
     WContext->Cache = Cache;
-    if(*PrevWContext)
+    if (*PrevWContext)
         (*PrevWContext)->NextWContext = WContext;
 //    WContext->NextWContext = (*PrevWContext);
     WContext->NextWContext = NULL;
     WContext->Buffer = Buffer;
     WContext->Buffer2 = Buffer+(Cache->Chained ? 0 : BufferSize);
 
-    if(!(*FirstWContext))
+    if (!(*FirstWContext))
         (*FirstWContext) = WContext;
     (*PrevWContext) = WContext;
 
@@ -867,11 +904,11 @@ WCacheFreeAsyncEntry(
 
 //#define WCacheRaiseIoError(c, ct, s, l, bc, b, o, r)
 
-OSSTATUS
+NTSTATUS
 WCacheRaiseIoError(
     IN PW_CACHE Cache,        // pointer to the Cache Control structure
     IN PVOID Context,
-    IN OSSTATUS Status,
+    IN NTSTATUS Status,
     IN ULONG Lba,
     IN ULONG BCount,
     IN PVOID Buffer,
@@ -879,7 +916,7 @@ WCacheRaiseIoError(
     IN PBOOLEAN Retry
     )
 {
-    if(!Cache->ErrorHandlerProc)
+    if (!Cache->ErrorHandlerProc)
         return Status;
 
     WCACHE_ERROR_CONTEXT ec;
@@ -890,7 +927,7 @@ WCacheRaiseIoError(
     ec.ReadWrite.BCount = BCount;
     ec.ReadWrite.Buffer = Buffer;
     Status = Cache->ErrorHandlerProc(Context, &ec);
-    if(Retry)
+    if (Retry)
         (*Retry) = ec.Retry;
 
     return Status;
@@ -907,8 +944,9 @@ WCacheRaiseIoError(
   stege for given request
   Internal routine
  */
-OSSTATUS
+NTSTATUS
 WCacheUpdatePacket(
+    IN PIRP_CONTEXT IrpContext,
     IN PW_CACHE Cache,        // pointer to the Cache Control structure
     IN PVOID Context,         // user's context to be passed to user-supplied
                               //   low-level IO routines (IO callbacks)
@@ -926,7 +964,7 @@ WCacheUpdatePacket(
     IN ULONG State            // callers state
     )
 {
-    OSSTATUS status;
+    NTSTATUS status;
     PCHAR tmp_buff = Cache->tmp_buff;
     PCHAR tmp_buff2 = Cache->tmp_buff;
     BOOLEAN mod;
@@ -941,11 +979,11 @@ WCacheUpdatePacket(
 
     // Check if we are going to write down to disk
     // all prewiously prepared (chained) data
-    if(State == ASYNC_STATE_WRITE) {
+    if (State == ASYNC_STATE_WRITE) {
         WContext = (*PrevWContext);
         tmp_buff  = (PCHAR)(WContext->Buffer);
         tmp_buff2 = (PCHAR)(WContext->Buffer2);
-        if(!Chained)
+        if (!Chained)
             mod = (DbgCompareMemory(tmp_buff2, tmp_buff, PS) != PS);
         goto try_write;
     }
@@ -956,12 +994,12 @@ WCacheUpdatePacket(
     mod = read = zero = FALSE;
     Lba0 = Lba - firstLba;
     for(i=0; i<PSs; i++, Lba0++) {
-        if(WCacheGetModFlag(block_array, Lba0)) {
+        if (WCacheGetModFlag(block_array, Lba0)) {
             mod = TRUE;
-        } else if(!WCacheSectorAddr(block_array,Lba0) &&
+        } else if (!WCacheSectorAddr(block_array,Lba0) &&
                   ((block_type = Cache->CheckUsedProc(Context, Lba+i)) & WCACHE_BLOCK_USED) ) {
             //
-            if(block_type & WCACHE_BLOCK_ZERO) {
+            if (block_type & WCACHE_BLOCK_ZERO) {
                 zero = TRUE;
             } else {
                 read = TRUE;
@@ -969,11 +1007,11 @@ WCacheUpdatePacket(
         }
     }
     // check if we are allowed to write to media
-    if(mod && !PrefereWrite) {
+    if (mod && !PrefereWrite) {
         return STATUS_RETRY;
     }
     // return STATUS_SUCCESS if requested packet contains no modified blocks
-    if(!mod) {
+    if (!mod) {
         (*ReadBytes) = PS;
         return STATUS_SUCCESS;
     }
@@ -981,7 +1019,7 @@ WCacheUpdatePacket(
     // pefrorm full update cycle: prepare(optional)/read/modify/write
 
     // do some preparations
-    if(Chained || Async) {
+    if (Chained || Async) {
         // For chained and async I/O we allocates context entry
         // and add it to list (chain)
         // We shall only read data to temporary buffer and
@@ -990,7 +1028,7 @@ WCacheUpdatePacket(
         // read.write mode switching, because it significantly degrades
         // performance
         WContext = WCacheAllocAsyncEntry(Cache, FirstWContext, PrevWContext, PS);
-        if(!WContext) {
+        if (!WContext) {
             //return STATUS_INSUFFICIENT_RESOURCES;
             // try to recover
             Chained = FALSE;
@@ -1004,8 +1042,8 @@ WCacheUpdatePacket(
     }
 
     // read packet (if it necessary)
-    if(read) {
-        if(Async) {
+    if (read) {
+        if (Async) {
             WContext->State = ASYNC_STATE_READ;
             status = Cache->ReadProcAsync(Context, WContext, tmp_buff, PS, Lba,
                                            &(WContext->TransferredBytes));
@@ -1013,20 +1051,20 @@ WCacheUpdatePacket(
             (*ReadBytes) = PS;
             return status;
         } else {
-            status = Cache->ReadProc(Context, tmp_buff, PS, Lba, ReadBytes, PH_TMP_BUFFER);
+            status = Cache->ReadProc(IrpContext, Context, tmp_buff, PS, Lba, ReadBytes, PH_TMP_BUFFER);
         }
-        if(!OS_SUCCESS(status)) {
+        if (!NT_SUCCESS(status)) {
             status = WCacheRaiseIoError(Cache, Context, status, Lba, PSs, tmp_buff, WCACHE_R_OP, NULL);
-            if(!OS_SUCCESS(status)) {
+            if (!NT_SUCCESS(status)) {
                 return status;
             }
         }
     } else
-    if(zero) {
+    if (zero) {
         RtlZeroMemory(tmp_buff, PS);
     }
 
-    if(Chained) {
+    if (Chained) {
         // indicate that we prepared for writing block to disk
         WContext->State = ASYNC_STATE_WRITE_PRE;
         tmp_buff2 = tmp_buff;
@@ -1041,19 +1079,19 @@ WCacheUpdatePacket(
     mod = !read || Cache->DoNotCompare;
     Lba0 = Lba - firstLba;
     for(i=0; i<PSs; i++, Lba0++) {
-        if( WCacheGetModFlag(block_array, Lba0) ||
+        if ( WCacheGetModFlag(block_array, Lba0) ||
             (!read && WCacheSectorAddr(block_array,Lba0)) ) {
 
 #ifdef _NTDEF_
             ASSERT((PVOID)WCacheSectorAddr(block_array,Lba0) >= MM_SYSTEM_RANGE_START);
 #endif //_NTDEF_
-            if(!mod) {
+            if (!mod) {
                 ASSERT(read);
                 mod = (DbgCompareMemory(tmp_buff2 + (i << BSh),
                             (PVOID)WCacheSectorAddr(block_array, Lba0),
                             BS) != BS);
             }
-            if(mod) {
+            if (mod) {
                 DbgCopyMemory(tmp_buff2 + (i << BSh),
                             (PVOID)WCacheSectorAddr(block_array, Lba0),
                             BS);
@@ -1061,10 +1099,10 @@ WCacheUpdatePacket(
         }
     }
 
-    if(Chained &&
+    if (Chained &&
        WContext->State == ASYNC_STATE_WRITE_PRE) {
         // Return if block is prepared for write and we are in chained mode.
-        if(!mod) {
+        if (!mod) {
             // Mark block as written if we have found that data in it
             // is not actually modified.
             WContext->State = ASYNC_STATE_DONE;
@@ -1078,21 +1116,21 @@ WCacheUpdatePacket(
     // If the check above reported some changes in packet
     // we should write packet out to media.
     // Otherwise, just complete request.
-    if(mod) {
+    if (mod) {
 try_write:
-        if(Async) {
+        if (Async) {
             WContext->State = ASYNC_STATE_WRITE;
             status = Cache->WriteProcAsync(Context, WContext, tmp_buff2, PS, Lba,
                                            &(WContext->TransferredBytes), FALSE);
             (*ReadBytes) = PS;
         } else {
-            status = Cache->WriteProc(Context, tmp_buff2, PS, Lba, ReadBytes, 0);
-            if(!OS_SUCCESS(status)) {
+            status = Cache->WriteProc(IrpContext, Context, tmp_buff2, PS, Lba, ReadBytes, 0);
+            if (!NT_SUCCESS(status)) {
                 status = WCacheRaiseIoError(Cache, Context, status, Lba, PSs, tmp_buff2, WCACHE_W_OP, NULL);
             }
         }
     } else {
-        if(Async)
+        if (Async)
             WCacheCompleteAsync__(WContext, STATUS_SUCCESS);
         (*ReadBytes) = PS;
         return STATUS_SUCCESS;
@@ -1120,7 +1158,7 @@ WCacheFreePacket(
     ULONG i;
     // mark as non-cached & free pool
     for(i=0; i<PSs; i++, offs++) {
-        if(WCacheSectorAddr(block_array,offs)) {
+        if (WCacheSectorAddr(block_array,offs)) {
             WCacheFreeSector(frame, offs);
         }
     }
@@ -1136,6 +1174,7 @@ WCacheFreePacket(
  */
 VOID
 WCacheUpdatePacketComplete(
+    IN PIRP_CONTEXT IrpContext,
     IN PW_CACHE Cache,        // pointer to the Cache Control structure
     IN PVOID Context,         // user-supplied context for IO callbacks
     IN OUT PW_CACHE_ASYNC* FirstWContext, // pointer to head async IO context
@@ -1144,7 +1183,7 @@ WCacheUpdatePacketComplete(
     )
 {
     PW_CACHE_ASYNC WContext = (*FirstWContext);
-    if(!WContext)
+    if (!WContext)
         return;
     PW_CACHE_ASYNC NextWContext;
     ULONG PS = Cache->BlockSize << Cache->PacketSizeSh; // packet size (bytes)
@@ -1156,25 +1195,25 @@ WCacheUpdatePacketComplete(
     // for completion of read operations.
     // Also invoke writes of already prepared packets.
     while(WContext) {
-        if(WContext->Cmd == ASYNC_CMD_UPDATE &&
+        if (WContext->Cmd == ASYNC_CMD_UPDATE &&
            WContext->State == ASYNC_STATE_READ) {
             // wait for async read for update
             DbgWaitForSingleObject(&(WContext->PhContext.event), NULL);
 
             WContext->State = ASYNC_STATE_WRITE;
-            WCacheUpdatePacket(Cache, Context, NULL, &WContext, NULL, -1, WContext->Lba, -1, -1,
+            WCacheUpdatePacket(IrpContext, Cache, Context, NULL, &WContext, NULL, -1, WContext->Lba, -1, -1,
                                PS, -1, &(WContext->TransferredBytes), TRUE, ASYNC_STATE_WRITE);
         } else
-        if(WContext->Cmd == ASYNC_CMD_UPDATE &&
+        if (WContext->Cmd == ASYNC_CMD_UPDATE &&
            WContext->State == ASYNC_STATE_WRITE_PRE) {
             // invoke physical write it the packet is prepared for writing
             // by previuous call to WCacheUpdatePacket()
             WContext->State = ASYNC_STATE_WRITE;
-            WCacheUpdatePacket(Cache, Context, NULL, &WContext, NULL, -1, WContext->Lba, -1, -1,
+            WCacheUpdatePacket(IrpContext, Cache, Context, NULL, &WContext, NULL, -1, WContext->Lba, -1, -1,
                                PS, -1, &(WContext->TransferredBytes), TRUE, ASYNC_STATE_WRITE);
             WContext->State = ASYNC_STATE_DONE;
         } else
-        if(WContext->Cmd == ASYNC_CMD_READ &&
+        if (WContext->Cmd == ASYNC_CMD_READ &&
            WContext->State == ASYNC_STATE_READ) {
             // wait for async read
             DbgWaitForSingleObject(&(WContext->PhContext.event), NULL);
@@ -1187,16 +1226,16 @@ WCacheUpdatePacketComplete(
     WContext = (*FirstWContext);
     while(WContext) {
         NextWContext = WContext->NextWContext;
-        if(WContext->Cmd == ASYNC_CMD_UPDATE &&
+        if (WContext->Cmd == ASYNC_CMD_UPDATE &&
            WContext->State == ASYNC_STATE_WRITE) {
 
-            if(!Cache->Chained)
+            if (!Cache->Chained)
                 DbgWaitForSingleObject(&(WContext->PhContext.event), NULL);
 
             frame = WContext->Lba >> Cache->BlocksPerFrameSh;
             firstLba = frame << Cache->BlocksPerFrameSh;
 
-            if(FreePacket) {
+            if (FreePacket) {
                 WCacheFreePacket(Cache, frame,
                                 Cache->FrameList[frame].Frame,
                                 WContext->Lba - firstLba, PSs);
@@ -1220,35 +1259,36 @@ WCacheUpdatePacketComplete(
   media type.
   Internal routine
  */
-OSSTATUS
+NTSTATUS
 __fastcall
 WCacheCheckLimits(
+    IN PIRP_CONTEXT IrpContext,
     IN PW_CACHE Cache,        // pointer to the Cache Control structure
     IN PVOID Context,         // user-supplied context for IO callbacks
     IN lba_t ReqLba,          // first LBA to access/cache
     IN ULONG BCount           // number of Blocks to access/cache
     )
 {
-/*    if(!Cache->FrameCount || !Cache->BlockCount) {
+/*    if (!Cache->FrameCount || !Cache->BlockCount) {
         ASSERT(!Cache->FrameCount);
         ASSERT(!Cache->BlockCount);
-        if(!Cache->FrameCount)
+        if (!Cache->FrameCount)
             return STATUS_SUCCESS;
     }*/
 
     // check if we have reached Frame or Block limit
-    if(!Cache->FrameCount && !Cache->BlockCount) {
+    if (!Cache->FrameCount && !Cache->BlockCount) {
         return STATUS_SUCCESS;
     }
 
     // check for empty frames
-    if(Cache->FrameCount > (Cache->MaxFrames*3)/4) {
+    if (Cache->FrameCount > (Cache->MaxFrames*3)/4) {
         ULONG frame;
         ULONG i;
         for(i=Cache->FrameCount; i>0; i--) {
             frame = Cache->CachedFramesList[i-1];
             // check if frame is empty
-            if(!(Cache->FrameList[frame].BlockCount)) {
+            if (!(Cache->FrameList[frame].BlockCount)) {
                 WCacheRemoveFrame(Cache, Context, frame);
             } else {
                 ASSERT(Cache->FrameList[frame].Frame);
@@ -1256,19 +1296,19 @@ WCacheCheckLimits(
         }
     }
 
-    if(!Cache->BlockCount) {
+    if (!Cache->BlockCount) {
         return STATUS_SUCCESS;
     }
 
     // invoke media-specific limit-checker
     switch(Cache->Mode) {
     case WCACHE_MODE_RAM:
-        return WCacheCheckLimitsRAM(Cache, Context, ReqLba, BCount);
+        return WCacheCheckLimitsRAM(IrpContext, Cache, Context, ReqLba, BCount);
     case WCACHE_MODE_ROM:
     case WCACHE_MODE_RW:
-        return WCacheCheckLimitsRW(Cache, Context, ReqLba, BCount);
+        return WCacheCheckLimitsRW(IrpContext, Cache, Context, ReqLba, BCount);
     case WCACHE_MODE_R:
-        return WCacheCheckLimitsR(Cache, Context, ReqLba, BCount);
+        return WCacheCheckLimitsR(IrpContext, Cache, Context, ReqLba, BCount);
     }
     return STATUS_DRIVER_INTERNAL_ERROR;
 } // end WCacheCheckLimits()
@@ -1281,9 +1321,10 @@ WCacheCheckLimits(
   See also WCacheCheckLimits()
   Internal routine
  */
-OSSTATUS
+NTSTATUS
 __fastcall
 WCacheCheckLimitsRW(
+    IN PIRP_CONTEXT IrpContext,
     IN PW_CACHE Cache,        // pointer to the Cache Control structure
     IN PVOID Context,         // user-supplied context for IO callbacks
     IN lba_t ReqLba,          // first LBA to access/cache
@@ -1304,7 +1345,7 @@ WCacheCheckLimitsRW(
     ULONG PSs = Cache->PacketSize;
     ULONG try_count = 0;
     PW_CACHE_ENTRY block_array;
-    OSSTATUS status;
+    NTSTATUS status;
     SIZE_T ReadBytes;
     ULONG FreeFrameCount = 0;
 //    PVOID addr;
@@ -1312,10 +1353,10 @@ WCacheCheckLimitsRW(
     PW_CACHE_ASYNC PrevWContext = NULL;
     ULONG chain_count = 0;
 
-    if(Cache->FrameCount >= Cache->MaxFrames) {
+    if (Cache->FrameCount >= Cache->MaxFrames) {
         FreeFrameCount = Cache->FramesToKeepFree;
     } else
-    if((Cache->BlockCount + WCacheGetSortedListIndex(Cache->BlockCount, List, ReqLba) +
+    if ((Cache->BlockCount + WCacheGetSortedListIndex(Cache->BlockCount, List, ReqLba) +
            BCount - WCacheGetSortedListIndex(Cache->BlockCount, List, ReqLba+BCount)) > Cache->MaxBlocks) {
         // we need free space to grow WCache without flushing data
         // for some period of time
@@ -1325,33 +1366,33 @@ WCacheCheckLimitsRW(
     // remove(flush) some frames
     while((Cache->FrameCount >= Cache->MaxFrames) || FreeFrameCount) {
 Try_Another_Frame:
-        if(!Cache->FrameCount || !Cache->BlockCount) {
+        if (!Cache->FrameCount || !Cache->BlockCount) {
             //ASSERT(!Cache->FrameCount);
-            if(Cache->FrameCount) {
+            if (Cache->FrameCount) {
                 UDFPrint(("ASSERT: Cache->FrameCount = %d, when 0 is expected\n", Cache->FrameCount));
             }
             ASSERT(!Cache->BlockCount);
-            if(!Cache->FrameCount)
+            if (!Cache->FrameCount)
                 break;
         }
 
         frame = WCacheFindFrameToRelease(Cache);
 #if 0
-        if(Cache->FrameList[frame].WriteCount) {
+        if (Cache->FrameList[frame].WriteCount) {
             try_count++;
-            if(try_count < MAX_TRIES_FOR_NA) goto Try_Another_Frame;
+            if (try_count < MAX_TRIES_FOR_NA) goto Try_Another_Frame;
         } else {
             try_count = 0;
         }
 #else
-        if(Cache->FrameList[frame].UpdateCount) {
+        if (Cache->FrameList[frame].UpdateCount) {
             try_count = MAX_TRIES_FOR_NA;
         } else {
             try_count = 0;
         }
 #endif
 
-        if(FreeFrameCount)
+        if (FreeFrameCount)
             FreeFrameCount--;
 
         firstLba = frame << Cache->BlocksPerFrameSh;
@@ -1360,7 +1401,7 @@ Try_Another_Frame:
         lastPos = WCacheGetSortedListIndex(Cache->BlockCount, List, lastLba);
         block_array = Cache->FrameList[frame].Frame;
 
-        if(!block_array) {
+        if (!block_array) {
             UDFPrint(("Hmm...\n"));
             BrutePoint();
             return STATUS_DRIVER_INTERNAL_ERROR;
@@ -1371,10 +1412,10 @@ Try_Another_Frame:
             Lba = List[firstPos] & ~(PSs-1);
 
             // write packet out or prepare and add to chain (if chained mode enabled)
-            status = WCacheUpdatePacket(Cache, Context, &FirstWContext, &PrevWContext, block_array, firstLba,
+            status = WCacheUpdatePacket(IrpContext, Cache, Context, &FirstWContext, &PrevWContext, block_array, firstLba,
                 Lba, BSh, BS, PS, PSs, &ReadBytes, TRUE, ASYNC_STATE_NONE);
 
-            if(status != STATUS_PENDING) {
+            if (status != STATUS_PENDING) {
                 // free memory
                 WCacheFreePacket(Cache, frame, block_array, Lba-firstLba, PSs);
             }
@@ -1385,8 +1426,8 @@ Try_Another_Frame:
             }
             chain_count++;
             // write chained packets
-            if(chain_count >= WCACHE_MAX_CHAIN) {
-                WCacheUpdatePacketComplete(Cache, Context, &FirstWContext, &PrevWContext, FALSE);
+            if (chain_count >= WCACHE_MAX_CHAIN) {
+                WCacheUpdatePacketComplete(IrpContext, Cache, Context, &FirstWContext, &PrevWContext, FALSE);
                 chain_count = 0;
             }
         }
@@ -1399,8 +1440,8 @@ Try_Another_Frame:
     }
 
     // check if we try to read too much data
-    if(BCount > Cache->MaxBlocks) {
-        WCacheUpdatePacketComplete(Cache, Context, &FirstWContext, &PrevWContext);
+    if (BCount > Cache->MaxBlocks) {
+        WCacheUpdatePacketComplete(IrpContext, Cache, Context, &FirstWContext, &PrevWContext);
         return STATUS_INVALID_PARAMETER;
     }
 
@@ -1411,7 +1452,7 @@ Try_Another_Frame:
 Try_Another_Block:
 
         Lba = WCacheFindLbaToRelease(Cache) & ~(PSs-1);
-        if(Lba == WCACHE_INVALID_LBA) {
+        if (Lba == WCACHE_INVALID_LBA) {
             ASSERT(!Cache->FrameCount);
             ASSERT(!Cache->BlockCount);
             break;
@@ -1421,18 +1462,18 @@ Try_Another_Block:
         firstPos = WCacheGetSortedListIndex(Cache->BlockCount, List, Lba);
         lastPos = WCacheGetSortedListIndex(Cache->BlockCount, List, Lba+PSs);
         block_array = Cache->FrameList[frame].Frame;
-        if(!block_array) {
+        if (!block_array) {
             // write already prepared blocks to disk and return error
-            WCacheUpdatePacketComplete(Cache, Context, &FirstWContext, &PrevWContext);
+            WCacheUpdatePacketComplete(IrpContext, Cache, Context, &FirstWContext, &PrevWContext);
             ASSERT(FALSE);
             return STATUS_DRIVER_INTERNAL_ERROR;
         }
 
         // write packet out or prepare and add to chain (if chained mode enabled)
-        status = WCacheUpdatePacket(Cache, Context, &FirstWContext, &PrevWContext, block_array, firstLba,
+        status = WCacheUpdatePacket(IrpContext, Cache, Context, &FirstWContext, &PrevWContext, block_array, firstLba,
             Lba, BSh, BS, PS, PSs, &ReadBytes, (try_count >= MAX_TRIES_FOR_NA), ASYNC_STATE_NONE);
 
-        if(status == STATUS_RETRY) {
+        if (status == STATUS_RETRY) {
             try_count++;
             goto Try_Another_Block;
         }
@@ -1444,24 +1485,25 @@ Try_Another_Block:
         ASSERT(ValidateFrameBlocksList(Cache, Lba));
         WCacheRemoveRangeFromList(Cache->CachedModifiedBlocksList, &(Cache->WriteCount), Lba, PSs);
         // check if frame is empty
-        if(!(Cache->FrameList[frame].BlockCount)) {
+        if (!(Cache->FrameList[frame].BlockCount)) {
             WCacheRemoveFrame(Cache, Context, frame);
         } else {
             ASSERT(Cache->FrameList[frame].Frame);
         }
         chain_count++;
-        if(chain_count >= WCACHE_MAX_CHAIN) {
-            WCacheUpdatePacketComplete(Cache, Context, &FirstWContext, &PrevWContext, FALSE);
+        if (chain_count >= WCACHE_MAX_CHAIN) {
+            WCacheUpdatePacketComplete(IrpContext, Cache, Context, &FirstWContext, &PrevWContext, FALSE);
             chain_count = 0;
         }
     }
-    WCacheUpdatePacketComplete(Cache, Context, &FirstWContext, &PrevWContext);
+    WCacheUpdatePacketComplete(IrpContext, Cache, Context, &FirstWContext, &PrevWContext);
     return STATUS_SUCCESS;
 } // end WCacheCheckLimitsRW()
 
-OSSTATUS
+NTSTATUS
 __fastcall
 WCacheFlushBlocksRAM(
+    IN PIRP_CONTEXT IrpContext,
     IN PW_CACHE Cache,        // pointer to the Cache Control structure
     IN PVOID Context,         // user-supplied context for IO callbacks
     PW_CACHE_ENTRY block_array,
@@ -1482,7 +1524,7 @@ WCacheFlushBlocksRAM(
 //    ULONG PS = BS << Cache->PacketSizeSh; // packet size (bytes)
     ULONG PSs = Cache->PacketSize;
     SIZE_T _WrittenBytes;
-    OSSTATUS status = STATUS_SUCCESS;
+    NTSTATUS status = STATUS_SUCCESS;
 
     frame = List[firstPos] >> Cache->BlocksPerFrameSh;
     firstLba = frame << Cache->BlocksPerFrameSh;
@@ -1491,9 +1533,9 @@ WCacheFlushBlocksRAM(
         // flush blocks
         ASSERT(Cache->FrameCount <= Cache->MaxFrames);
         Lba = List[firstPos];
-        if(!WCacheGetModFlag(block_array, Lba - firstLba)) {
+        if (!WCacheGetModFlag(block_array, Lba - firstLba)) {
             // free memory
-            if(Purge) {
+            if (Purge) {
                 WCacheFreePacket(Cache, frame, block_array, Lba-firstLba, 1);
             }
             firstPos++;
@@ -1505,16 +1547,16 @@ WCacheFlushBlocksRAM(
         while((firstPos+n < lastPos) &&
               (List[firstPos+n] == PrevLba+1)) {
             PrevLba++;
-            if(!WCacheGetModFlag(block_array, PrevLba - firstLba))
+            if (!WCacheGetModFlag(block_array, PrevLba - firstLba))
                 break;
             DbgCopyMemory(tmp_buff + (n << BSh),
                         (PVOID)WCacheSectorAddr(block_array, PrevLba - firstLba),
                         BS);
             n++;
-            if(n >= PSs)
+            if (n >= PSs)
                 break;
         }
-        if(n > 1) {
+        if (n > 1) {
             DbgCopyMemory(tmp_buff,
                         (PVOID)WCacheSectorAddr(block_array, Lba - firstLba),
                         BS);
@@ -1522,15 +1564,15 @@ WCacheFlushBlocksRAM(
             tmp_buff = (PCHAR)WCacheSectorAddr(block_array, Lba - firstLba);
         }
         // write sectors out
-        status = Cache->WriteProc(Context, tmp_buff, n<<BSh, Lba, &_WrittenBytes, 0);
-        if(!OS_SUCCESS(status)) {
+        status = Cache->WriteProc(IrpContext, Context, tmp_buff, n<<BSh, Lba, &_WrittenBytes, 0);
+        if (!NT_SUCCESS(status)) {
             status = WCacheRaiseIoError(Cache, Context, status, Lba, n, tmp_buff, WCACHE_W_OP, NULL);
-            if(!OS_SUCCESS(status)) {
+            if (!NT_SUCCESS(status)) {
                 BrutePoint();
             }
         }
         firstPos += n;
-        if(Purge) {
+        if (Purge) {
             // free memory
             WCacheFreePacket(Cache, frame, block_array, Lba-firstLba, n);
         } else {
@@ -1553,9 +1595,10 @@ WCacheFlushBlocksRAM(
   See also WCacheCheckLimits()
   Internal routine
  */
-OSSTATUS
+NTSTATUS
 __fastcall
 WCacheCheckLimitsRAM(
+    IN PIRP_CONTEXT IrpContext,
     IN PW_CACHE Cache,        // pointer to the Cache Control structure
     IN PVOID Context,         // user-supplied context for IO callbacks
     IN lba_t ReqLba,          // first LBA to access/cache
@@ -1576,14 +1619,14 @@ WCacheCheckLimitsRAM(
     ULONG PSs = Cache->PacketSize;
 //    ULONG try_count = 0;
     PW_CACHE_ENTRY block_array;
-//    OSSTATUS status;
+//    NTSTATUS status;
     ULONG FreeFrameCount = 0;
 //    PVOID addr;
 
-    if(Cache->FrameCount >= Cache->MaxFrames) {
+    if (Cache->FrameCount >= Cache->MaxFrames) {
         FreeFrameCount = Cache->FramesToKeepFree;
     } else
-    if((Cache->BlockCount + WCacheGetSortedListIndex(Cache->BlockCount, List, ReqLba) +
+    if ((Cache->BlockCount + WCacheGetSortedListIndex(Cache->BlockCount, List, ReqLba) +
            BCount - WCacheGetSortedListIndex(Cache->BlockCount, List, ReqLba+BCount)) > Cache->MaxBlocks) {
         // we need free space to grow WCache without flushing data
         // for some period of time
@@ -1594,24 +1637,24 @@ WCacheCheckLimitsRAM(
     while((Cache->FrameCount >= Cache->MaxFrames) || FreeFrameCount) {
         ASSERT(Cache->FrameCount <= Cache->MaxFrames);
 Try_Another_Frame:
-        if(!Cache->FrameCount || !Cache->BlockCount) {
+        if (!Cache->FrameCount || !Cache->BlockCount) {
             ASSERT(!Cache->FrameCount);
             ASSERT(!Cache->BlockCount);
-            if(!Cache->FrameCount)
+            if (!Cache->FrameCount)
                 break;
         }
 
         frame = WCacheFindFrameToRelease(Cache);
 #if 0
-        if(Cache->FrameList[frame].WriteCount) {
+        if (Cache->FrameList[frame].WriteCount) {
             try_count++;
-            if(try_count < MAX_TRIES_FOR_NA) goto Try_Another_Frame;
+            if (try_count < MAX_TRIES_FOR_NA) goto Try_Another_Frame;
         } else {
             try_count = 0;
         }
 #else
 /*
-        if(Cache->FrameList[frame].UpdateCount) {
+        if (Cache->FrameList[frame].UpdateCount) {
             try_count = MAX_TRIES_FOR_NA;
         } else {
             try_count = 0;
@@ -1619,7 +1662,7 @@ Try_Another_Frame:
 */
 #endif
 
-        if(FreeFrameCount)
+        if (FreeFrameCount)
             FreeFrameCount--;
 
         firstLba = frame << Cache->BlocksPerFrameSh;
@@ -1628,12 +1671,12 @@ Try_Another_Frame:
         lastPos = WCacheGetSortedListIndex(Cache->BlockCount, List, lastLba);
         block_array = Cache->FrameList[frame].Frame;
 
-        if(!block_array) {
+        if (!block_array) {
             UDFPrint(("Hmm...\n"));
             BrutePoint();
             return STATUS_DRIVER_INTERNAL_ERROR;
         }
-        WCacheFlushBlocksRAM(Cache, Context, block_array, List, firstPos, lastPos, TRUE);
+        WCacheFlushBlocksRAM(IrpContext, Cache, Context, block_array, List, firstPos, lastPos, TRUE);
 
         WCacheRemoveRangeFromList(List, &(Cache->BlockCount), firstLba, Cache->BlocksPerFrame);
         ASSERT(ValidateFrameBlocksList(Cache, firstLba));
@@ -1643,7 +1686,7 @@ Try_Another_Frame:
     }
 
     // check if we try to read too much data
-    if(BCount > Cache->MaxBlocks) {
+    if (BCount > Cache->MaxBlocks) {
         return STATUS_INVALID_PARAMETER;
     }
 
@@ -1655,7 +1698,7 @@ Try_Another_Frame:
 
         ASSERT(Cache->FrameCount <= Cache->MaxFrames);
         Lba = WCacheFindLbaToRelease(Cache) & ~(PSs-1);
-        if(Lba == WCACHE_INVALID_LBA) {
+        if (Lba == WCACHE_INVALID_LBA) {
             ASSERT(!Cache->FrameCount);
             ASSERT(!Cache->BlockCount);
             break;
@@ -1665,16 +1708,16 @@ Try_Another_Frame:
         firstPos = WCacheGetSortedListIndex(Cache->BlockCount, List, Lba);
         lastPos = WCacheGetSortedListIndex(Cache->BlockCount, List, Lba+PSs);
         block_array = Cache->FrameList[frame].Frame;
-        if(!block_array) {
+        if (!block_array) {
             ASSERT(FALSE);
             return STATUS_DRIVER_INTERNAL_ERROR;
         }
-        WCacheFlushBlocksRAM(Cache, Context, block_array, List, firstPos, lastPos, TRUE);
+        WCacheFlushBlocksRAM(IrpContext, Cache, Context, block_array, List, firstPos, lastPos, TRUE);
         WCacheRemoveRangeFromList(List, &(Cache->BlockCount), Lba, PSs);
         ASSERT(ValidateFrameBlocksList(Cache, Lba));
         WCacheRemoveRangeFromList(Cache->CachedModifiedBlocksList, &(Cache->WriteCount), Lba, PSs);
         // check if frame is empty
-        if(!(Cache->FrameList[frame].BlockCount)) {
+        if (!(Cache->FrameList[frame].BlockCount)) {
             WCacheRemoveFrame(Cache, Context, frame);
         } else {
             ASSERT(Cache->FrameList[frame].Frame);
@@ -1687,9 +1730,10 @@ Try_Another_Frame:
   WCachePurgeAllRAM()
   Internal routine
  */
-OSSTATUS
+NTSTATUS
 __fastcall
 WCachePurgeAllRAM(
+    IN PIRP_CONTEXT IrpContext,
     IN PW_CACHE Cache,        // pointer to the Cache Control structure
     IN PVOID Context          // user-supplied context for IO callbacks
     )
@@ -1701,7 +1745,7 @@ WCachePurgeAllRAM(
     ULONG firstPos;
     ULONG lastPos;
     PW_CACHE_ENTRY block_array;
-//    OSSTATUS status;
+//    NTSTATUS status;
 
     // remove(flush) some frames
     while(Cache->FrameCount) {
@@ -1714,12 +1758,12 @@ WCachePurgeAllRAM(
         lastPos = WCacheGetSortedListIndex(Cache->BlockCount, List, lastLba);
         block_array = Cache->FrameList[frame].Frame;
 
-        if(!block_array) {
+        if (!block_array) {
             UDFPrint(("Hmm...\n"));
             BrutePoint();
             return STATUS_DRIVER_INTERNAL_ERROR;
         }
-        WCacheFlushBlocksRAM(Cache, Context, block_array, List, firstPos, lastPos, TRUE);
+        WCacheFlushBlocksRAM(IrpContext, Cache, Context, block_array, List, firstPos, lastPos, TRUE);
 
         WCacheRemoveRangeFromList(List, &(Cache->BlockCount), firstLba, Cache->BlocksPerFrame);
         ASSERT(ValidateFrameBlocksList(Cache, firstLba));
@@ -1736,9 +1780,10 @@ WCachePurgeAllRAM(
   WCacheFlushAllRAM()
   Internal routine
  */
-OSSTATUS
+NTSTATUS
 __fastcall
 WCacheFlushAllRAM(
+    IN PIRP_CONTEXT IrpContext,
     IN PW_CACHE Cache,        // pointer to the Cache Control structure
     IN PVOID Context          // user-supplied context for IO callbacks
     )
@@ -1750,7 +1795,7 @@ WCacheFlushAllRAM(
     ULONG firstPos;
     ULONG lastPos;
     PW_CACHE_ENTRY block_array;
-//    OSSTATUS status;
+//    NTSTATUS status;
 
     // flush frames
     while(Cache->WriteCount) {
@@ -1763,12 +1808,12 @@ WCacheFlushAllRAM(
         lastPos = WCacheGetSortedListIndex(Cache->BlockCount, List, lastLba);
         block_array = Cache->FrameList[frame].Frame;
 
-        if(!block_array) {
+        if (!block_array) {
             UDFPrint(("Hmm...\n"));
             BrutePoint();
             return STATUS_DRIVER_INTERNAL_ERROR;
         }
-        WCacheFlushBlocksRAM(Cache, Context, block_array, List, firstPos, lastPos, FALSE);
+        WCacheFlushBlocksRAM(IrpContext, Cache, Context, block_array, List, firstPos, lastPos, FALSE);
 
         WCacheRemoveRangeFromList(Cache->CachedModifiedBlocksList, &(Cache->WriteCount), firstLba, Cache->BlocksPerFrame);
     }
@@ -1783,15 +1828,16 @@ WCacheFlushAllRAM(
   In general we have no user buffer here... ;)
   Public routine
 */
-OSSTATUS
+NTSTATUS
 WCachePreReadPacket__(
+    IN PIRP_CONTEXT IrpContext,
     IN PW_CACHE Cache,        // pointer to the Cache Control structure
     IN PVOID Context,         // user-supplied context for IO callbacks
     IN lba_t Lba              // LBA to cache together with whole packet
     )
 {
     ULONG frame;
-    OSSTATUS status = STATUS_SUCCESS;
+    NTSTATUS status = STATUS_SUCCESS;
     PW_CACHE_ENTRY block_array;
     ULONG BSh = Cache->BlockSizeSh;
     ULONG BS = Cache->BlockSize;
@@ -1814,10 +1860,10 @@ WCachePreReadPacket__(
 
     // assume successful operation
     block_array = Cache->FrameList[frame].Frame;
-    if(!block_array) {
+    if (!block_array) {
         ASSERT(Cache->FrameCount < Cache->MaxFrames);
-        block_array = WCacheInitFrame(Cache, Context, frame);
-        if(!block_array)
+        block_array = WCacheInitFrame(IrpContext, Cache, Context, frame);
+        if (!block_array)
             return STATUS_INSUFFICIENT_RESOURCES;
     }
 
@@ -1828,22 +1874,22 @@ WCachePreReadPacket__(
 
         addr = (PCHAR)WCacheSectorAddr(block_array, i+n);
         block_type = Cache->CheckUsedProc(Context, Lba+n);
-        if(/*WCacheGetBadFlag(block_array,i+n)*/
+        if (/*WCacheGetBadFlag(block_array,i+n)*/
            block_type & WCACHE_BLOCK_BAD) {
             // bad packet. no pre-read
             return STATUS_DEVICE_DATA_ERROR;
         }
-        if(!(block_type & WCACHE_BLOCK_ZERO)) {
+        if (!(block_type & WCACHE_BLOCK_ZERO)) {
             zero = FALSE;
             //count_first_zero = FALSE;
             //last_zero = 0;
-            if(!addr) {
+            if (!addr) {
                 // sector is not cached, stop search
                 break;
             }
         } else {
 /*
-            if(count_first_zero) {
+            if (count_first_zero) {
                 first_zero++;
             }
             last_zero++;
@@ -1852,12 +1898,12 @@ WCachePreReadPacket__(
         n++;
     }
     // do nothing if all sectors are already cached
-    if(n < BCount) {
+    if (n < BCount) {
 
         // read whole packet
-        if(!zero) {
-            status = Cache->ReadProc(Context, Cache->tmp_buff_r, PS<<BSh, Lba, &_ReadBytes, PH_TMP_BUFFER);
-            if(!OS_SUCCESS(status)) {
+        if (!zero) {
+            status = Cache->ReadProc(IrpContext, Context, Cache->tmp_buff_r, PS<<BSh, Lba, &_ReadBytes, PH_TMP_BUFFER);
+            if (!NT_SUCCESS(status)) {
                 status = WCacheRaiseIoError(Cache, Context, status, Lba, PS, Cache->tmp_buff_r, WCACHE_R_OP, NULL);
             }
         } else {
@@ -1865,20 +1911,20 @@ WCachePreReadPacket__(
             //RtlZeroMemory(Cache->tmp_buff_r, PS<<BSh);
             _ReadBytes = PS<<BSh;
         }
-        if(OS_SUCCESS(status)) {
+        if (NT_SUCCESS(status)) {
             // and now we'll copy them to cache
             for(n=0; n<BCount; n++, i++) {
-                if(WCacheSectorAddr(block_array,i)) {
+                if (WCacheSectorAddr(block_array,i)) {
                     continue;
                 }
                 ASSERT(block_array[i].Sector == NULL);
                 addr = block_array[i].Sector = (PCHAR)DbgAllocatePoolWithTag(CACHED_BLOCK_MEMORY_TYPE, BS, MEM_WCBUF_TAG);
-                if(!addr) {
+                if (!addr) {
                     BrutePoint();
                     break;
                 }
                 sector_added = TRUE;
-                if(!zero) {
+                if (!zero) {
                     DbgCopyMemory(addr, Cache->tmp_buff_r+(n<<BSh), BS);
                 } else {
                     RtlZeroMemory(addr, BS);
@@ -1890,36 +1936,36 @@ WCachePreReadPacket__(
             // unreadable sectors will be treated as zero-filled
             err_count = 0;
             for(n=0; n<BCount; n++, i++) {
-                if(WCacheSectorAddr(block_array,i)) {
+                if (WCacheSectorAddr(block_array,i)) {
                     continue;
                 }
                 ASSERT(block_array[i].Sector == NULL);
                 addr = block_array[i].Sector = (PCHAR)DbgAllocatePoolWithTag(CACHED_BLOCK_MEMORY_TYPE, BS, MEM_WCBUF_TAG);
-                if(!addr) {
+                if (!addr) {
                     BrutePoint();
                     break;
                 }
                 sector_added = TRUE;
-                status = Cache->ReadProc(Context, Cache->tmp_buff_r, BS, Lba+n, &_ReadBytes, PH_TMP_BUFFER);
-                if(!OS_SUCCESS(status)) {
+                status = Cache->ReadProc(IrpContext, Context, Cache->tmp_buff_r, BS, Lba+n, &_ReadBytes, PH_TMP_BUFFER);
+                if (!NT_SUCCESS(status)) {
                     status = WCacheRaiseIoError(Cache, Context, status, Lba+n, 1, Cache->tmp_buff_r, WCACHE_R_OP, NULL);
-                    if(!OS_SUCCESS(status)) {
+                    if (!NT_SUCCESS(status)) {
                         err_count++;
                     }
                 }
-                if(!zero && OS_SUCCESS(status)) {
+                if (!zero && NT_SUCCESS(status)) {
                     DbgCopyMemory(addr, Cache->tmp_buff_r, BS);
                 } else
-                if(Cache->RememberBB) {
+                if (Cache->RememberBB) {
                     RtlZeroMemory(addr, BS);
                     /*
-                    if(!OS_SUCCESS(status)) {
+                    if (!NT_SUCCESS(status)) {
                         WCacheSetBadFlag(block_array,i);
                     }
                     */
                 }
                 Cache->FrameList[frame].BlockCount++;
-                if(err_count >= 2) {
+                if (err_count >= 2) {
                     break;
                 }
             }
@@ -1930,7 +1976,7 @@ WCachePreReadPacket__(
     // we know the number of unread sectors if an error occured
     // so we can need to update BlockCount
     // return number of read bytes
-    if(sector_added) {
+    if (sector_added) {
         WCacheInsertRangeToList(Cache->CachedBlocksList, &(Cache->BlockCount), Lba, n);
         ASSERT(ValidateFrameBlocksList(Cache, Lba));
     }
@@ -1943,8 +1989,9 @@ WCachePreReadPacket__(
   read it form media and store in cache.
   Public routine
  */
-OSSTATUS
+NTSTATUS
 WCacheReadBlocks__(
+    IN PIRP_CONTEXT IrpContext,
     IN PW_CACHE Cache,        // pointer to the Cache Control structure
     IN PVOID Context,         // user-supplied context for IO callbacks
     IN PCHAR Buffer,          // user-supplied buffer for read blocks
@@ -1957,7 +2004,7 @@ WCacheReadBlocks__(
 {
     ULONG frame;
     ULONG i, saved_i, saved_BC = BCount, n;
-    OSSTATUS status = STATUS_SUCCESS;
+    NTSTATUS status = STATUS_SUCCESS;
     PW_CACHE_ENTRY block_array;
     ULONG BSh = Cache->BlockSizeSh;
     SIZE_T BS = Cache->BlockSize;
@@ -1975,16 +2022,16 @@ WCacheReadBlocks__(
 
     (*ReadBytes) = 0;
     // check if we try to read too much data
-    if(BCount >= Cache->MaxBlocks) {
+    if (BCount >= Cache->MaxBlocks) {
         i = 0;
-        if(CachedOnly) {
+        if (CachedOnly) {
             status = STATUS_INVALID_PARAMETER;
             goto EO_WCache_R2;
         }
         while(TRUE) {
-            status = WCacheReadBlocks__(Cache, Context, Buffer + (i<<BSh), Lba, PS, &_ReadBytes, FALSE);
+            status = WCacheReadBlocks__(IrpContext, Cache, Context, Buffer + (i<<BSh), Lba, PS, &_ReadBytes, FALSE);
             (*ReadBytes) += _ReadBytes;
-            if(!OS_SUCCESS(status) || (BCount <= PS)) break;
+            if (!NT_SUCCESS(status) || (BCount <= PS)) break;
             BCount -= PS;
             Lba += PS;
             i += PS;
@@ -1992,57 +2039,57 @@ WCacheReadBlocks__(
         return status;
     }
     // check if we try to access beyond cached area
-    if((Lba < Cache->FirstLba) ||
+    if ((Lba < Cache->FirstLba) ||
        (Lba + BCount - 1 > Cache->LastLba)) {
-        status = Cache->ReadProc(Context, Buffer, BCount, Lba, ReadBytes, 0);
-        if(!OS_SUCCESS(status)) {
+        status = Cache->ReadProc(IrpContext, Context, Buffer, BCount, Lba, ReadBytes, 0);
+        if (!NT_SUCCESS(status)) {
             status = WCacheRaiseIoError(Cache, Context, status, Lba, BCount, Buffer, WCACHE_R_OP, NULL);
         }
         return status;
     }
-    if(!CachedOnly) {
+    if (!CachedOnly) {
         ExAcquireResourceExclusiveLite(&(Cache->WCacheLock), TRUE);
     }
 
     frame = Lba >> Cache->BlocksPerFrameSh;
     i = Lba - (frame << Cache->BlocksPerFrameSh);
 
-    if(Cache->CacheWholePacket && (BCount < PS)) {
-        if(!CachedOnly &&
-           !OS_SUCCESS(status = WCacheCheckLimits(Cache, Context, Lba & ~(PS-1), PS*2)) ) {
+    if (Cache->CacheWholePacket && (BCount < PS)) {
+        if (!CachedOnly &&
+           !NT_SUCCESS(status = WCacheCheckLimits(IrpContext, Cache, Context, Lba & ~(PS-1), PS*2)) ) {
             ExReleaseResourceForThreadLite(&(Cache->WCacheLock), ExGetCurrentResourceThread());
             return status;
         }
     } else {
-        if(!CachedOnly &&
-           !OS_SUCCESS(status = WCacheCheckLimits(Cache, Context, Lba, BCount))) {
+        if (!CachedOnly &&
+           !NT_SUCCESS(status = WCacheCheckLimits(IrpContext, Cache, Context, Lba, BCount))) {
             ExReleaseResourceForThreadLite(&(Cache->WCacheLock), ExGetCurrentResourceThread());
             return status;
         }
     }
-    if(!CachedOnly) {
+    if (!CachedOnly) {
         // convert to shared
 //        ExConvertExclusiveToSharedLite(&(Cache->WCacheLock));
     }
 
     // pre-read packet. It is very useful for
     // highly fragmented files
-    if(Cache->CacheWholePacket && (BCount < PS)) {
+    if (Cache->CacheWholePacket && (BCount < PS)) {
 //        status = WCacheReadBlocks__(Cache, Context, Cache->tmp_buff_r, Lba & (~PacketMask), PS, &_ReadBytes, TRUE);
         // we should not perform IO if user requested CachedOnly data
-        if(!CachedOnly) {
-            status = WCachePreReadPacket__(Cache, Context, Lba);
+        if (!CachedOnly) {
+            status = WCachePreReadPacket__(IrpContext, Cache, Context, Lba);
         }
         status = STATUS_SUCCESS;
     }
 
     // assume successful operation
     block_array = Cache->FrameList[frame].Frame;
-    if(!block_array) {
+    if (!block_array) {
         ASSERT(!CachedOnly);
         ASSERT(Cache->FrameCount < Cache->MaxFrames);
-        block_array = WCacheInitFrame(Cache, Context, frame);
-        if(!block_array) {
+        block_array = WCacheInitFrame(IrpContext, Cache, Context, frame);
+        if (!block_array) {
             status = STATUS_INSUFFICIENT_RESOURCES;
             goto EO_WCache_R;
         }
@@ -2050,15 +2097,15 @@ WCacheReadBlocks__(
 
     Cache->FrameList[frame].AccessCount++;
     while(BCount) {
-        if(i >= Cache->BlocksPerFrame) {
+        if (i >= Cache->BlocksPerFrame) {
             frame++;
             block_array = Cache->FrameList[frame].Frame;
             i -= Cache->BlocksPerFrame;
         }
-        if(!block_array) {
+        if (!block_array) {
             ASSERT(Cache->FrameCount < Cache->MaxFrames);
-            block_array = WCacheInitFrame(Cache, Context, frame);
-            if(!block_array) {
+            block_array = WCacheInitFrame(IrpContext, Cache, Context, frame);
+            if (!block_array) {
                 status = STATUS_INSUFFICIENT_RESOURCES;
                 goto EO_WCache_R;
             }
@@ -2069,8 +2116,8 @@ WCacheReadBlocks__(
               (i < Cache->BlocksPerFrame) &&
               (addr = (PCHAR)WCacheSectorAddr(block_array, i)) ) {
             block_type = Cache->CheckUsedProc(Context, Lba+saved_BC-BCount);
-            if(block_type & WCACHE_BLOCK_BAD) {
-            //if(WCacheGetBadFlag(block_array,i)) {
+            if (block_type & WCACHE_BLOCK_BAD) {
+            //if (WCacheGetBadFlag(block_array,i)) {
                 status = STATUS_DEVICE_DATA_ERROR;
                 goto EO_WCache_R;
             }
@@ -2082,7 +2129,7 @@ WCacheReadBlocks__(
         }
         // read non-cached packet-size-aligned extent (if any)
         // now we'll calculate total length & decide if it has enough size
-        if(!((d = Lba+saved_BC-BCount) & PacketMask) && d ) {
+        if (!((d = Lba+saved_BC-BCount) & PacketMask) && d ) {
             n = 0;
             while(BCount &&
                   (i < Cache->BlocksPerFrame) &&
@@ -2092,10 +2139,10 @@ WCacheReadBlocks__(
             }
             BCount += n;
             n &= ~PacketMask;
-            if(n>PS) {
-                if(!OS_SUCCESS(status = Cache->ReadProc(Context, Buffer, BS*n, Lba+saved_BC-BCount, &_ReadBytes, 0))) {
+            if (n>PS) {
+                if (!NT_SUCCESS(status = Cache->ReadProc(IrpContext, Context, Buffer, BS*n, Lba+saved_BC-BCount, &_ReadBytes, 0))) {
                     status = WCacheRaiseIoError(Cache, Context, status, Lba+saved_BC-BCount, n, Buffer, WCACHE_R_OP, NULL);
-                    if(!OS_SUCCESS(status)) {
+                    if (!NT_SUCCESS(status)) {
                         goto EO_WCache_R;
                     }
                 }
@@ -2125,19 +2172,19 @@ WCacheReadBlocks__(
             d--;
         }
         // read some not cached sectors
-        if(to_read) {
+        if (to_read) {
             i = saved_i;
             saved_to_read = to_read;
             d = BCount - d;
             // split request if necessary
-            if(saved_to_read > MaxR) {
+            if (saved_to_read > MaxR) {
                 WCacheInsertRangeToList(Cache->CachedBlocksList, &(Cache->BlockCount), Lba, saved_BC - BCount);
                 ASSERT(ValidateFrameBlocksList(Cache, Lba));
                 n = MaxR >> BSh;
                 do {
-                    status = Cache->ReadProc(Context, Buffer, MaxR, i + (frame << Cache->BlocksPerFrameSh), &_ReadBytes, 0);
+                    status = Cache->ReadProc(IrpContext, Context, Buffer, MaxR, i + (frame << Cache->BlocksPerFrameSh), &_ReadBytes, 0);
                     *ReadBytes += _ReadBytes;
-                    if(!OS_SUCCESS(status)) {
+                    if (!NT_SUCCESS(status)) {
                         _ReadBytes &= ~(BS-1);
                         BCount -= _ReadBytes >> BSh;
                         saved_to_read -= _ReadBytes;
@@ -2158,10 +2205,10 @@ WCacheReadBlocks__(
                 // causing WCacheFlushBlocksRAM to not release all sectors and to delete a block without freeing the memory.
                 //saved_BC = BCount; 
             }
-            if(saved_to_read) {
-                status = Cache->ReadProc(Context, Buffer, saved_to_read, i + (frame << Cache->BlocksPerFrameSh), &_ReadBytes, 0);
+            if (saved_to_read) {
+                status = Cache->ReadProc(IrpContext, Context, Buffer, saved_to_read, i + (frame << Cache->BlocksPerFrameSh), &_ReadBytes, 0);
                 *ReadBytes += _ReadBytes;
-                if(!OS_SUCCESS(status)) {
+                if (!NT_SUCCESS(status)) {
                     _ReadBytes &= ~(BS-1);
                     BCount -= _ReadBytes >> BSh;
                     saved_to_read -= _ReadBytes;
@@ -2182,7 +2229,7 @@ store_read_data_1:
             while(to_read - saved_to_read) {
                 ASSERT(block_array[i].Sector == NULL);
                 block_array[i].Sector = (PCHAR)DbgAllocatePoolWithTag(CACHED_BLOCK_MEMORY_TYPE, BS, MEM_WCBUF_TAG);
-                if(!block_array[i].Sector) {
+                if (!block_array[i].Sector) {
                     BCount += to_read >> BSh;
                     status = STATUS_INSUFFICIENT_RESOURCES;
                     goto EO_WCache_R;
@@ -2193,7 +2240,7 @@ store_read_data_1:
                 Buffer += BS;
                 to_read -= BS;
             }
-            if(!OS_SUCCESS(status))
+            if (!NT_SUCCESS(status))
                 goto EO_WCache_R;
             to_read = 0;
         }
@@ -2208,7 +2255,7 @@ EO_WCache_R:
     ASSERT(ValidateFrameBlocksList(Cache, Lba));
 //    Cache->FrameList[frame].BlockCount -= BCount;
 EO_WCache_R2:
-    if(!CachedOnly) {
+    if (!CachedOnly) {
         ExReleaseResourceForThreadLite(&(Cache->WCacheLock), ExGetCurrentResourceThread());
     }
 
@@ -2222,8 +2269,9 @@ EO_WCache_R2:
   2) requested Lba(s) lays beyond cached area
   Public routine
  */
-OSSTATUS
+NTSTATUS
 WCacheWriteBlocks__(
+    IN PIRP_CONTEXT IrpContext,
     IN PW_CACHE Cache,        // pointer to the Cache Control structure
     IN PVOID Context,         // user-supplied context for IO callbacks
     IN PCHAR Buffer,          // user-supplied buffer containing data to be written
@@ -2236,7 +2284,7 @@ WCacheWriteBlocks__(
 {
     ULONG frame;
     ULONG i, saved_BC = BCount, n, d;
-    OSSTATUS status = STATUS_SUCCESS;
+    NTSTATUS status = STATUS_SUCCESS;
     PW_CACHE_ENTRY block_array;
     ULONG BSh = Cache->BlockSizeSh;
     ULONG BS = Cache->BlockSize;
@@ -2257,51 +2305,51 @@ WCacheWriteBlocks__(
     *WrittenBytes = 0;
 //    UDFPrint(("BCount:%x\n",BCount));
     // check if we try to read too much data
-    if(BCount >= Cache->MaxBlocks) {
+    if (BCount >= Cache->MaxBlocks) {
         i = 0;
-        if(CachedOnly) {
+        if (CachedOnly) {
             status = STATUS_INVALID_PARAMETER;
             goto EO_WCache_W2;
         }
         while(TRUE) {
 //            UDFPrint(("  BCount:%x\n",BCount));
-            status = WCacheWriteBlocks__(Cache, Context, Buffer + (i<<BSh), Lba, min(PS,BCount), &_WrittenBytes, FALSE);
+            status = WCacheWriteBlocks__(IrpContext, Cache, Context, Buffer + (i<<BSh), Lba, min(PS,BCount), &_WrittenBytes, FALSE);
             (*WrittenBytes) += _WrittenBytes;
             BCount -= PS;
             Lba += PS;
             i += PS;
-            if(!OS_SUCCESS(status) || (BCount < PS))
+            if (!NT_SUCCESS(status) || (BCount < PS))
                 return status;
         }
     }
     // check if we try to access beyond cached area
-    if((Lba < Cache->FirstLba) ||
+    if ((Lba < Cache->FirstLba) ||
        (Lba + BCount - 1 > Cache->LastLba)) {
         return STATUS_INVALID_PARAMETER;
     }
-    if(!CachedOnly) {
+    if (!CachedOnly) {
         ExAcquireResourceExclusiveLite(&(Cache->WCacheLock), TRUE);
     }
 
     frame = Lba >> Cache->BlocksPerFrameSh;
     i = Lba - (frame << Cache->BlocksPerFrameSh);
 
-    if(!CachedOnly &&
-       !OS_SUCCESS(status = WCacheCheckLimits(Cache, Context, Lba, BCount))) {
+    if (!CachedOnly &&
+       !NT_SUCCESS(status = WCacheCheckLimits(IrpContext, Cache, Context, Lba, BCount))) {
         ExReleaseResourceForThreadLite(&(Cache->WCacheLock), ExGetCurrentResourceThread());
         return status;
     }
 
     // assume successful operation
     block_array = Cache->FrameList[frame].Frame;
-    if(!block_array) {
+    if (!block_array) {
 
-        if(BCount && !(BCount & (PS-1)) && !(Lba & (PS-1)) &&
+        if (BCount && !(BCount & (PS-1)) && !(Lba & (PS-1)) &&
            (Cache->Mode != WCACHE_MODE_R) &&
            (i+BCount <= Cache->BlocksPerFrame) &&
             !Cache->NoWriteThrough) {
-            status = Cache->WriteProc(Context, Buffer, BCount<<BSh, Lba, WrittenBytes, 0);
-            if(!OS_SUCCESS(status)) {
+            status = Cache->WriteProc(IrpContext, Context, Buffer, BCount<<BSh, Lba, WrittenBytes, 0);
+            if (!NT_SUCCESS(status)) {
                 status = WCacheRaiseIoError(Cache, Context, status, Lba, BCount, Buffer, WCACHE_W_OP, NULL);
             }
             goto EO_WCache_W2;
@@ -2309,14 +2357,14 @@ WCacheWriteBlocks__(
 
         ASSERT(!CachedOnly);
         ASSERT(Cache->FrameCount < Cache->MaxFrames);
-        block_array = WCacheInitFrame(Cache, Context, frame);
-        if(!block_array) {
+        block_array = WCacheInitFrame(IrpContext, Cache, Context, frame);
+        if (!block_array) {
             status = STATUS_INSUFFICIENT_RESOURCES;
             goto EO_WCache_W;
         }
     }
 
-    if(Cache->Mode == WCACHE_MODE_RAM &&
+    if (Cache->Mode == WCACHE_MODE_RAM &&
        BCount &&
 //       !(Lba & (PS-1)) &&
        (!(BCount & (PS-1)) || (BCount > PS)) ) {
@@ -2324,7 +2372,7 @@ WCacheWriteBlocks__(
         WTh_Lba = Lba;
         WTh_BCount = BCount;
     } else
-    if(Cache->Mode == WCACHE_MODE_RAM &&
+    if (Cache->Mode == WCACHE_MODE_RAM &&
        ((Lba & ~PacketMask) != ((Lba+BCount-1) & ~PacketMask))
       ) {
         WriteThrough = TRUE;
@@ -2335,15 +2383,15 @@ WCacheWriteBlocks__(
     Cache->FrameList[frame].UpdateCount++;
 //    UDFPrint(("    BCount:%x\n",BCount));
     while(BCount) {
-        if(i >= Cache->BlocksPerFrame) {
+        if (i >= Cache->BlocksPerFrame) {
             frame++;
             block_array = Cache->FrameList[frame].Frame;
             i -= Cache->BlocksPerFrame;
         }
-        if(!block_array) {
+        if (!block_array) {
             ASSERT(Cache->FrameCount < Cache->MaxFrames);
-            block_array = WCacheInitFrame(Cache, Context, frame);
-            if(!block_array) {
+            block_array = WCacheInitFrame(IrpContext, Cache, Context, frame);
+            if (!block_array) {
                 status = STATUS_INSUFFICIENT_RESOURCES;
                 goto EO_WCache_W;
             }
@@ -2355,7 +2403,7 @@ WCacheWriteBlocks__(
               (addr = (PCHAR)WCacheSectorAddr(block_array, i)) ) {
 //            UDFPrint(("addr:%x:Buffer:%x:BS:%x:BCount:%x\n",addr, Buffer, BS, BCount));
             block_type = Cache->CheckUsedProc(Context, Lba+saved_BC-BCount);
-            if(Cache->NoWriteBB &&
+            if (Cache->NoWriteBB &&
                /*WCacheGetBadFlag(block_array,i)*/
                (block_type & WCACHE_BLOCK_BAD)) {
                 // bad packet. no cached write
@@ -2377,7 +2425,7 @@ WCacheWriteBlocks__(
               (!WCacheSectorAddr(block_array, i)) ) {
             ASSERT(block_array[i].Sector == NULL);
             block_array[i].Sector = (PCHAR)DbgAllocatePoolWithTag(CACHED_BLOCK_MEMORY_TYPE, BS, MEM_WCBUF_TAG);
-            if(!block_array[i].Sector) {
+            if (!block_array[i].Sector) {
                 status = STATUS_INSUFFICIENT_RESOURCES;
                 goto EO_WCache_W;
             }
@@ -2392,7 +2440,7 @@ WCacheWriteBlocks__(
         }
         // write non-cached packet-size-aligned extent (if any)
         // now we'll calculate total length & decide if has enough size
-        if(!Cache->NoWriteThrough
+        if (!Cache->NoWriteThrough
                      &&
            ( !(i & PacketMask) ||
              ((Cache->Mode == WCACHE_MODE_R) && (BCount >= PS)) )) {
@@ -2405,8 +2453,8 @@ WCacheWriteBlocks__(
             }
             BCount += n;
             n &= ~PacketMask;
-//                if(!OS_SUCCESS(status = Cache->WriteProcAsync(Context, Buffer, BS*n, Lba+saved_BC-BCount, &_WrittenBytes, FALSE)))
-            if(n) {
+//                if (!NT_SUCCESS(status = Cache->WriteProcAsync(Context, Buffer, BS*n, Lba+saved_BC-BCount, &_WrittenBytes, FALSE)))
+            if (n) {
                 // add previously written data to list
                 d = saved_BC - BCount;
                 WCacheInsertRangeToList(Cache->CachedBlocksList, &(Cache->BlockCount), Lba, d);
@@ -2416,11 +2464,11 @@ WCacheWriteBlocks__(
                 saved_BC = BCount;
 
                 while(n) {
-                    if(Cache->Mode == WCACHE_MODE_R)
+                    if (Cache->Mode == WCACHE_MODE_R)
                         Cache->UpdateRelocProc(Context, Lba, NULL, PS);
-                    if(!OS_SUCCESS(status = Cache->WriteProc(Context, Buffer, PS<<BSh, Lba, &_WrittenBytes, 0))) {
+                    if (!NT_SUCCESS(status = Cache->WriteProc(IrpContext, Context, Buffer, PS<<BSh, Lba, &_WrittenBytes, 0))) {
                         status = WCacheRaiseIoError(Cache, Context, status, Lba, PS, Buffer, WCACHE_W_OP, NULL);
-                        if(!OS_SUCCESS(status)) {
+                        if (!NT_SUCCESS(status)) {
                             goto EO_WCache_W;
                         }
                     }
@@ -2440,7 +2488,7 @@ WCacheWriteBlocks__(
               (!WCacheSectorAddr(block_array, i)) ) {
             ASSERT(block_array[i].Sector == NULL);
             block_array[i].Sector = (PCHAR)DbgAllocatePoolWithTag(CACHED_BLOCK_MEMORY_TYPE, BS, MEM_WCBUF_TAG);
-            if(!block_array[i].Sector) {
+            if (!block_array[i].Sector) {
                 status = STATUS_INSUFFICIENT_RESOURCES;
                 goto EO_WCache_W;
             }
@@ -2464,7 +2512,7 @@ EO_WCache_W:
     ASSERT(ValidateFrameBlocksList(Cache, Lba));
     WCacheInsertRangeToList(Cache->CachedModifiedBlocksList, &(Cache->WriteCount), Lba, saved_BC - BCount);
 
-    if(WriteThrough && !BCount) {
+    if (WriteThrough && !BCount) {
         ULONG d;
 //        lba_t lastLba;
         ULONG firstPos;
@@ -2479,14 +2527,14 @@ EO_WCache_W:
             d = min(Lba+BCount, (frame+1) << Cache->BlocksPerFrameSh) - Lba;
             lastPos = WCacheGetSortedListIndex(Cache->BlockCount, Cache->CachedBlocksList, Lba+d);
             block_array = Cache->FrameList[frame].Frame;
-            if(!block_array) {
+            if (!block_array) {
                 // write was non-cached, so skip this cache frame without asserting
                 // ASSERT(FALSE); 
                 BCount -= d;
                 Lba += d;
                 continue;
             }
-            status = WCacheFlushBlocksRAM(Cache, Context, block_array, Cache->CachedBlocksList, firstPos, lastPos, FALSE);
+            status = WCacheFlushBlocksRAM(IrpContext, Cache, Context, block_array, Cache->CachedBlocksList, firstPos, lastPos, FALSE);
             WCacheRemoveRangeFromList(Cache->CachedModifiedBlocksList, &(Cache->WriteCount), Lba, d);
             BCount -= d;
             Lba += d;
@@ -2495,7 +2543,7 @@ EO_WCache_W:
 
 EO_WCache_W2:
 
-    if(!CachedOnly) {
+    if (!CachedOnly) {
         ExReleaseResourceForThreadLite(&(Cache->WCacheLock), ExGetCurrentResourceThread());
     }
     return status;
@@ -2508,22 +2556,23 @@ EO_WCache_W2:
  */
 VOID
 WCacheFlushAll__(
+    IN PIRP_CONTEXT IrpContext,
     IN PW_CACHE Cache,        // pointer to the Cache Control structure
     IN PVOID Context)         // user-supplied context for IO callbacks
 {
-    if(!(Cache->ReadProc)) return;
+    if (!(Cache->ReadProc)) return;
     ExAcquireResourceExclusiveLite(&(Cache->WCacheLock), TRUE);
 
     switch(Cache->Mode) {
     case WCACHE_MODE_RAM:
-        WCacheFlushAllRAM(Cache, Context);
+        WCacheFlushAllRAM(IrpContext, Cache, Context);
         break;
     case WCACHE_MODE_ROM:
     case WCACHE_MODE_RW:
-        WCacheFlushAllRW(Cache, Context);
+        WCacheFlushAllRW(IrpContext, Cache, Context);
         break;
     case WCACHE_MODE_R:
-        WCachePurgeAllR(Cache, Context);
+        WCachePurgeAllR(IrpContext, Cache, Context);
         break;
     }
 
@@ -2538,22 +2587,23 @@ WCacheFlushAll__(
  */
 VOID
 WCachePurgeAll__(
+    IN PIRP_CONTEXT IrpContext,
     IN PW_CACHE Cache,        // pointer to the Cache Control structure
     IN PVOID Context)         // user-supplied context for IO callbacks
 {
-    if(!(Cache->ReadProc)) return;
+    if (!(Cache->ReadProc)) return;
     ExAcquireResourceExclusiveLite(&(Cache->WCacheLock), TRUE);
 
     switch(Cache->Mode) {
     case WCACHE_MODE_RAM:
-        WCachePurgeAllRAM(Cache, Context);
+        WCachePurgeAllRAM(IrpContext, Cache, Context);
         break;
     case WCACHE_MODE_ROM:
     case WCACHE_MODE_RW:
-        WCachePurgeAllRW(Cache, Context);
+        WCachePurgeAllRW(IrpContext, Cache, Context);
         break;
     case WCACHE_MODE_R:
-        WCachePurgeAllR(Cache, Context);
+        WCachePurgeAllR(IrpContext, Cache, Context);
         break;
     }
 
@@ -2570,6 +2620,7 @@ WCachePurgeAll__(
 VOID
 __fastcall
 WCachePurgeAllRW(
+    IN PIRP_CONTEXT IrpContext,
     IN PW_CACHE Cache,        // pointer to the Cache Control structure
     IN PVOID Context)         // user-supplied context for IO callbacks
 {
@@ -2584,13 +2635,13 @@ WCachePurgeAllRW(
     ULONG PS = BS << Cache->PacketSizeSh; // packet size (bytes)
     ULONG PSs = Cache->PacketSize;
     PW_CACHE_ENTRY block_array;
-//    OSSTATUS status;
+//    NTSTATUS status;
     SIZE_T ReadBytes;
     PW_CACHE_ASYNC FirstWContext = NULL;
     PW_CACHE_ASYNC PrevWContext = NULL;
     ULONG chain_count = 0;
 
-    if(!(Cache->ReadProc)) return;
+    if (!(Cache->ReadProc)) return;
 
     while(Cache->BlockCount) {
         Lba = List[0] & ~(PSs-1);
@@ -2599,12 +2650,12 @@ WCachePurgeAllRW(
 //        firstPos = WCacheGetSortedListIndex(Cache->BlockCount, List, Lba);
 //        lastPos = WCacheGetSortedListIndex(Cache->BlockCount, List, Lba+PSs);
         block_array = Cache->FrameList[frame].Frame;
-        if(!block_array) {
+        if (!block_array) {
             BrutePoint();
             return;
         }
 
-        WCacheUpdatePacket(Cache, Context, &FirstWContext, &PrevWContext, block_array, firstLba,
+        WCacheUpdatePacket(IrpContext, Cache, Context, &FirstWContext, &PrevWContext, block_array, firstLba,
             Lba, BSh, BS, PS, PSs, &ReadBytes, TRUE, ASYNC_STATE_NONE);
 
         // free memory
@@ -2614,18 +2665,18 @@ WCachePurgeAllRW(
         ASSERT(ValidateFrameBlocksList(Cache, Lba));
         WCacheRemoveRangeFromList(Cache->CachedModifiedBlocksList, &(Cache->WriteCount), Lba, PSs);
         // check if frame is empty
-        if(!(Cache->FrameList[frame].BlockCount)) {
+        if (!(Cache->FrameList[frame].BlockCount)) {
             WCacheRemoveFrame(Cache, Context, frame);
         } else {
             ASSERT(Cache->FrameList[frame].Frame);
         }
         chain_count++;
-        if(chain_count >= WCACHE_MAX_CHAIN) {
-            WCacheUpdatePacketComplete(Cache, Context, &FirstWContext, &PrevWContext, FALSE);
+        if (chain_count >= WCACHE_MAX_CHAIN) {
+            WCacheUpdatePacketComplete(IrpContext, Cache, Context, &FirstWContext, &PrevWContext, FALSE);
             chain_count = 0;
         }
     }
-    WCacheUpdatePacketComplete(Cache, Context, &FirstWContext, &PrevWContext);
+    WCacheUpdatePacketComplete(IrpContext, Cache, Context, &FirstWContext, &PrevWContext);
     return;
 } // end WCachePurgeAllRW()
 
@@ -2638,6 +2689,7 @@ WCachePurgeAllRW(
 VOID
 __fastcall
 WCacheFlushAllRW(
+    IN PIRP_CONTEXT IrpContext,
     IN PW_CACHE Cache,        // pointer to the Cache Control structure
     IN PVOID Context)         // user-supplied context for IO callbacks
 {
@@ -2653,14 +2705,14 @@ WCacheFlushAllRW(
     ULONG PSs = Cache->PacketSize;
     ULONG BFs = Cache->BlocksPerFrameSh;
     PW_CACHE_ENTRY block_array;
-//    OSSTATUS status;
+//    NTSTATUS status;
     SIZE_T ReadBytes;
     PW_CACHE_ASYNC FirstWContext = NULL;
     PW_CACHE_ASYNC PrevWContext = NULL;
     ULONG i;
     ULONG chain_count = 0;
 
-    if(!(Cache->ReadProc)) return;
+    if (!(Cache->ReadProc)) return;
 
     // walk through modified blocks
     while(Cache->WriteCount) {
@@ -2670,12 +2722,12 @@ WCacheFlushAllRW(
 //        firstPos = WCacheGetSortedListIndex(Cache->WriteCount, List, Lba);
 //        lastPos = WCacheGetSortedListIndex(Cache->WriteCount, List, Lba+PSs);
         block_array = Cache->FrameList[frame].Frame;
-        if(!block_array) {
+        if (!block_array) {
             BrutePoint();
             continue;;
         }
         // queue modify request
-        WCacheUpdatePacket(Cache, Context, &FirstWContext, &PrevWContext, block_array, firstLba,
+        WCacheUpdatePacket(IrpContext, Cache, Context, &FirstWContext, &PrevWContext, block_array, firstLba,
             Lba, BSh, BS, PS, PSs, &ReadBytes, TRUE, ASYNC_STATE_NONE);
         // clear MODIFIED flag for queued blocks
         WCacheRemoveRangeFromList(List, &(Cache->WriteCount), Lba, PSs);
@@ -2685,12 +2737,12 @@ WCacheFlushAllRW(
         }
         chain_count++;
         // check queue size
-        if(chain_count >= WCACHE_MAX_CHAIN) {
-            WCacheUpdatePacketComplete(Cache, Context, &FirstWContext, &PrevWContext, FALSE);
+        if (chain_count >= WCACHE_MAX_CHAIN) {
+            WCacheUpdatePacketComplete(IrpContext, Cache, Context, &FirstWContext, &PrevWContext, FALSE);
             chain_count = 0;
         }
     }
-    WCacheUpdatePacketComplete(Cache, Context, &FirstWContext, &PrevWContext, FALSE);
+    WCacheUpdatePacketComplete(IrpContext, Cache, Context, &FirstWContext, &PrevWContext, FALSE);
 #ifdef DBG
 #if 1
     // check consistency
@@ -2700,7 +2752,7 @@ WCacheFlushAllRW(
         frame = Lba >> Cache->BlocksPerFrameSh;
         firstLba = frame << Cache->BlocksPerFrameSh;
         block_array = Cache->FrameList[frame].Frame;
-        if(!block_array) {
+        if (!block_array) {
             BrutePoint();
         }
         ASSERT(!WCacheGetModFlag(block_array, Lba-firstLba));
@@ -2724,34 +2776,34 @@ WCacheRelease__(
     PW_CACHE_ENTRY block_array;
 
     Cache->Tag = 0xDEADCACE;
-    if(!(Cache->ReadProc)) return;
+    if (!(Cache->ReadProc)) return;
 //    ASSERT(Cache->Tag == 0xCAC11E00);
     ExAcquireResourceExclusiveLite(&(Cache->WCacheLock), TRUE);
     for(i=0; i<Cache->FrameCount; i++) {
         j = Cache->CachedFramesList[i];
         block_array = Cache->FrameList[j].Frame;
-        if(block_array) {
+        if (block_array) {
             for(k=0; k<Cache->BlocksPerFrame; k++) {
-                if(WCacheSectorAddr(block_array, k)) {
+                if (WCacheSectorAddr(block_array, k)) {
                     WCacheFreeSector(j, k);
                 }
             }
             MyFreePool__(block_array);
         }
     }
-    if(Cache->FrameList)
+    if (Cache->FrameList)
         MyFreePool__(Cache->FrameList);
-    if(Cache->CachedBlocksList)
+    if (Cache->CachedBlocksList)
         MyFreePool__(Cache->CachedBlocksList);
-    if(Cache->CachedModifiedBlocksList)
+    if (Cache->CachedModifiedBlocksList)
         MyFreePool__(Cache->CachedModifiedBlocksList);
-    if(Cache->CachedFramesList)
+    if (Cache->CachedFramesList)
         MyFreePool__(Cache->CachedFramesList);
-    if(Cache->tmp_buff_r)
+    if (Cache->tmp_buff_r)
         MyFreePool__(Cache->tmp_buff_r);
-    if(Cache->CachedFramesList)
+    if (Cache->CachedFramesList)
         MyFreePool__(Cache->tmp_buff);
-    if(Cache->CachedFramesList)
+    if (Cache->CachedFramesList)
         MyFreePool__(Cache->reloc_tab);
     ExReleaseResourceForThreadLite(&(Cache->WCacheLock), ExGetCurrentResourceThread());
     ExDeleteResourceLite(&(Cache->WCacheLock));
@@ -2772,8 +2824,9 @@ WCacheIsInitialized__(
     return (Cache->ReadProc != NULL);
 } // end WCacheIsInitialized__()
 
-OSSTATUS
+NTSTATUS
 WCacheFlushBlocksRW(
+    IN PIRP_CONTEXT IrpContext,
     IN PW_CACHE Cache,        // pointer to the Cache Control structure
     IN PVOID Context,         // user-supplied context for IO callbacks
     IN lba_t _Lba,             // LBA to start flush from
@@ -2792,7 +2845,7 @@ WCacheFlushBlocksRW(
     ULONG PSs = Cache->PacketSize;
     ULONG BFs = Cache->BlocksPerFrameSh;
     PW_CACHE_ENTRY block_array;
-//    OSSTATUS status;
+//    NTSTATUS status;
     SIZE_T ReadBytes;
     PW_CACHE_ASYNC FirstWContext = NULL;
     PW_CACHE_ASYNC PrevWContext = NULL;
@@ -2800,7 +2853,7 @@ WCacheFlushBlocksRW(
     ULONG chain_count = 0;
     lba_t lim;
 
-    if(!(Cache->ReadProc)) return STATUS_INVALID_PARAMETER;
+    if (!(Cache->ReadProc)) return STATUS_INVALID_PARAMETER;
 
     // walk through modified blocks
     lim = (_Lba+BCount+PSs-1) & ~(PSs-1);
@@ -2810,13 +2863,13 @@ WCacheFlushBlocksRW(
 //        firstPos = WCacheGetSortedListIndex(Cache->WriteCount, List, Lba);
 //        lastPos = WCacheGetSortedListIndex(Cache->WriteCount, List, Lba+PSs);
         block_array = Cache->FrameList[frame].Frame;
-        if(!block_array) {
+        if (!block_array) {
             // not cached block may be requested for flush
             Lba += (1 << BFs) - PSs;
             continue;
         }
         // queue modify request
-        WCacheUpdatePacket(Cache, Context, &FirstWContext, &PrevWContext, block_array, firstLba,
+        WCacheUpdatePacket(IrpContext, Cache, Context, &FirstWContext, &PrevWContext, block_array, firstLba,
             Lba, BSh, BS, PS, PSs, &ReadBytes, TRUE, ASYNC_STATE_NONE);
         // clear MODIFIED flag for queued blocks
         WCacheRemoveRangeFromList(List, &(Cache->WriteCount), Lba, PSs);
@@ -2827,14 +2880,14 @@ WCacheFlushBlocksRW(
         Lba += firstLba;
         chain_count++;
         // check queue size
-        if(chain_count >= WCACHE_MAX_CHAIN) {
-            WCacheUpdatePacketComplete(Cache, Context, &FirstWContext, &PrevWContext, FALSE);
+        if (chain_count >= WCACHE_MAX_CHAIN) {
+            WCacheUpdatePacketComplete(IrpContext, Cache, Context, &FirstWContext, &PrevWContext, FALSE);
             chain_count = 0;
         }
     }
-    WCacheUpdatePacketComplete(Cache, Context, &FirstWContext, &PrevWContext, FALSE);
+    WCacheUpdatePacketComplete(IrpContext, Cache, Context, &FirstWContext, &PrevWContext, FALSE);
 /*
-    if(Cache->Mode != WCACHE_MODE_RAM)
+    if (Cache->Mode != WCACHE_MODE_RAM)
         return STATUS_SUCCESS;
 */
 
@@ -2846,21 +2899,22 @@ WCacheFlushBlocksRW(
   Flushed blocks are kept in cache.
   Public routine
  */
-OSSTATUS
+NTSTATUS
 WCacheFlushBlocks__(
+    IN PIRP_CONTEXT IrpContext,
     IN PW_CACHE Cache,        // pointer to the Cache Control structure
     IN PVOID Context,         // user-supplied context for IO callbacks
     IN lba_t Lba,             // LBA to start flush from
     IN ULONG BCount           // number of blocks to be flushed
     )
 {
-    OSSTATUS status;
+    NTSTATUS status = STATUS_INVALID_PARAMETER;
 
-    if(!(Cache->ReadProc)) return STATUS_INVALID_PARAMETER;
+    if (!(Cache->ReadProc)) return STATUS_INVALID_PARAMETER;
     ExAcquireResourceExclusiveLite(&(Cache->WCacheLock), TRUE);
 
     // check if we try to access beyond cached area
-    if((Lba < Cache->FirstLba) ||
+    if ((Lba < Cache->FirstLba) ||
        (Lba+BCount-1 > Cache->LastLba)) {
         UDFPrint(("LBA %#x (%x) is beyond cacheable area\n", Lba, BCount));
         BrutePoint();
@@ -2874,7 +2928,7 @@ WCacheFlushBlocks__(
 //        break;
     case WCACHE_MODE_ROM:
     case WCACHE_MODE_RW:
-        status = WCacheFlushBlocksRW(Cache, Context, Lba, BCount);
+        status = WCacheFlushBlocksRW(IrpContext, Cache, Context, Lba, BCount);
         break;
     case WCACHE_MODE_R:
         status = STATUS_SUCCESS;
@@ -2896,8 +2950,9 @@ EO_WCache_F:
   without Read_to_Tmp and Modify/Write steps.
   Public routine
  */
-OSSTATUS
+NTSTATUS
 WCacheDirect__(
+    IN PIRP_CONTEXT IrpContext,
     IN PW_CACHE Cache,        // pointer to the Cache Control structure
     IN PVOID Context,         // user-supplied context for IO callbacks
     IN lba_t Lba,             // LBA of block to get pointer to
@@ -2908,7 +2963,7 @@ WCacheDirect__(
 {
     ULONG frame;
     ULONG i;
-    OSSTATUS status = STATUS_SUCCESS;
+    NTSTATUS status = STATUS_SUCCESS;
     PW_CACHE_ENTRY block_array;
     ULONG BS = Cache->BlockSize;
     PCHAR addr;
@@ -2918,11 +2973,11 @@ WCacheDirect__(
     WcPrint(("WC:%sD %x (1)\n", Modified ? "W" : "R", Lba));
 
     // lock cache if nececcary
-    if(!CachedOnly) {
+    if (!CachedOnly) {
         ExAcquireResourceExclusiveLite(&(Cache->WCacheLock), TRUE);
     }
     // check if we try to access beyond cached area
-    if((Lba < Cache->FirstLba) ||
+    if ((Lba < Cache->FirstLba) ||
        (Lba > Cache->LastLba)) {
         UDFPrint(("LBA %#x is beyond cacheable area\n", Lba));
         BrutePoint();
@@ -2933,55 +2988,55 @@ WCacheDirect__(
     frame = Lba >> Cache->BlocksPerFrameSh;
     i = Lba - (frame << Cache->BlocksPerFrameSh);
     // check if we have enough space to store requested block
-    if(!CachedOnly &&
-       !OS_SUCCESS(status = WCacheCheckLimits(Cache, Context, Lba, 1))) {
+    if (!CachedOnly &&
+       !NT_SUCCESS(status = WCacheCheckLimits(IrpContext, Cache, Context, Lba, 1))) {
         BrutePoint();
         goto EO_WCache_D;
     }
 
     // small updates are more important
     block_array = Cache->FrameList[frame].Frame;
-    if(Modified) {
+    if (Modified) {
         Cache->FrameList[frame].UpdateCount+=8;
     } else {
         Cache->FrameList[frame].AccessCount+=8;
     }
-    if(!block_array) {
+    if (!block_array) {
         ASSERT(Cache->FrameCount < Cache->MaxFrames);
-        block_array = WCacheInitFrame(Cache, Context, frame);
-        if(!block_array) {
+        block_array = WCacheInitFrame(IrpContext, Cache, Context, frame);
+        if (!block_array) {
             status = STATUS_INSUFFICIENT_RESOURCES;
             goto EO_WCache_D;
         }
     }
     // check if requested block is already cached
-    if( !(addr = (PCHAR)WCacheSectorAddr(block_array, i)) ) {
+    if ( !(addr = (PCHAR)WCacheSectorAddr(block_array, i)) ) {
         // block is not cached
         // allocate memory and read block from media
         // do not set block_array[i].Sector here, because if media access fails and recursive access to cache
         // comes, this block should not be marked as 'cached'
         addr = (PCHAR)DbgAllocatePoolWithTag(CACHED_BLOCK_MEMORY_TYPE, BS, MEM_WCBUF_TAG);
-        if(!addr) {
+        if (!addr) {
             status = STATUS_INSUFFICIENT_RESOURCES;
             goto EO_WCache_D;
         }
         block_type = Cache->CheckUsedProc(Context, Lba);
-        if(block_type == WCACHE_BLOCK_USED) {
-            status = Cache->ReadProc(Context, addr, BS, Lba, &_ReadBytes, PH_TMP_BUFFER);
-            if(Cache->RememberBB) {
-                if(!OS_SUCCESS(status)) {
+        if (block_type == WCACHE_BLOCK_USED) {
+            status = Cache->ReadProc(IrpContext, Context, addr, BS, Lba, &_ReadBytes, PH_TMP_BUFFER);
+            if (Cache->RememberBB) {
+                if (!NT_SUCCESS(status)) {
                     RtlZeroMemory(addr, BS);
                     //WCacheSetBadFlag(block_array,i);
                 }
             }
         } else {
-            if(block_type & WCACHE_BLOCK_BAD) {
+            if (block_type & WCACHE_BLOCK_BAD) {
                 DbgFreePool(addr);
                 addr = NULL;
                 status = STATUS_DEVICE_DATA_ERROR;
                 goto EO_WCache_D;
             }
-            if(!(block_type & WCACHE_BLOCK_ZERO)) {
+            if (!(block_type & WCACHE_BLOCK_ZERO)) {
                 BrutePoint();
             }
             status = STATUS_SUCCESS;
@@ -2991,7 +3046,7 @@ WCacheDirect__(
         ASSERT(block_array[i].Sector == NULL);
         block_array[i].Sector = addr;
         WCacheInsertItemToList(Cache->CachedBlocksList, &(Cache->BlockCount), Lba);
-        if(Modified) {
+        if (Modified) {
             WCacheInsertItemToList(Cache->CachedModifiedBlocksList, &(Cache->WriteCount), Lba);
             WCacheSetModFlag(block_array, i);
         }
@@ -3001,8 +3056,8 @@ WCacheDirect__(
         // block is not cached
         // just return pointer
         block_type = Cache->CheckUsedProc(Context, Lba);
-        if(block_type & WCACHE_BLOCK_BAD) {
-        //if(WCacheGetBadFlag(block_array,i)) {
+        if (block_type & WCACHE_BLOCK_BAD) {
+        //if (WCacheGetBadFlag(block_array,i)) {
             // bad packet. no pre-read
             status = STATUS_DEVICE_DATA_ERROR;
             goto EO_WCache_D;
@@ -3010,11 +3065,11 @@ WCacheDirect__(
 #ifndef UDF_CHECK_UTIL
         ASSERT(block_type & WCACHE_BLOCK_USED);
 #else
-        if(!(block_type & WCACHE_BLOCK_USED)) {
+        if (!(block_type & WCACHE_BLOCK_USED)) {
             UDFPrint(("LBA %#x is not marked as used\n", Lba));
         }
 #endif
-        if(Modified &&
+        if (Modified &&
            !WCacheGetModFlag(block_array, i)) {
             WCacheInsertItemToList(Cache->CachedModifiedBlocksList, &(Cache->WriteCount), Lba);
             WCacheSetModFlag(block_array, i);
@@ -3032,7 +3087,7 @@ EO_WCache_D:
   to WCacheStartDirect__().
   Public routine
  */
-OSSTATUS
+NTSTATUS
 WCacheEODirect__(
     IN PW_CACHE Cache,        // pointer to the Cache Control structure
     IN PVOID Context          // user-supplied context for IO callbacks
@@ -3050,7 +3105,7 @@ WCacheEODirect__(
   Cache can be unlocked by WCacheEODirect__().
   Public routine
  */
-OSSTATUS
+NTSTATUS
 WCacheStartDirect__(
     IN PW_CACHE Cache,        // pointer to the Cache Control structure
     IN PVOID Context,         // user-supplied context for IO callbacks
@@ -3058,7 +3113,7 @@ WCacheStartDirect__(
                               //   currently must be TRUE.
     )
 {
-    if(Exclusive) {
+    if (Exclusive) {
         ExAcquireResourceExclusiveLite(&(Cache->WCacheLock), TRUE);
     } else {
         BrutePoint();
@@ -3088,7 +3143,7 @@ WCacheIsCached__(
     PW_CACHE_ENTRY block_array;
 
     // check if we try to access beyond cached area
-    if((Lba < Cache->FirstLba) ||
+    if ((Lba < Cache->FirstLba) ||
        (Lba + BCount - 1 > Cache->LastLba)) {
         return FALSE;
     }
@@ -3097,17 +3152,17 @@ WCacheIsCached__(
     i = Lba - (frame << Cache->BlocksPerFrameSh);
 
     block_array = Cache->FrameList[frame].Frame;
-    if(!block_array) {
+    if (!block_array) {
         return FALSE;
     }
 
     while(BCount) {
-        if(i >= Cache->BlocksPerFrame) {
+        if (i >= Cache->BlocksPerFrame) {
             frame++;
             block_array = Cache->FrameList[frame].Frame;
             i -= Cache->BlocksPerFrame;
         }
-        if(!block_array) {
+        if (!block_array) {
             return FALSE;
         }
         // 'read' cached extent (if any)
@@ -3121,7 +3176,7 @@ WCacheIsCached__(
             BCount--;
             Lba++;
         }
-        if(BCount &&
+        if (BCount &&
               (i < Cache->BlocksPerFrame) /*&&
               (!WCacheSectorAddr(block_array, i))*/ ) {
             return FALSE;
@@ -3137,9 +3192,10 @@ WCacheIsCached__(
   See also WCacheCheckLimits()
   Internal routine
  */
-OSSTATUS
+NTSTATUS
 __fastcall
 WCacheCheckLimitsR(
+    IN PIRP_CONTEXT IrpContext,
     IN PW_CACHE Cache,        // pointer to the Cache Control structure
     IN PVOID Context,         // user-supplied context for IO callbacks
     IN lba_t ReqLba,          // first LBA to access/cache
@@ -3159,13 +3215,13 @@ WCacheCheckLimitsR(
     ULONG i;
     PW_CACHE_ENTRY block_array;
     BOOLEAN mod;
-    OSSTATUS status;
+    NTSTATUS status;
     SIZE_T ReadBytes;
     ULONG MaxReloc = Cache->PacketSize;
     PULONG reloc_tab = Cache->reloc_tab;
 
     // check if we try to read too much data
-    if(BCount > Cache->MaxBlocks) {
+    if (BCount > Cache->MaxBlocks) {
         return STATUS_INVALID_PARAMETER;
     }
 
@@ -3177,7 +3233,7 @@ WCacheCheckLimitsR(
 WCCL_retry_1:
 
         Lba = WCacheFindLbaToRelease(Cache);
-        if(Lba == WCACHE_INVALID_LBA) {
+        if (Lba == WCACHE_INVALID_LBA) {
             ASSERT(!Cache->FrameCount);
             ASSERT(!Cache->BlockCount);
             break;
@@ -3186,16 +3242,16 @@ WCCL_retry_1:
         firstLba = frame << Cache->BlocksPerFrameSh;
         firstPos = WCacheGetSortedListIndex(Cache->BlockCount, List, Lba);
         block_array = Cache->FrameList[frame].Frame;
-        if(!block_array) {
+        if (!block_array) {
             return STATUS_DRIVER_INTERNAL_ERROR;
         }
         // check if modified
         mod = WCacheGetModFlag(block_array, Lba - firstLba);
         // read/modify/write
-        if(mod && (Cache->CheckUsedProc(Context, Lba) & WCACHE_BLOCK_USED)) {
-            if(Cache->WriteCount < MaxReloc) goto WCCL_retry_1;
+        if (mod && (Cache->CheckUsedProc(Context, Lba) & WCACHE_BLOCK_USED)) {
+            if (Cache->WriteCount < MaxReloc) goto WCCL_retry_1;
             firstPos = WCacheGetSortedListIndex(Cache->WriteCount, Cache->CachedModifiedBlocksList, Lba);
-            if(!block_array) {
+            if (!block_array) {
                 return STATUS_DRIVER_INTERNAL_ERROR;
             }
             // prepare packet & reloc table
@@ -3214,21 +3270,21 @@ WCCL_retry_1:
                 WCacheFreeSector(frame, Lba-firstLba);
                 ASSERT(ValidateFrameBlocksList(Cache, Lba));
                 // check if frame is empty
-                if(!Cache->FrameList[frame].BlockCount) {
+                if (!Cache->FrameList[frame].BlockCount) {
                     WCacheRemoveFrame(Cache, Context, frame);
                 }
-                if(firstPos >= Cache->WriteCount) firstPos=0;
+                if (firstPos >= Cache->WriteCount) firstPos=0;
             }
             // write packet
 //            status = Cache->WriteProcAsync(Context, tmp_buff, PS, Lba, &ReadBytes, FALSE);
             Cache->UpdateRelocProc(Context, NULL, reloc_tab, MaxReloc);
-            status = Cache->WriteProc(Context, tmp_buff, PS, NULL, &ReadBytes, 0);
-            if(!OS_SUCCESS(status)) {
+            status = Cache->WriteProc(IrpContext, Context, tmp_buff, PS, NULL, &ReadBytes, 0);
+            if (!NT_SUCCESS(status)) {
                 status = WCacheRaiseIoError(Cache, Context, status, NULL, PSs, tmp_buff, WCACHE_W_OP, NULL);
             }
         } else {
 
-            if((i = Cache->BlockCount - Cache->WriteCount) > MaxReloc) i = MaxReloc;
+            if ((i = Cache->BlockCount - Cache->WriteCount) > MaxReloc) i = MaxReloc;
             // discard blocks
             for(; i; i--) {
                 Lba = List[firstPos];
@@ -3236,20 +3292,20 @@ WCCL_retry_1:
                 firstLba = frame << Cache->BlocksPerFrameSh;
                 block_array = Cache->FrameList[frame].Frame;
 
-                if( (mod = WCacheGetModFlag(block_array, Lba - firstLba)) &&
+                if ( (mod = WCacheGetModFlag(block_array, Lba - firstLba)) &&
                     (Cache->CheckUsedProc(Context, Lba) & WCACHE_BLOCK_USED) )
                     continue;
                 WCacheRemoveItemFromList(List, &(Cache->BlockCount), Lba);
-                if(mod)
+                if (mod)
                     WCacheRemoveItemFromList(Cache->CachedModifiedBlocksList, &(Cache->WriteCount), Lba);
                 // mark as non-cached & free pool
                 WCacheFreeSector(frame, Lba-firstLba);
                 ASSERT(ValidateFrameBlocksList(Cache, Lba));
                 // check if frame is empty
-                if(!Cache->FrameList[frame].BlockCount) {
+                if (!Cache->FrameList[frame].BlockCount) {
                     WCacheRemoveFrame(Cache, Context, frame);
                 }
-                if(firstPos >= Cache->WriteCount) firstPos=0;
+                if (firstPos >= Cache->WriteCount) firstPos=0;
             }
         }
     }
@@ -3265,6 +3321,7 @@ WCCL_retry_1:
 VOID
 __fastcall
 WCachePurgeAllR(
+    IN PIRP_CONTEXT IrpContext,
     IN PW_CACHE Cache,        // pointer to the Cache Control structure
     IN PVOID Context)         // user-supplied context for IO callbacks
 {
@@ -3279,7 +3336,7 @@ WCachePurgeAllR(
 //    ULONG PSs = Cache->PacketSize;
     PW_CACHE_ENTRY block_array;
     BOOLEAN mod;
-    OSSTATUS status;
+    NTSTATUS status;
     SIZE_T ReadBytes;
     ULONG MaxReloc = Cache->PacketSize;
     PULONG reloc_tab = Cache->reloc_tab;
@@ -3294,24 +3351,24 @@ WCachePurgeAllR(
         frame = Lba >> Cache->BlocksPerFrameSh;
         firstLba = frame << Cache->BlocksPerFrameSh;
         block_array = Cache->FrameList[frame].Frame;
-        if(!block_array) {
+        if (!block_array) {
             BrutePoint();
             return;
         }
         // check if modified
         mod = WCacheGetModFlag(block_array, Lba - firstLba);
         // just discard
-        if(!mod || !(Cache->CheckUsedProc(Context, Lba) & WCACHE_BLOCK_USED)) {
+        if (!mod || !(Cache->CheckUsedProc(Context, Lba) & WCACHE_BLOCK_USED)) {
             // mark as non-cached & free pool
-            if(WCacheSectorAddr(block_array,Lba-firstLba)) {
+            if (WCacheSectorAddr(block_array,Lba-firstLba)) {
                 WCacheRemoveItemFromList(List, &(Cache->BlockCount), Lba);
-                if(mod)
+                if (mod)
                     WCacheRemoveItemFromList(Cache->CachedModifiedBlocksList, &(Cache->WriteCount), Lba);
                 // mark as non-cached & free pool
                 WCacheFreeSector(frame, Lba-firstLba);
                 ASSERT(ValidateFrameBlocksList(Cache, Lba));
                 // check if frame is empty
-                if(!Cache->FrameList[frame].BlockCount) {
+                if (!Cache->FrameList[frame].BlockCount) {
                     WCacheRemoveFrame(Cache, Context, frame);
                 }
             } else {
@@ -3332,25 +3389,25 @@ WCachePurgeAllR(
         frame = Lba >> Cache->BlocksPerFrameSh;
         firstLba = frame << Cache->BlocksPerFrameSh;
         block_array = Cache->FrameList[frame].Frame;
-        if(!block_array) {
+        if (!block_array) {
             BrutePoint();
             return;
         }
         // check if modified
         mod = WCacheGetModFlag(block_array, Lba - firstLba);
         // pack/reloc/write
-        if(mod) {
+        if (mod) {
             DbgCopyMemory(tmp_buff + (RelocCount << BSh),
                           (PVOID)WCacheSectorAddr(block_array, Lba-firstLba),
                           BS);
             reloc_tab[RelocCount] = Lba;
             RelocCount++;
             // write packet
-            if((RelocCount >= MaxReloc) || (Cache->BlockCount == 1)) {
+            if ((RelocCount >= MaxReloc) || (Cache->BlockCount == 1)) {
 //                status = Cache->WriteProcAsync(Context, tmp_buff, PS, Lba, &ReadBytes, FALSE);
                 Cache->UpdateRelocProc(Context, NULL, reloc_tab, RelocCount);
-                status = Cache->WriteProc(Context, tmp_buff, RelocCount<<BSh, NULL, &ReadBytes, 0);
-                if(!OS_SUCCESS(status)) {
+                status = Cache->WriteProc(IrpContext, Context, tmp_buff, RelocCount<<BSh, NULL, &ReadBytes, 0);
+                if (!NT_SUCCESS(status)) {
                     status = WCacheRaiseIoError(Cache, Context, status, NULL, RelocCount, tmp_buff, WCACHE_W_OP, NULL);
                 }
                 RelocCount = 0;
@@ -3360,13 +3417,13 @@ WCachePurgeAllR(
             BrutePoint();
         }
         // mark as non-cached & free pool
-        if(WCacheSectorAddr(block_array,Lba-firstLba)) {
+        if (WCacheSectorAddr(block_array,Lba-firstLba)) {
             WCacheRemoveItemFromList(List, &(Cache->BlockCount), Lba);
             // mark as non-cached & free pool
             WCacheFreeSector(frame, Lba-firstLba);
             ASSERT(ValidateFrameBlocksList(Cache, Lba));
             // check if frame is empty
-            if(!Cache->FrameList[frame].BlockCount) {
+            if (!Cache->FrameList[frame].BlockCount) {
                 WCacheRemoveFrame(Cache, Context, frame);
             }
         } else {
@@ -3379,13 +3436,13 @@ WCachePurgeAllR(
   WCacheSetMode__() changes cache operating mode (ROM/R/RW/RAM).
   Public routine
  */
-OSSTATUS
+NTSTATUS
 WCacheSetMode__(
     IN PW_CACHE Cache,        // pointer to the Cache Control structure
     IN ULONG Mode             // cache mode/media type to be used
     )
 {
-    if(Mode > WCACHE_MODE_MAX) return STATUS_INVALID_PARAMETER;
+    if (Mode > WCACHE_MODE_MAX) return STATUS_INVALID_PARAMETER;
     Cache->Mode = Mode;
     return STATUS_SUCCESS;
 } // end WCacheSetMode__()
@@ -3451,16 +3508,16 @@ WCacheSyncReloc__(
         frame = Lba >> Cache->BlocksPerFrameSh;
         firstLba = frame << Cache->BlocksPerFrameSh;
         block_array = Cache->FrameList[frame].Frame;
-        if(!block_array) {
+        if (!block_array) {
             return;
         }
         // check if modified
         mod = WCacheGetModFlag(block_array, Lba - firstLba);
         // update relocation table for modified sectors
-        if(mod && (Cache->CheckUsedProc(Context, Lba) & WCACHE_BLOCK_USED)) {
+        if (mod && (Cache->CheckUsedProc(Context, Lba) & WCACHE_BLOCK_USED)) {
             reloc_tab[RelocCount] = Lba;
             RelocCount++;
-            if(RelocCount >= Cache->WriteCount) {
+            if (RelocCount >= Cache->WriteCount) {
                 Cache->UpdateRelocProc(Context, NULL, reloc_tab, RelocCount);
                 break;
             }
@@ -3494,7 +3551,7 @@ WCacheDiscardBlocks__(
     UDFPrint(("  Discard req: %x@%x\n",BCount, ReqLba));
 
     List = Cache->CachedBlocksList;
-    if(!List) {
+    if (!List) {
         ExReleaseResourceForThreadLite(&(Cache->WCacheLock), ExGetCurrentResourceThread());
         return;
     }
@@ -3507,7 +3564,7 @@ WCacheDiscardBlocks__(
         frame = Lba >> Cache->BlocksPerFrameSh;
         firstLba = frame << Cache->BlocksPerFrameSh;
         block_array = Cache->FrameList[frame].Frame;
-        if(!block_array) {
+        if (!block_array) {
             ExReleaseResourceForThreadLite(&(Cache->WCacheLock), ExGetCurrentResourceThread());
             BrutePoint();
             return;
@@ -3517,15 +3574,15 @@ WCacheDiscardBlocks__(
         // just discard
 
         // mark as non-cached & free pool
-        if(WCacheSectorAddr(block_array,Lba-firstLba)) {
+        if (WCacheSectorAddr(block_array,Lba-firstLba)) {
             WCacheRemoveItemFromList(List, &(Cache->BlockCount), Lba);
-            if(mod)
+            if (mod)
                 WCacheRemoveItemFromList(Cache->CachedModifiedBlocksList, &(Cache->WriteCount), Lba);
             // mark as non-cached & free pool
             WCacheFreeSector(frame, Lba-firstLba);
             ASSERT(ValidateFrameBlocksList(Cache, Lba));
             // check if frame is empty
-            if(!Cache->FrameList[frame].BlockCount) {
+            if (!Cache->FrameList[frame].BlockCount) {
                 WCacheRemoveFrame(Cache, Context, frame);
             } else {
                 ASSERT(Cache->FrameList[frame].Frame);
@@ -3540,10 +3597,10 @@ WCacheDiscardBlocks__(
     ExReleaseResourceForThreadLite(&(Cache->WCacheLock), ExGetCurrentResourceThread());
 } // end WCacheDiscardBlocks__()
 
-OSSTATUS
+NTSTATUS
 WCacheCompleteAsync__(
     IN PVOID WContext,
-    IN OSSTATUS Status
+    IN NTSTATUS Status
     )
 {
     PW_CACHE_ASYNC AsyncCtx = (PW_CACHE_ASYNC)WContext;
@@ -3559,7 +3616,7 @@ WCacheCompleteAsync__(
   WCacheDecodeFlags() updates internal BOOLEANs according to Flags
   Internal routine
  */
-OSSTATUS
+NTSTATUS
 __fastcall
 WCacheDecodeFlags(
     IN PW_CACHE Cache,        // pointer to the Cache Control structure
@@ -3567,7 +3624,7 @@ WCacheDecodeFlags(
     )
 {
     //ULONG OldFlags;
-    if(Flags & ~WCACHE_VALID_FLAGS) {
+    if (Flags & ~WCACHE_VALID_FLAGS) {
         UDFPrint(("Invalid flags: %x\n", Flags & ~WCACHE_VALID_FLAGS));
         return STATUS_INVALID_PARAMETER;
     }
@@ -3575,7 +3632,7 @@ WCacheDecodeFlags(
     Cache->DoNotCompare = (Flags & WCACHE_DO_NOT_COMPARE) ? TRUE : FALSE;
     Cache->Chained = (Flags & WCACHE_CHAINED_IO) ? TRUE : FALSE;
     Cache->RememberBB = (Flags & WCACHE_MARK_BAD_BLOCKS) ? TRUE : FALSE;
-    if(Cache->RememberBB) {
+    if (Cache->RememberBB) {
         Cache->NoWriteBB = (Flags & WCACHE_RO_BAD_BLOCKS) ? TRUE : FALSE;
     }
     Cache->NoWriteThrough = (Flags & WCACHE_NO_WRITE_THROUGH) ? TRUE : FALSE;
@@ -3598,10 +3655,10 @@ WCacheChFlags__(
 {
     ULONG Flags;
 
-    if(SetFlags || ClrFlags) {
+    if (SetFlags || ClrFlags) {
         Flags = (Cache->Flags & ~ClrFlags) | SetFlags;
 
-        if(!OS_SUCCESS(WCacheDecodeFlags(Cache, Flags))) {
+        if (!NT_SUCCESS(WCacheDecodeFlags(Cache, Flags))) {
             return -1;
         }
     } else {

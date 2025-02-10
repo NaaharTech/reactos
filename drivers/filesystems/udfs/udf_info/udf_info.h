@@ -41,15 +41,19 @@ UDFLocateLbaInExtent(
 //#define LBA_NOT_ALLOCATED       ((LONG)(-2))
 
 // read data at any offset from extent
-OSSTATUS UDFReadExtent(IN PVCB Vcb,
-                       IN PEXTENT_INFO ExtInfo, // Extent array
-                       IN int64 Offset,   // offset in extent
-                       IN SIZE_T Length,
-                       IN BOOLEAN Direct,
-                       OUT int8* Buffer,
-                       OUT PSIZE_T ReadBytes);
+NTSTATUS UDFReadExtent(
+    IN PIRP_CONTEXT IrpContext,
+    IN PVCB Vcb,
+    IN PEXTENT_INFO ExtInfo, // Extent array
+    IN int64 Offset,   // offset in extent
+    IN SIZE_T Length,
+    IN BOOLEAN Direct,
+    OUT int8* Buffer,
+    OUT PSIZE_T ReadBytes
+    );
+
 // builds mapping for specified amount of data at any offset from specified extent.
-OSSTATUS
+NTSTATUS
 UDFReadExtentLocation(IN PVCB Vcb,
                       IN PEXTENT_INFO ExtInfo,      // Extent array
                       IN int64 Offset,              // offset in extent to start SubExtent from
@@ -87,10 +91,10 @@ PDIR_INDEX_ITEM UDFDirIndexGetFrame(IN PDIR_INDEX_HDR hDirNdx,
 // release DirIndex
 void UDFDirIndexFree(PDIR_INDEX_HDR hDirNdx);
 // grow DirIndex
-OSSTATUS UDFDirIndexGrow(IN PDIR_INDEX_HDR* _hDirNdx,
+NTSTATUS UDFDirIndexGrow(IN PDIR_INDEX_HDR* _hDirNdx,
                          IN uint_di d);
 // truncate DirIndex
-OSSTATUS UDFDirIndexTrunc(IN PDIR_INDEX_HDR* _hDirNdx,
+NTSTATUS UDFDirIndexTrunc(IN PDIR_INDEX_HDR* _hDirNdx,
                           IN uint_di d);
 // init variables for scan (using knowledge about internal structure)
 BOOLEAN UDFDirIndexInitScan(IN PUDF_FILE_INFO DirInfo,   //
@@ -99,24 +103,30 @@ BOOLEAN UDFDirIndexInitScan(IN PUDF_FILE_INFO DirInfo,   //
 //
 PDIR_INDEX_ITEM UDFDirIndexScan(PUDF_DIR_SCAN_CONTEXT Context,
                                 PUDF_FILE_INFO* _FileInfo);
+
 // build directory index
-OSSTATUS UDFIndexDirectory(IN PVCB Vcb,
-                        IN OUT PUDF_FILE_INFO FileInfo);
+NTSTATUS
+UDFIndexDirectory(
+    IN PIRP_CONTEXT IrpContext,
+    IN PVCB Vcb,
+    IN OUT PUDF_FILE_INFO FileInfo
+    );
+
 // search for specified file in specified directory &
 // returns corresponding offset in extent if found.
-OSSTATUS UDFFindFile(IN PVCB Vcb,
+NTSTATUS UDFFindFile(IN PVCB Vcb,
                      IN BOOLEAN IgnoreCase,
                      IN BOOLEAN NotDeleted,
                      IN PUNICODE_STRING Name,
                      IN PUDF_FILE_INFO DirInfo,
                   IN OUT uint_di* Index);
 
-__inline OSSTATUS UDFFindFile__(IN PVCB Vcb,
+__inline NTSTATUS UDFFindFile__(IN PVCB Vcb,
                                 IN BOOLEAN IgnoreCase,
                                 IN PUNICODE_STRING Name,
                                 IN PUDF_FILE_INFO DirInfo)
 {
-    if(!DirInfo->Dloc->DirIndex)
+    if (!DirInfo->Dloc->DirIndex)
         return STATUS_NOT_A_DIRECTORY;
     uint_di i=0;
     return UDFFindFile(Vcb, IgnoreCase, TRUE, Name, DirInfo, &i);
@@ -128,44 +138,79 @@ uint32   UDFGetMappingLength(IN PEXTENT_MAP Extent);
 PEXTENT_MAP
 __fastcall UDFMergeMappings(IN PEXTENT_MAP Extent,
                              IN PEXTENT_MAP Extent2);
+
 // build file mapping according to ShortAllocDesc (SHORT_AD) array
-PEXTENT_MAP UDFShortAllocDescToMapping(IN PVCB Vcb,
-                                      IN uint32 PartNum,
-                                      IN PLONG_AD AllocDesc,
-                                      IN uint32 AllocDescLength,
-                                      IN uint32 SubCallCount,
-                                      OUT PEXTENT_INFO AllocLoc);
+PEXTENT_MAP
+UDFShortAllocDescToMapping(
+    IN PIRP_CONTEXT IrpContext,
+    IN PVCB Vcb,
+    IN uint32 PartNum,
+    IN PLONG_AD AllocDesc,
+    IN uint32 AllocDescLength,
+    IN uint32 SubCallCount,
+    OUT PEXTENT_INFO AllocLoc
+    );
+
 // build file mapping according to LongAllocDesc (LONG_AD) array
-PEXTENT_MAP UDFLongAllocDescToMapping(IN PVCB Vcb,
-                                      IN PLONG_AD AllocDesc,
-                                      IN uint32 AllocDescLength,
-                                      IN uint32 SubCallCount,
-                                      OUT PEXTENT_INFO AllocLoc);
+PEXTENT_MAP
+UDFLongAllocDescToMapping(
+    IN PIRP_CONTEXT IrpContext,
+    IN PVCB Vcb,
+    IN PLONG_AD AllocDesc,
+    IN uint32 AllocDescLength,
+    IN uint32 SubCallCount,
+    OUT PEXTENT_INFO AllocLoc
+    );
+
 // build file mapping according to ExtendedAllocDesc (EXT_AD) array
-PEXTENT_MAP UDFExtAllocDescToMapping(IN PVCB Vcb,
-                                      IN PLONG_AD AllocDesc,
-                                      IN uint32 AllocDescLength,
-                                      IN uint32 SubCallCount,
-                                      OUT PEXTENT_INFO AllocLoc);
+PEXTENT_MAP
+UDFExtAllocDescToMapping(
+    IN PIRP_CONTEXT IrpContext,
+    IN PVCB Vcb,
+    IN PLONG_AD AllocDesc,
+    IN uint32 AllocDescLength,
+    IN uint32 SubCallCount,
+    OUT PEXTENT_INFO AllocLoc
+    );
+
 // build file mapping according to (Extended)FileEntry
-PEXTENT_MAP UDFReadMappingFromXEntry(IN PVCB Vcb,
-                                     IN uint32 PartNum,
-                                     IN tag* XEntry,
-                                     IN OUT uint32* Offset,
-                                     OUT PEXTENT_INFO AllocLoc);
+PEXTENT_MAP
+UDFReadMappingFromXEntry(
+    IN PIRP_CONTEXT IrpContext,
+    IN PVCB Vcb,
+    IN uint32 PartNum,
+    IN tag* XEntry,
+    IN OUT uint32* Offset,
+    OUT PEXTENT_INFO AllocLoc
+    );
+
 // read FileEntry described in FileIdentDesc
-OSSTATUS UDFReadFileEntry(IN PVCB Vcb,
-//                          IN PFILE_IDENT_DESC FileDesc,
-                          IN long_ad* Icb,
-                       IN OUT PFILE_ENTRY FileEntry, // here we can also get ExtendedFileEntry
-                       IN OUT uint16* Ident);
+NTSTATUS UDFReadFileEntry(
+    IN PIRP_CONTEXT IrpContext,
+    IN PVCB Vcb,
+    // IN PFILE_IDENT_DESC FileDesc,
+    IN long_ad* Icb,
+    IN OUT PFILE_ENTRY FileEntry, // here we can also get ExtendedFileEntry
+    IN OUT uint16* Ident
+    );
+
 // scan FileSet sequence & return last valid FileSet
-OSSTATUS UDFFindLastFileSet(IN PVCB Vcb,
-                            IN lb_addr *Addr,  // Addr for the 1st FileSet
-                            IN OUT PFILE_SET_DESC FileSetDesc);
+NTSTATUS
+UDFFindLastFileSet(
+    IN PIRP_CONTEXT IrpContext,
+    IN PVCB Vcb,
+    IN lb_addr *Addr,  // Addr for the 1st FileSet
+    IN OUT PFILE_SET_DESC FileSetDesc
+    );
+
 // read all sparing tables & stores them in contiguos memory
-OSSTATUS UDFLoadSparingTable(IN PVCB Vcb,
-                              IN PSPARABLE_PARTITION_MAP PartMap);
+NTSTATUS
+UDFLoadSparingTable(
+    IN PIRP_CONTEXT IrpContext,
+    IN PVCB Vcb,
+    IN PSPARABLE_PARTITION_MAP PartMap
+    );
+
 // build mapping for extent
 PEXTENT_MAP
 __fastcall UDFExtentToMapping_(IN PEXTENT_AD Extent
@@ -182,13 +227,16 @@ __fastcall UDFExtentToMapping_(IN PEXTENT_AD Extent
 #endif //UDF_TRACK_EXTENT_TO_MAPPING
 
 //    This routine remaps sectors from bad packet
-OSSTATUS
-__fastcall UDFRemapPacket(IN PVCB Vcb,
-                        IN uint32 Lba,
-                        IN BOOLEAN RemapSpared);
+NTSTATUS
+UDFRemapPacket(
+    IN PIRP_CONTEXT IrpContext,
+    IN PVCB Vcb,
+    IN uint32 Lba,
+    IN BOOLEAN RemapSpared
+    );
 
 //    This routine releases sector mapping when entire packet is marked as free
-OSSTATUS
+NTSTATUS
 __fastcall UDFUnmapRange(IN PVCB Vcb,
                         IN uint32 Lba,
                         IN uint32 BCount);
@@ -323,7 +371,8 @@ void     UDFMarkSpaceAsXXX_(IN PVCB Vcb,
 #define AS_BAD          0x04
 
 // build mapping for Length bytes in FreeSpace
-OSSTATUS UDFAllocFreeExtent_(IN PVCB Vcb,
+NTSTATUS UDFAllocFreeExtent_(IN PIRP_CONTEXT IrpContext,
+                            IN PVCB Vcb,
                             IN int64 Length,
                             IN uint32 SearchStart,
                             IN uint32 SearchLim,
@@ -338,7 +387,7 @@ OSSTATUS UDFAllocFreeExtent_(IN PVCB Vcb,
 #ifdef UDF_TRACK_ALLOC_FREE_EXTENT
 #define UDFAllocFreeExtent(v, l, ss, sl, e, af)  UDFAllocFreeExtent_(v, l, ss, sl, e, af, UDF_BUG_CHECK_ID, __LINE__)
 #else //UDF_TRACK_ALLOC_FREE_EXTENT
-#define UDFAllocFreeExtent(v, l, ss, sl, e, af)  UDFAllocFreeExtent_(v, l, ss, sl, e, af)
+#define UDFAllocFreeExtent(c, v, l, ss, sl, e, af)  UDFAllocFreeExtent_(c, v, l, ss, sl, e, af)
 #endif //UDF_TRACK_ALLOC_FREE_EXTENT
 //
 
@@ -350,7 +399,7 @@ UDFGetPartFreeSpace(IN PVCB Vcb,
 #define UDF_PREALLOC_CLASS_DIR   0x01
 
 // try to find cached allocation
-OSSTATUS
+NTSTATUS
 UDFGetCachedAllocation(
     IN PVCB Vcb,
     IN uint32 ParentLocation,
@@ -359,7 +408,7 @@ UDFGetCachedAllocation(
     IN uint32 AllocClass
     );
 // put released pre-allocation to cache
-OSSTATUS
+NTSTATUS
 UDFStoreCachedAllocation(
     IN PVCB Vcb,
     IN uint32 ParentLocation,
@@ -368,17 +417,23 @@ UDFStoreCachedAllocation(
     IN uint32 AllocClass
     );
 // discard all cached allocations
-OSSTATUS
+NTSTATUS
 UDFFlushAllCachedAllocations(
     IN PVCB Vcb,
     IN uint32 AllocClass
     );
+
 // allocate space for FE
-OSSTATUS UDFAllocateFESpace(IN PVCB Vcb,
-                            IN PUDF_FILE_INFO DirInfo,
-                            IN uint32 PartNum,
-                            IN PEXTENT_INFO FEExtInfo,
-                            IN uint32 Len);
+NTSTATUS
+UDFAllocateFESpace(
+    IN PIRP_CONTEXT IrpContext,
+    IN PVCB Vcb,
+    IN PUDF_FILE_INFO DirInfo,
+    IN uint32 PartNum,
+    IN PEXTENT_INFO FEExtInfo,
+    IN uint32 Len
+    );
+
 // free space FE's allocation
 void UDFFreeFESpace(IN PVCB Vcb,
                     IN PUDF_FILE_INFO DirInfo,
@@ -404,29 +459,45 @@ uint32    UDFPhysLbaToPart(IN PVCB Vcb,
 // initialize Tag structure.
 void
 UDFSetUpTag(IN PVCB Vcb, IN tag *Tag, IN uint16 DataLen, IN uint32 TagLoc, IN uint16 skip);
+
 // build content for AllocDesc sequence for specified extent
-OSSTATUS UDFBuildShortAllocDescs(IN PVCB Vcb,
-                                 IN uint32 PartNum,
-                                 OUT int8** Buff,  // data for AllocLoc
-                                 IN uint32 InitSz,
-                              IN OUT PUDF_FILE_INFO FileInfo);
+NTSTATUS
+UDFBuildShortAllocDescs(
+    IN PIRP_CONTEXT IrpContext,
+    IN PVCB Vcb,
+    IN uint32 PartNum,
+    OUT int8** Buff,  // data for AllocLoc
+    IN uint32 InitSz,
+    IN OUT PUDF_FILE_INFO FileInfo
+    );
+
 // build data for AllocDesc sequence for specified
-OSSTATUS UDFBuildLongAllocDescs(IN PVCB Vcb,
-                                IN uint32 PartNum,
-                                OUT int8** Buff,  // data for AllocLoc
-                                IN uint32 InitSz,
-                             IN OUT PUDF_FILE_INFO FileInfo);
+NTSTATUS
+UDFBuildLongAllocDescs(
+    IN PIRP_CONTEXT IrpContext,
+    IN PVCB Vcb,
+    IN uint32 PartNum,
+    OUT int8** Buff,  // data for AllocLoc
+    IN uint32 InitSz,
+    IN OUT PUDF_FILE_INFO FileInfo
+    );
+
 // builds FileEntry & associated AllocDescs for specified extent.
-OSSTATUS UDFBuildFileEntry(IN PVCB Vcb,
-                           IN PUDF_FILE_INFO DirInfo,
-                           IN PUDF_FILE_INFO FileInfo,
-                           IN uint32 PartNum,
-                           IN uint16 AllocMode, // short/long/ext/in-icb
-                           IN uint32 ExtAttrSz,
-                           IN BOOLEAN Extended/*,
-                           OUT PFILE_ENTRY* FEBuff,
-                           OUT uint32* FELen,
-                           OUT PEXTENT_INFO FEExtInfo*/);
+NTSTATUS
+UDFBuildFileEntry(
+    IN PIRP_CONTEXT IrpContext,
+    IN PVCB Vcb,
+    IN PUDF_FILE_INFO DirInfo,
+    IN PUDF_FILE_INFO FileInfo,
+    IN uint32 PartNum,
+    IN uint16 AllocMode, // short/long/ext/in-icb
+    IN uint32 ExtAttrSz,
+    IN BOOLEAN Extended/*,
+    OUT PFILE_ENTRY* FEBuff,
+    OUT uint32* FELen,
+    OUT PEXTENT_INFO FEExtInfo*/
+    );
+
 // find reference partition number containing given physical sector
 uint32 __fastcall UDFGetRefPartNumByPhysLba(IN PVCB Vcb, IN uint32 Lba);
 
@@ -434,54 +505,70 @@ uint32 __fastcall UDFGetRefPartNumByPhysLba(IN PVCB Vcb, IN uint32 Lba);
 #define UDF_FSPACE_BM    0x00
 #define UDF_ZSPACE_BM    0x01
 
-OSSTATUS UDFAddXSpaceBitmap(IN PVCB Vcb,
-                            IN uint32 PartNum,
-                            IN PSHORT_AD bm,
-                            IN ULONG bm_type);
+NTSTATUS
+UDFAddXSpaceBitmap(
+    IN PIRP_CONTEXT IrpContext,
+    IN PVCB Vcb,
+    IN uint32 PartNum,
+    IN PSHORT_AD bm,
+    IN ULONG bm_type
+    );
+
 // subtract given Bitmap to existing one
-OSSTATUS UDFDelXSpaceBitmap(IN PVCB Vcb,
+NTSTATUS UDFDelXSpaceBitmap(IN PVCB Vcb,
                             IN uint32 PartNum,
                             IN PSHORT_AD bm);
 // build FreeSpaceBitmap (internal) according to media parameters & input data
-OSSTATUS UDFBuildFreeSpaceBitmap(IN PVCB Vcb,
-                                IN uint32 PartNdx,
-                                IN PPARTITION_HEADER_DESC phd,
-                                IN uint32 Lba);
+NTSTATUS
+UDFBuildFreeSpaceBitmap(
+    IN PIRP_CONTEXT IrpContext,
+    IN PVCB Vcb,
+    IN uint32 PartNdx,
+    IN PPARTITION_HEADER_DESC phd,
+    IN uint32 Lba
+    );
+
 // fill ExtentInfo for specified FileEntry
-OSSTATUS UDFLoadExtInfo(IN PVCB Vcb,
-                        IN PFILE_ENTRY fe,
-                        IN PLONG_AD fe_loc,
-                        IN OUT PEXTENT_INFO FExtInfo,
-                        IN OUT PEXTENT_INFO AExtInfo);
+NTSTATUS
+UDFLoadExtInfo(
+    IN PIRP_CONTEXT IrpContext,
+    IN PVCB Vcb,
+    IN PFILE_ENTRY fe,
+    IN PLONG_AD fe_loc,
+    IN OUT PEXTENT_INFO FExtInfo,
+    IN OUT PEXTENT_INFO AExtInfo
+    );
+
 // convert standard Unicode to compressed
 void
 __fastcall UDFCompressUnicode(IN PUNICODE_STRING UName,
                             IN OUT uint8** _CS0,
                             IN OUT PSIZE_T Length);
 // build FileIdent for specified FileEntry.
-OSSTATUS UDFBuildFileIdent(IN PVCB Vcb,
+NTSTATUS UDFBuildFileIdent(IN PVCB Vcb,
                            IN PUNICODE_STRING fn,
                            IN PLONG_AD FileEntryIcb,       // virtual address of FileEntry
                            IN uint32 ImpUseLen,
                            OUT PFILE_IDENT_DESC* _FileId,
                            OUT uint32* FileIdLen);
 // rebuild mapping on write attempts to Alloc-Not-Rec area.
-OSSTATUS UDFMarkAllocatedAsRecorded(IN PVCB Vcb,
+NTSTATUS UDFMarkAllocatedAsRecorded(IN PVCB Vcb,
                                     IN int64 Offset,
                                     IN uint32 Length,
                                     IN PEXTENT_INFO ExtInfo);   // Extent array
 // rebuild mapping on write attempts to Not-Alloc-Not-Rec area
-OSSTATUS UDFMarkNotAllocatedAsAllocated(IN PVCB Vcb,
+NTSTATUS UDFMarkNotAllocatedAsAllocated(IN PIRP_CONTEXT IrpContext,
+                                        IN PVCB Vcb,
                                         IN int64 Offset,
                                         IN uint32 Length,
                                         IN PEXTENT_INFO ExtInfo);   // Extent array
-OSSTATUS UDFMarkAllocatedAsNotXXX(IN PVCB Vcb,
+NTSTATUS UDFMarkAllocatedAsNotXXX(IN PVCB Vcb,
                                   IN int64 Offset,
                                   IN uint32 Length,
                                   IN PEXTENT_INFO ExtInfo,   // Extent array
                                   IN BOOLEAN Deallocate);
 #ifdef DBG
-__inline OSSTATUS UDFMarkAllocatedAsNotAllocated(IN PVCB Vcb,
+__inline NTSTATUS UDFMarkAllocatedAsNotAllocated(IN PVCB Vcb,
                                   IN int64 Offset,
                                   IN uint32 Length,
                                   IN PEXTENT_INFO ExtInfo)
@@ -494,7 +581,7 @@ __inline OSSTATUS UDFMarkAllocatedAsNotAllocated(IN PVCB Vcb,
 #endif //DBG
 
 #ifdef DBG
-__inline OSSTATUS UDFMarkRecordedAsAllocated(IN PVCB Vcb,
+__inline NTSTATUS UDFMarkRecordedAsAllocated(IN PVCB Vcb,
                                   IN int64 Offset,
                                   IN uint32 Length,
                                   IN PEXTENT_INFO ExtInfo)
@@ -505,31 +592,39 @@ __inline OSSTATUS UDFMarkRecordedAsAllocated(IN PVCB Vcb,
 #define UDFMarkRecordedAsAllocated(Vcb, Off, Len, Ext) \
     UDFMarkAllocatedAsNotXXX(Vcb, Off, Len, Ext, FALSE)
 #endif //DBG
+
 // write data at any offset from specified extent.
-OSSTATUS UDFWriteExtent(IN PVCB Vcb,
-                        IN PEXTENT_INFO ExtInfo,   // Extent array
-                        IN int64 Offset,           // offset in extent
-                        IN SIZE_T Length,
-                        IN BOOLEAN Direct,         // setting this flag delays flushing of given
-                                                   // data to indefinite term
-                        IN int8* Buffer,
-                        OUT PSIZE_T WrittenBytes);
+NTSTATUS UDFWriteExtent(
+    IN PIRP_CONTEXT IrpContext,
+    IN PVCB Vcb,
+    IN PEXTENT_INFO ExtInfo,   // Extent array
+    IN int64 Offset,           // offset in extent
+    IN SIZE_T Length,
+    IN BOOLEAN Direct,         // setting this flag delays flushing of given
+                               // data to indefinite term
+    IN int8* Buffer,
+    OUT PSIZE_T WrittenBytes
+    );
 
 // deallocate/zero data at any offset from specified extent.
-OSSTATUS UDFZeroExtent(IN PVCB Vcb,
-                       IN PEXTENT_INFO ExtInfo,   // Extent array
-                       IN int64 Offset,           // offset in extent
-                       IN SIZE_T Length,
-                       IN BOOLEAN Deallocate,     // deallocate frag or just mark as unrecorded
-                       IN BOOLEAN Direct,         // setting this flag delays flushing of given
-                                                  // data to indefinite term
-                       OUT PSIZE_T WrittenBytes);
+NTSTATUS
+UDFZeroExtent(
+    IN PIRP_CONTEXT IrpContext,
+    IN PVCB Vcb,
+    IN PEXTENT_INFO ExtInfo,   // Extent array
+    IN int64 Offset,           // offset in extent
+    IN SIZE_T Length,
+    IN BOOLEAN Deallocate,     // deallocate frag or just mark as unrecorded
+    IN BOOLEAN Direct,         // setting this flag delays flushing of given
+                               // data to indefinite term
+    OUT PSIZE_T WrittenBytes
+    );
 
-#define UDFZeroExtent__(Vcb, Ext, Off, Len, Dir, WB) \
-  UDFZeroExtent(Vcb, Ext, Off, Len, FALSE, Dir, WB)
+#define UDFZeroExtent__(IrpContext, Vcb, Ext, Off, Len, Dir, WB) \
+  UDFZeroExtent(IrpContext, Vcb, Ext, Off, Len, FALSE, Dir, WB)
 
-#define UDFSparseExtent__(Vcb, Ext, Off, Len, Dir, WB) \
-  UDFZeroExtent(Vcb, Ext, Off, Len, TRUE, Dir, WB)
+#define UDFSparseExtent__(IrpContext, Vcb, Ext, Off, Len, Dir, WB) \
+  UDFZeroExtent(IrpContext, Vcb, Ext, Off, Len, TRUE, Dir, WB)
 
 uint32
 __fastcall UDFPartStart(PVCB Vcb,
@@ -537,17 +632,27 @@ __fastcall UDFPartStart(PVCB Vcb,
 uint32
 __fastcall UDFPartEnd(PVCB Vcb,
                       uint32 PartNum);
+
 // resize extent & associated mapping
-OSSTATUS UDFResizeExtent(IN PVCB Vcb,
-                         IN uint32 PartNum,
-                         IN int64 Length,
-                         IN BOOLEAN AlwaysInIcb,   // must be TRUE for AllocDescs
-                         OUT PEXTENT_INFO ExtInfo);
+NTSTATUS
+UDFResizeExtent(
+    IN PIRP_CONTEXT IrpContext,
+    IN PVCB Vcb,
+    IN uint32 PartNum,
+    IN int64 Length,
+    IN BOOLEAN AlwaysInIcb,   // must be TRUE for AllocDescs
+    OUT PEXTENT_INFO ExtInfo
+    );
+
 // (re)build AllocDescs data  & resize associated extent
-OSSTATUS UDFBuildAllocDescs(IN PVCB Vcb,
-                            IN uint32 PartNum,
-                         IN OUT PUDF_FILE_INFO FileInfo,
-                            OUT int8** AllocData);
+NTSTATUS UDFBuildAllocDescs(
+    IN PIRP_CONTEXT IrpContext,
+    IN PVCB Vcb,
+    IN uint32 PartNum,
+    IN OUT PUDF_FILE_INFO FileInfo,
+    OUT int8** AllocData
+    );
+
 // set informationLength field in (Ext)FileEntry
 void     UDFSetFileSize(IN PUDF_FILE_INFO FileInfo,
                         IN int64 Size);
@@ -604,72 +709,108 @@ void  UDFChangeFileCounter(IN PVCB Vcb,
 #define UDFDecFileCounter(Vcb) UDFChangeFileCounter(Vcb, TRUE, FALSE);
 #define UDFIncDirCounter(Vcb)  UDFChangeFileCounter(Vcb, FALSE, TRUE);
 #define UDFDecDirCounter(Vcb)  UDFChangeFileCounter(Vcb, FALSE, FALSE);
+
 // write to file
-OSSTATUS UDFWriteFile__(IN PVCB Vcb,
-                        IN PUDF_FILE_INFO FileInfo,
-                        IN int64 Offset,
-                        IN SIZE_T Length,
-                        IN BOOLEAN Direct,
-                        IN int8* Buffer,
-                        OUT PSIZE_T WrittenBytes);
+NTSTATUS
+UDFWriteFile__(
+    IN PIRP_CONTEXT IrpContext,
+    IN PVCB Vcb,
+    IN PUDF_FILE_INFO FileInfo,
+    IN int64 Offset,
+    IN SIZE_T Length,
+    IN BOOLEAN Direct,
+    IN int8* Buffer,
+    OUT PSIZE_T WrittenBytes
+    );
+
 // mark file as deleted & decrease file link counter.
-OSSTATUS UDFUnlinkFile__(IN PVCB Vcb,
-                         IN PUDF_FILE_INFO FileInfo,
-                         IN BOOLEAN FreeSpace);
+NTSTATUS
+UDFUnlinkFile__(
+    IN PIRP_CONTEXT IrpContext,
+    IN PVCB Vcb,
+    IN PUDF_FILE_INFO FileInfo,
+    IN BOOLEAN FreeSpace
+    );
+
 // delete all files in directory (FreeSpace = TRUE)
-OSSTATUS UDFUnlinkAllFilesInDir(IN PVCB Vcb,
-                                IN PUDF_FILE_INFO DirInfo);
+NTSTATUS
+UDFUnlinkAllFilesInDir(
+    IN PIRP_CONTEXT IrpContext,
+    IN PVCB Vcb,
+    IN PUDF_FILE_INFO DirInfo
+    );
+
 // init UDF_FILE_INFO structure for specifiend file
-OSSTATUS UDFOpenFile__(IN PVCB Vcb,
-                       IN BOOLEAN IgnoreCase,
-                       IN BOOLEAN NotDeleted,
-                       IN PUNICODE_STRING fn,
-                       IN PUDF_FILE_INFO DirInfo,
-                       OUT PUDF_FILE_INFO* _FileInfo,
-                       IN uint_di* IndexToOpen);
+NTSTATUS
+UDFOpenFile__(
+    IN PIRP_CONTEXT IrpContext,
+    IN PVCB Vcb,
+    IN BOOLEAN IgnoreCase,
+    IN BOOLEAN NotDeleted,
+    IN PUNICODE_STRING fn,
+    IN PUDF_FILE_INFO DirInfo,
+    OUT PUDF_FILE_INFO* _FileInfo,
+    IN uint_di* IndexToOpen
+    );
+
 // init UDF_FILE_INFO structure for root directory
-OSSTATUS UDFOpenRootFile__(IN PVCB Vcb,
-                          IN lb_addr* RootLoc,
-                          OUT PUDF_FILE_INFO FileInfo);
+NTSTATUS
+UDFOpenRootFile__(
+    IN PIRP_CONTEXT IrpContext,
+    IN PVCB Vcb,
+    IN lb_addr* RootLoc,
+    OUT PUDF_FILE_INFO FileInfo
+    );
+
 // free all memory blocks referenced by given FileInfo
 uint32    UDFCleanUpFile__(IN PVCB Vcb,
                           IN PUDF_FILE_INFO FileInfo);
 #define  UDF_FREE_NOTHING     0x00
 #define  UDF_FREE_FILEINFO    0x01
 #define  UDF_FREE_DLOC        0x02
+
 // create zero-sized file
-OSSTATUS UDFCreateFile__(IN PVCB Vcb,
-                         IN BOOLEAN IgnoreCase,
-                         IN PUNICODE_STRING fn,
-                         IN uint32 ExtAttrSz,
-                         IN uint32 ImpUseLen,
-                         IN BOOLEAN Extended,
-                         IN BOOLEAN CreateNew,
-                      IN OUT PUDF_FILE_INFO DirInfo,
-                         OUT PUDF_FILE_INFO* _FileInfo);
+NTSTATUS
+UDFCreateFile__(
+    IN PIRP_CONTEXT IrpContext,
+    IN PVCB Vcb,
+    IN BOOLEAN IgnoreCase,
+    IN PUNICODE_STRING fn,
+    IN uint32 ExtAttrSz,
+    IN uint32 ImpUseLen,
+    IN BOOLEAN Extended,
+    IN BOOLEAN CreateNew,
+    IN OUT PUDF_FILE_INFO DirInfo,
+    OUT PUDF_FILE_INFO* _FileInfo
+    );
+
 // read data from file described with FileInfo
 /*
     This routine reads data from file described by FileInfo
  */
 __inline
-OSSTATUS UDFReadFile__(IN PVCB Vcb,
-                       IN PUDF_FILE_INFO FileInfo,
-                       IN int64 Offset,   // offset in extent
-                       IN SIZE_T Length,
-                       IN BOOLEAN Direct,
-                       OUT int8* Buffer,
-                       OUT PSIZE_T ReadBytes)
+NTSTATUS
+UDFReadFile__(
+    IN PIRP_CONTEXT IrpContext,
+    IN PVCB Vcb,
+    IN PUDF_FILE_INFO FileInfo,
+    IN int64 Offset,   // offset in extent
+    IN SIZE_T Length,
+    IN BOOLEAN Direct,
+    OUT int8* Buffer,
+    OUT PSIZE_T ReadBytes
+    )
 {
     ValidateFileInfo(FileInfo);
 
-    return UDFReadExtent(Vcb, &(FileInfo->Dloc->DataLoc), Offset, Length, Direct, Buffer, ReadBytes);
+    return UDFReadExtent(IrpContext, Vcb, &FileInfo->Dloc->DataLoc, Offset, Length, Direct, Buffer, ReadBytes);
 } // end UDFReadFile__()*/
 
 /*
     This routine reads data from file described by FileInfo
  */
 __inline
-OSSTATUS UDFReadFileLocation__(IN PVCB Vcb,
+NTSTATUS UDFReadFileLocation__(IN PVCB Vcb,
                                IN PUDF_FILE_INFO FileInfo,
                                IN int64 Offset,              // offset in extent to start SubExtent from
                                OUT PEXTENT_MAP* SubExtInfo,  // SubExtent mapping array
@@ -690,84 +831,161 @@ OSSTATUS UDFReadFileLocation__(IN PVCB Vcb,
 
 // zero data in file described by FileInfo
 __inline
-OSSTATUS UDFZeroFile__(IN PVCB Vcb,
-                       IN PUDF_FILE_INFO FileInfo,
-                       IN int64 Offset,   // offset in extent
-                       IN uint32 Length,
-                       IN BOOLEAN Direct,
-                       OUT uint32* ReadBytes);
+NTSTATUS
+UDFZeroFile__(
+    IN PIRP_CONTEXT IrpContext,
+    IN PVCB Vcb,
+    IN PUDF_FILE_INFO FileInfo,
+    IN int64 Offset,   // offset in extent
+    IN uint32 Length,
+    IN BOOLEAN Direct,
+    OUT uint32* ReadBytes
+    );
+
 // make sparse area in file described by FileInfo
 __inline
-OSSTATUS UDFSparseFile__(IN PVCB Vcb,
-                         IN PUDF_FILE_INFO FileInfo,
-                         IN int64 Offset,   // offset in extent
-                         IN uint32 Length,
-                         IN BOOLEAN Direct,
-                         OUT uint32* ReadBytes);
+NTSTATUS UDFSparseFile__(
+    IN PIRP_CONTEXT IrpContext,
+    IN PVCB Vcb,
+    IN PUDF_FILE_INFO FileInfo,
+    IN int64 Offset,   // offset in extent
+    IN uint32 Length,
+    IN BOOLEAN Direct,
+    OUT uint32* ReadBytes
+    );
+
 // pad sector tail with zeros
-OSSTATUS UDFPadLastSector(IN PVCB Vcb,
-                          IN PEXTENT_INFO ExtInfo);
+NTSTATUS
+UDFPadLastSector(
+    IN PIRP_CONTEXT IrpContext,
+    IN PVCB Vcb,
+    IN PEXTENT_INFO ExtInfo
+    );
+
 // update AllocDesc sequence, FileIdent & FileEntry
-OSSTATUS UDFCloseFile__(IN PVCB Vcb,
-                        IN PUDF_FILE_INFO FileInfo);
+NTSTATUS
+UDFCloseFile__(
+    IN PIRP_CONTEXT IrpContext,
+    IN PVCB Vcb,
+    IN PUDF_FILE_INFO FileInfo
+    );
+
 // load specified bitmap.
-OSSTATUS UDFPrepareXSpaceBitmap(IN PVCB Vcb,
-                             IN OUT PSHORT_AD XSpaceBitmap,
-                             IN OUT PEXTENT_INFO XSBMExtInfo,
-                             IN OUT int8** XSBM,
-                             IN OUT uint32* XSl);
+NTSTATUS
+UDFPrepareXSpaceBitmap(
+    IN PIRP_CONTEXT IrpContext,
+    IN PVCB Vcb,
+    IN OUT PSHORT_AD XSpaceBitmap,
+    IN OUT PEXTENT_INFO XSBMExtInfo,
+    IN OUT int8** XSBM,
+    IN OUT uint32* XSl
+    );
+
 // update Freed & Unallocated space bitmaps
-OSSTATUS UDFUpdateXSpaceBitmaps(IN PVCB Vcb,
-                                IN uint32 PartNum,
-                                IN PPARTITION_HEADER_DESC phd); // partition header pointing to Bitmaps
+NTSTATUS
+UDFUpdateXSpaceBitmaps(
+    IN PIRP_CONTEXT IrpContext,
+    IN PVCB Vcb,
+    IN uint32 PartNum,
+    IN PPARTITION_HEADER_DESC phd // partition header pointing to Bitmaps
+    );
+
 // update Partition Desc & associated data structures
-OSSTATUS UDFUpdatePartDesc(PVCB Vcb,
-                           int8* Buf);
+NTSTATUS
+UDFUpdatePartDesc(
+    PIRP_CONTEXT IrpContext,
+    PVCB Vcb,
+    int8* Buf
+);
+
 // update Logical volume integrity descriptor
-OSSTATUS UDFUpdateLogicalVolInt(PVCB            Vcb,
+NTSTATUS UDFUpdateLogicalVolInt(PIRP_CONTEXT IrpContext,
+                                PVCB            Vcb,
                                 BOOLEAN         Close);
 // blank Unalloc Space Desc
-OSSTATUS UDFUpdateUSpaceDesc(IN PVCB Vcb,
+NTSTATUS UDFUpdateUSpaceDesc(IN PVCB Vcb,
                              int8* Buf);
 // update Volume Descriptor Sequence
-OSSTATUS UDFUpdateVDS(IN PVCB Vcb,
-                      IN uint32 block,
-                      IN uint32 lastblock,
-                      IN uint32 flags);
+NTSTATUS
+UDFUpdateVDS(
+    IN PIRP_CONTEXT IrpContext,
+    IN PVCB Vcb,
+    IN uint32 block,
+    IN uint32 lastblock,
+    IN uint32 flags);
+
 // rebuild & flushes all system areas
-OSSTATUS UDFUmount__(IN PVCB Vcb);
+NTSTATUS
+UDFUmount__(
+    IN PIRP_CONTEXT IrpContext,
+    IN PVCB Vcb
+    );
+
 // move file from DirInfo1 to DirInfo2 & renames it to fn
-OSSTATUS UDFRenameMoveFile__(IN PVCB Vcb,
-                             IN BOOLEAN IgnoreCase,
-                          IN OUT BOOLEAN* Replace,   // replace if destination file exists
-                             IN PUNICODE_STRING fn,  // destination
-                         //    IN uint32 ExtAttrSz,
-                          IN OUT PUDF_FILE_INFO DirInfo1,
-                          IN OUT PUDF_FILE_INFO DirInfo2,
-                          IN OUT PUDF_FILE_INFO FileInfo); // source (opened)
+NTSTATUS
+UDFRenameMoveFile__(
+    IN PIRP_CONTEXT IrpContext,
+    IN PVCB Vcb,
+    IN BOOLEAN IgnoreCase,
+    IN OUT BOOLEAN* Replace,   // replace if destination file exists
+    IN PUNICODE_STRING fn,  // destination
+    //    IN uint32 ExtAttrSz,
+    IN OUT PUDF_FILE_INFO DirInfo1,
+    IN OUT PUDF_FILE_INFO DirInfo2,
+    IN OUT PUDF_FILE_INFO FileInfo // source (opened)
+    );
+
 // change file size (on disc)
-OSSTATUS UDFResizeFile__(IN PVCB Vcb,
-                      IN OUT PUDF_FILE_INFO FileInfo,
-                         IN int64 NewLength);
+NTSTATUS
+UDFResizeFile__(
+    IN PIRP_CONTEXT IrpContext,
+    IN PVCB Vcb,
+    IN OUT PUDF_FILE_INFO FileInfo,
+    IN int64 NewLength
+    );
+
 // transform zero-sized file to directory
-OSSTATUS UDFRecordDirectory__(IN PVCB Vcb,
-                           IN OUT PUDF_FILE_INFO DirInfo); // source (opened)
+NTSTATUS
+UDFRecordDirectory__(
+    IN PIRP_CONTEXT IrpContext,
+    IN PVCB Vcb,
+    IN OUT PUDF_FILE_INFO DirInfo   // source (opened)
+    );
+
 // remove all DELETED entries from Dir & resize it.
-OSSTATUS UDFPackDirectory__(IN PVCB Vcb,
-                         IN OUT PUDF_FILE_INFO FileInfo);   // source (opened)
+NTSTATUS
+UDFPackDirectory__(
+    IN PIRP_CONTEXT IrpContext,
+    IN PVCB Vcb,
+    IN OUT PUDF_FILE_INFO FileInfo   // source (opened)
+    );
+
 // rebuild tags for all entries from Dir.
-OSSTATUS
-UDFReTagDirectory(IN PVCB Vcb,
-                  IN OUT PUDF_FILE_INFO FileInfo);   // source (opened)
+NTSTATUS
+UDFReTagDirectory(
+    IN PIRP_CONTEXT IrpContext,
+    IN PVCB Vcb,
+    IN OUT PUDF_FILE_INFO FileInfo   // source (opened)
+    );
+
 // load VAT.
-OSSTATUS UDFLoadVAT(IN PVCB Vcb,
-                     IN uint32 PartNdx);
+NTSTATUS
+UDFLoadVAT(
+    IN PIRP_CONTEXT IrpContext,
+    IN PVCB Vcb,
+    IN uint32 PartNdx
+    );
+
 // get volume free space
 int64
 __fastcall UDFGetFreeSpace(IN PVCB Vcb);
+
 // get volume total space
 int64
-__fastcall UDFGetTotalSpace(IN PVCB Vcb);
+UDFGetTotalSpace(
+    IN PVCB Vcb
+    );
+
 // get DirIndex for specified FileInfo
 PDIR_INDEX_HDR UDFGetDirIndexByFileInfo(IN PUDF_FILE_INFO FileInfo);
 // check if the file has been found is deleted
@@ -785,18 +1003,34 @@ PDIR_INDEX_HDR UDFGetDirIndexByFileInfo(IN PUDF_FILE_INFO FileInfo);
     (((FileInfo)->Dloc->DataLoc.Mapping) ? UDFGetExtentLength((FileInfo)->Dloc->DataLoc.Mapping) : Vcb->LBlockSize)
 // check if the directory is empty
 BOOLEAN  UDFIsDirEmpty(IN PDIR_INDEX_HDR hCurDirNdx);
+
 // flush FE
-OSSTATUS UDFFlushFE(IN PVCB Vcb,
-                    IN PUDF_FILE_INFO FileInfo,
-                    IN uint32 PartNum);
+NTSTATUS
+UDFFlushFE(
+    IN PIRP_CONTEXT IrpContext,
+    IN PVCB Vcb,
+    IN PUDF_FILE_INFO FileInfo,
+    IN uint32 PartNum
+    );
+
 // flush FI
-OSSTATUS UDFFlushFI(IN PVCB Vcb,
-                    IN PUDF_FILE_INFO FileInfo,
-                    IN uint32 PartNum);
+NTSTATUS
+UDFFlushFI(
+    IN PIRP_CONTEXT IrpContext,
+    IN PVCB Vcb,
+    IN PUDF_FILE_INFO FileInfo,
+    IN uint32 PartNum
+    );
+
 // flush all metadata & update counters
-OSSTATUS UDFFlushFile__(IN PVCB Vcb,
-                        IN PUDF_FILE_INFO FileInfo,
-                        IN ULONG FlushFlags = 0);
+NTSTATUS
+UDFFlushFile__(
+    IN PIRP_CONTEXT IrpContext,
+    IN PVCB Vcb,
+    IN PUDF_FILE_INFO FileInfo,
+    IN ULONG FlushFlags = 0
+    );
+
 // check if the file is flushed
 #define UDFIsFlushed(FI) \
     (   FI &&                    \
@@ -829,9 +1063,14 @@ BOOLEAN  UDFIsExtentCached(IN PVCB Vcb,
 ULONG  UDFIsBlockAllocated(IN void* _Vcb,
                            IN uint32 Lba);
 // record VolIdent
-OSSTATUS UDFUpdateVolIdent(IN PVCB Vcb,
-                           IN UDF_VDS_RECORD Lba,
-                           IN PUNICODE_STRING VolIdent);
+NTSTATUS
+UDFUpdateVolIdent(
+    IN PIRP_CONTEXT IrpContext,
+    IN PVCB Vcb,
+    IN UDF_VDS_RECORD Lba,
+    IN PUNICODE_STRING VolIdent
+    );
+
 // calculate checksum for unicode string (for DOS-names)
 uint16
 __fastcall UDFUnicodeCksum(PWCHAR s,
@@ -848,20 +1087,36 @@ __fastcall crc32(IN uint8* s,
             IN uint32 len);
 // calculate a 16-bit CRC checksum using ITU-T V.41 polynomial
 uint16 __fastcall UDFCrc(IN uint8 *Data, IN SIZE_T Size, IN uint16 Crc);
+
 // read the first block of a tagged descriptor & check it
-OSSTATUS UDFReadTagged(IN PVCB Vcb,
-                       IN int8* Buf,
-                       IN uint32 Block,
-                       IN uint32 Location,
-                       OUT uint16 *Ident);
+NTSTATUS UDFReadTagged(
+    IN PIRP_CONTEXT IrpContext,
+    IN PVCB Vcb,
+    IN int8* Buf,
+    IN uint32 Block,
+    IN uint32 Location,
+    OUT uint16 *Ident
+    );
+
 // get physycal Lba for partition-relative addr
 uint32
 __fastcall UDFPartLbaToPhys(IN PVCB Vcb,
                             IN lb_addr* Addr);
+
 // look for Anchor(s) at all possible locations
-lba_t  UDFFindAnchor(PVCB           Vcb);         // Volume control block
+lba_t
+UDFFindAnchor(
+    IN PIRP_CONTEXT IrpContext,
+    IN PVCB Vcb
+    );
+
 // look for Volume recognition sequence
-uint32    UDFFindVRS(PVCB           Vcb);
+uint32
+UDFFindVRS(
+    IN PIRP_CONTEXT IrpContext,
+    PVCB Vcb
+    );
+
 // process Primary volume descriptor
 void     UDFLoadPVolDesc(PVCB Vcb,
                          int8* Buf); // pointer to buffer containing PVD
@@ -874,57 +1129,102 @@ void     UDFLoadPVolDesc(PVCB Vcb,
        : NULL)
 
 // load Logical volume integrity descriptor
-OSSTATUS UDFLoadLogicalVolInt(PDEVICE_OBJECT DeviceObject,
-                              PVCB           Vcb,
-                              extent_ad      loc);
+NTSTATUS
+UDFLoadLogicalVolInt(
+    IN PIRP_CONTEXT IrpContext,
+    PDEVICE_OBJECT DeviceObject,
+    PVCB Vcb,
+    extent_ad loc
+    );
+
 // load Logical volume descriptor
-OSSTATUS UDFLoadLogicalVol(PDEVICE_OBJECT DeviceObject,
-                           PVCB           Vcb,
-                           int8*          Buf,
-                           lb_addr        *fileset);
+NTSTATUS
+UDFLoadLogicalVol(
+    IN PIRP_CONTEXT IrpContext,
+    PDEVICE_OBJECT DeviceObject,
+    PVCB Vcb,
+    int8* Buf,
+    lb_addr* fileset
+    );
+
 // process Partition descriptor
-OSSTATUS UDFLoadPartDesc(PVCB      Vcb,
-                         int8*     Buf);
+NTSTATUS
+UDFLoadPartDesc(
+    PIRP_CONTEXT IrpContext,
+    PVCB Vcb,
+    int8* Buf
+    );
+
 // scan VDS & fill special array
-OSSTATUS UDFReadVDS(IN PVCB Vcb,
-                    IN uint32 block,
-                    IN uint32 lastblock,
-                    IN PUDF_VDS_RECORD vds,
-                    IN int8* Buf);
+NTSTATUS
+UDFReadVDS(
+    IN PIRP_CONTEXT IrpContext,
+    IN PVCB Vcb,
+    IN uint32 block,
+    IN uint32 lastblock,
+    IN PUDF_VDS_RECORD vds,
+    IN int8* Buf
+    );
+
 // process a main/reserve volume descriptor sequence.
-OSSTATUS UDFProcessSequence(IN PDEVICE_OBJECT DeviceObject,
-                            IN PVCB           Vcb,
-                            IN uint32          block,
-                            IN uint32          lastblock,
-                           OUT lb_addr        *fileset,
-                           OUT UDF_VDS_RECORD  *volDesc);
+NTSTATUS
+UDFProcessSequence(
+    IN PIRP_CONTEXT IrpContext,
+    IN PDEVICE_OBJECT DeviceObject,
+    IN PVCB Vcb,
+    IN uint32 block,
+    IN uint32 lastblock,
+    OUT lb_addr *fileset,
+    OUT UDF_VDS_RECORD *volDesc
+    );
+
 // Verifies a main/reserve volume descriptor sequence.
-OSSTATUS UDFVerifySequence(IN PDEVICE_OBJECT    DeviceObject,
-                           IN PVCB              Vcb,
-                           IN uint32             block,
-                           IN uint32             lastblock,
-                          OUT lb_addr           *fileset,
-                          OUT UDF_VDS_RECORD    *volDesc);
+NTSTATUS
+UDFVerifySequence(
+    IN PIRP_CONTEXT IrpContext,
+    IN PDEVICE_OBJECT DeviceObject,
+    IN PVCB Vcb,
+    IN uint32 block,
+    IN uint32 lastblock,
+    OUT lb_addr* fileset,
+    OUT UDF_VDS_RECORD* volDesc
+    );
+
 // remember some useful info about FileSet & RootDir location
 void     UDFLoadFileset(IN PVCB            Vcb,
                         IN PFILE_SET_DESC  fset,
                        OUT lb_addr         *root,
                        OUT lb_addr         *sysstream);
 // load partition info
-OSSTATUS UDFLoadPartition(IN PDEVICE_OBJECT  DeviceObject,
-                          IN PVCB            Vcb,
-                         OUT lb_addr         *fileset);
+NTSTATUS
+UDFLoadPartition(
+    IN PIRP_CONTEXT IrpContext,
+    IN PDEVICE_OBJECT DeviceObject,
+    IN PVCB Vcb,
+    OUT lb_addr* fileset
+    );
+
 // check if this is an UDF-formatted disk
-OSSTATUS UDFGetDiskInfoAndVerify(IN PDEVICE_OBJECT DeviceObject, // the target device object
-                                 IN PVCB           Vcb);         // Volume control block from this DevObj
+NTSTATUS
+UDFGetDiskInfoAndVerify(
+    IN PIRP_CONTEXT IrpContext,
+    IN PDEVICE_OBJECT DeviceObject, // the target device object
+    IN PVCB Vcb
+    );
+
 // create hard link for the file
-OSSTATUS UDFHardLinkFile__(IN PVCB Vcb,
-                           IN BOOLEAN IgnoreCase,
-                        IN OUT BOOLEAN* Replace,      // replace if destination file exists
-                           IN PUNICODE_STRING fn,     // destination
-                        IN OUT PUDF_FILE_INFO DirInfo1,
-                        IN OUT PUDF_FILE_INFO DirInfo2,
-                        IN OUT PUDF_FILE_INFO FileInfo);  // source (opened)
+NTSTATUS
+UDFHardLinkFile__(
+    IN PIRP_CONTEXT IrpContext,
+    IN PVCB Vcb,
+    IN BOOLEAN IgnoreCase,
+    IN OUT BOOLEAN* Replace,      // replace if destination file exists
+    IN PUNICODE_STRING fn,     // destination
+    IN OUT PUDF_FILE_INFO DirInfo1,
+    IN OUT PUDF_FILE_INFO DirInfo2,
+    IN OUT PUDF_FILE_INFO FileInfo  // source (opened)
+    );
+
 //
 LONG     UDFFindDloc(IN PVCB Vcb,
                      IN uint32 Lba);
@@ -932,20 +1232,20 @@ LONG     UDFFindDloc(IN PVCB Vcb,
 LONG     UDFFindFreeDloc(IN PVCB Vcb,
                          IN uint32 Lba);
 //
-OSSTATUS UDFAcquireDloc(IN PVCB Vcb,
+NTSTATUS UDFAcquireDloc(IN PVCB Vcb,
                         IN PUDF_DATALOC_INFO Dloc);
 //
-OSSTATUS UDFReleaseDloc(IN PVCB Vcb,
+NTSTATUS UDFReleaseDloc(IN PVCB Vcb,
                         IN PUDF_DATALOC_INFO Dloc);
 //
-OSSTATUS UDFStoreDloc(IN PVCB Vcb,
+NTSTATUS UDFStoreDloc(IN PVCB Vcb,
                       IN PUDF_FILE_INFO fi,
                       IN uint32 Lba);
 //
-OSSTATUS UDFRemoveDloc(IN PVCB Vcb,
+NTSTATUS UDFRemoveDloc(IN PVCB Vcb,
                        IN PUDF_DATALOC_INFO Dloc);
 //
-OSSTATUS UDFUnlinkDloc(IN PVCB Vcb,
+NTSTATUS UDFUnlinkDloc(IN PVCB Vcb,
                        IN PUDF_DATALOC_INFO Dloc);
 //
 void     UDFFreeDloc(IN PVCB Vcb,
@@ -966,21 +1266,36 @@ PUDF_FILE_INFO UDFLocateAnyParallelFI(PUDF_FILE_INFO fi);   // FileInfo to start
 void UDFInsertLinkedFile(PUDF_FILE_INFO fi,   // FileInfo to be added to chain
                          PUDF_FILE_INFO fi2);   // any FileInfo fro the chain
 //
-OSSTATUS UDFCreateRootFile__(IN PVCB Vcb,
-                         //    IN uint16 AllocMode, // short/long/ext/in-icb  // always in-ICB
-                             IN uint32 PartNum,
-                             IN uint32 ExtAttrSz,
-                             IN uint32 ImpUseLen,
-                             IN BOOLEAN Extended,
-                             OUT PUDF_FILE_INFO* _FileInfo);
+NTSTATUS
+UDFCreateRootFile__(
+    IN PIRP_CONTEXT IrpContext,
+    IN PVCB Vcb,
+    //    IN uint16 AllocMode, // short/long/ext/in-icb  // always in-ICB
+    IN uint32 PartNum,
+    IN uint32 ExtAttrSz,
+    IN uint32 ImpUseLen,
+    IN BOOLEAN Extended,
+    OUT PUDF_FILE_INFO* _FileInfo
+    );
+
 // try to create StreamDirectory associated with given file
-OSSTATUS UDFCreateStreamDir__(IN PVCB Vcb,
-                              IN PUDF_FILE_INFO FileInfo,    // file containing stream-dir
-                              OUT PUDF_FILE_INFO* _SDirInfo);
+NTSTATUS
+UDFCreateStreamDir__(
+    IN PIRP_CONTEXT IrpContext,
+    IN PVCB Vcb,
+    IN PUDF_FILE_INFO FileInfo,    // file containing stream-dir
+    OUT PUDF_FILE_INFO* _SDirInfo
+    );
+
 //
-OSSTATUS UDFOpenStreamDir__(IN PVCB Vcb,
-                            IN PUDF_FILE_INFO FileInfo,    // file containing stream-dir
-                            OUT PUDF_FILE_INFO* _SDirInfo);
+NTSTATUS
+UDFOpenStreamDir__(
+    IN PIRP_CONTEXT IrpContext,
+    IN PVCB Vcb,
+    IN PUDF_FILE_INFO FileInfo,    // file containing stream-dir
+    OUT PUDF_FILE_INFO* _SDirInfo
+    );
+
 //
 #define UDFIsAStreamDir(FI)  ((FI) && ((FI)->Dloc) && ((FI)->Dloc->FE_Flags & UDF_FE_FLAG_IS_SDIR))
 //
@@ -989,24 +1304,35 @@ OSSTATUS UDFOpenStreamDir__(IN PVCB Vcb,
 #define UDFIsAStream(FI)  ((FI) && UDFIsAStreamDir((FI)->ParentFile))
 //
 #define UDFIsSDirDeleted(FI)  ((FI) && (FI)->Dloc && ((FI)->Dloc->FE_Flags & UDF_FE_FLAG_IS_DEL_SDIR))
+
 // Record updated VAT (if updated)
-OSSTATUS UDFRecordVAT(IN PVCB Vcb);
+NTSTATUS
+UDFRecordVAT(
+    IN PIRP_CONTEXT IrpContext,
+    IN PVCB Vcb
+    );
+
 //
-OSSTATUS UDFModifyVAT(IN PVCB Vcb,
+NTSTATUS UDFModifyVAT(IN PVCB Vcb,
                       IN uint32 Lba,
                       IN uint32 Length);
 //
-OSSTATUS UDFUpdateVAT(IN void* _Vcb,
+NTSTATUS UDFUpdateVAT(IN void* _Vcb,
                       IN uint32 Lba,
                       IN uint32* RelocTab,
                       IN uint32 BCount);
 //
-OSSTATUS
+NTSTATUS
 __fastcall UDFUnPackMapping(IN PVCB Vcb,
                           IN PEXTENT_INFO ExtInfo);   // Extent array
 //
-OSSTATUS UDFConvertFEToExtended(IN PVCB Vcb,
-                                IN PUDF_FILE_INFO FileInfo);
+NTSTATUS
+UDFConvertFEToExtended(
+    IN PIRP_CONTEXT IrpContext,
+    IN PVCB Vcb,
+    IN PUDF_FILE_INFO FileInfo
+    );
+
 //
 #define UDFGetPartNumByPartRef(Vcb, pi) (Vcb->Partitions[pi].PartitionNum)
 //
@@ -1014,7 +1340,7 @@ uint32
 __fastcall UDFPartLen(PVCB Vcb,
                       uint32 PartNum);
 //
-OSSTATUS UDFPretendFileDeleted__(IN PVCB Vcb,
+NTSTATUS UDFPretendFileDeleted__(IN PVCB Vcb,
                                  IN PUDF_FILE_INFO FileInfo);
 
 #define UDFStreamsSupported(Vcb) \
@@ -1027,7 +1353,7 @@ OSSTATUS UDFPretendFileDeleted__(IN PVCB Vcb,
 {                                                    \
     UDFInterlockedIncrement((PLONG)&((fi)->RefCount));  \
     UDFInterlockedIncrement((PLONG)&((fi)->Dloc->LinkRefCount));  \
-    if((fi)->ParentFile) {                           \
+    if ((fi)->ParentFile) {                           \
         UDFInterlockedIncrement((PLONG)&((fi)->ParentFile->OpenCount));  \
     }                                                \
 }
@@ -1036,7 +1362,7 @@ OSSTATUS UDFPretendFileDeleted__(IN PVCB Vcb,
 {                                                    \
     UDFInterlockedExchangeAdd((PLONG)&((fi)->RefCount),i);  \
     UDFInterlockedExchangeAdd((PLONG)&((fi)->Dloc->LinkRefCount),i);  \
-    if((fi)->ParentFile) {                           \
+    if ((fi)->ParentFile) {                           \
         UDFInterlockedExchangeAdd((PLONG)&((fi)->ParentFile->OpenCount),i);  \
     }                                                \
 }
@@ -1045,7 +1371,7 @@ OSSTATUS UDFPretendFileDeleted__(IN PVCB Vcb,
 {                                                    \
     UDFInterlockedDecrement((PLONG)&((fi)->RefCount));  \
     UDFInterlockedDecrement((PLONG)&((fi)->Dloc->LinkRefCount));  \
-    if((fi)->ParentFile) {                           \
+    if ((fi)->ParentFile) {                           \
         UDFInterlockedDecrement((PLONG)&((fi)->ParentFile->OpenCount));  \
     }                                                \
 }
@@ -1126,7 +1452,7 @@ UDFDirIndex(
     #define UDFGetUsedBitOwner(Vcb, i) ((Vcb)->FSBM_Bitmap_owners[i])
     #define UDFCheckUsedBitOwner(Vcb, i, o) { \
       ASSERT(i<(Vcb)->FSBM_BitCount); \
-      if((Vcb)->FSBM_Bitmap_owners[i] != -1) { \
+      if ((Vcb)->FSBM_Bitmap_owners[i] != -1) { \
         ASSERT((Vcb)->FSBM_Bitmap_owners[i] == o); \
       } else { \
         ASSERT((Vcb)->FSBM_Bitmap_owners[i] != 0); \
@@ -1147,18 +1473,6 @@ UDFDirIndex(
     #define UDFCheckFreeBitOwner(Vcb, i)
 #endif //UDF_DBG
 
-#ifdef UDF_TRACK_FS_STRUCTURES
-extern
-VOID
-UDFRegisterFsStructure(
-    PVCB   Vcb,
-    uint32 Lba,
-    uint32 Length  // sectors
-    );
-#else //UDF_TRACK_FS_STRUCTURES
-#define UDFRegisterFsStructure(Vcb, Lba, Length)   {NOTHING;}
-#endif //UDF_TRACK_FS_STRUCTURES
-
 extern const char hexChar[];
 
 #define UDF_MAX_VERIFY_CACHE   (8*1024*1024/2048)
@@ -1166,7 +1480,7 @@ extern const char hexChar[];
 #define UDF_VERIFY_CACHE_GRAN  (512*1024/2048)
 #define UDF_SYS_CACHE_STOP_THR (10*1024*1024/2048)
 
-OSSTATUS
+NTSTATUS
 UDFVInit(
     IN PVCB Vcb
     );
@@ -1180,7 +1494,7 @@ UDFVRelease(
 #define PH_READ_VERIFY_CACHE  0x00400000
 #define PH_KEEP_VERIFY_CACHE  0x00200000
 
-OSSTATUS
+NTSTATUS
 UDFVWrite(
     IN PVCB Vcb,
     IN void* Buffer,     // Target buffer
@@ -1190,7 +1504,7 @@ UDFVWrite(
     IN uint32 Flags
     );
 
-OSSTATUS
+NTSTATUS
 UDFVRead(
     IN PVCB Vcb,
     IN void* Buffer,     // Target buffer
@@ -1200,7 +1514,7 @@ UDFVRead(
     IN uint32 Flags
     );
 
-OSSTATUS
+NTSTATUS
 UDFVForget(
     IN PVCB Vcb,
     IN uint32 BCount,
@@ -1231,7 +1545,7 @@ __fastcall UDFVIsStored(
     IN lba_t lba
     )
 {
-    if(!Vcb->VerifyCtx.VInited)
+    if (!Vcb->VerifyCtx.VInited)
         return FALSE;
     return UDFGetBit(Vcb->VerifyCtx.StoredBitMap, lba);
 } // end UDFVIsStored()
@@ -1239,6 +1553,7 @@ __fastcall UDFVIsStored(
 BOOLEAN
 __fastcall
 UDFCheckArea(
+    PIRP_CONTEXT IrpContext,
     IN PVCB Vcb,
     IN lba_t LBA,
     IN uint32 BCount

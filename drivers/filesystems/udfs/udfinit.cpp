@@ -22,7 +22,7 @@
 #define         UDF_BUG_CHECK_ID                UDF_FILE_INIT
 
 // global variables are declared here
-UDFData                 UDFGlobalData;
+UDFData                 UdfData;
 
 NTSTATUS
 UDFCreateFsDeviceObject(
@@ -67,33 +67,31 @@ DriverEntry(
 #endif
 
             // initialize the global data structure
-            RtlZeroMemory(&UDFGlobalData, sizeof(UDFGlobalData));
+            RtlZeroMemory(&UdfData, sizeof(UdfData));
 
             // initialize some required fields
-            UDFGlobalData.NodeIdentifier.NodeTypeCode = UDF_NODE_TYPE_GLOBAL_DATA;
-            UDFGlobalData.NodeIdentifier.NodeByteSize = sizeof(UDFGlobalData);
+            UdfData.NodeIdentifier.NodeTypeCode = UDF_NODE_TYPE_GLOBAL_DATA;
+            UdfData.NodeIdentifier.NodeByteSize = sizeof(UdfData);
 
             // initialize the global data resource and remember the fact that
             //  the resource has been initialized
-            RC = UDFInitializeResourceLite(&(UDFGlobalData.GlobalDataResource));
+            RC = UDFInitializeResourceLite(&(UdfData.GlobalDataResource));
             ASSERT(NT_SUCCESS(RC));
-            SetFlag(UDFGlobalData.UDFFlags, UDF_DATA_FLAGS_RESOURCE_INITIALIZED);
+            SetFlag(UdfData.Flags, UDF_DATA_FLAGS_RESOURCE_INITIALIZED);
 
-            RC = UDFInitializeResourceLite(&(UDFGlobalData.DelayedCloseResource));
-            ASSERT(NT_SUCCESS(RC));
 //            SetFlag(UDFGlobalData.UDFFlags, UDF_DATA_FLAGS_RESOURCE_INITIALIZED);
 
             // keep a ptr to the driver object sent to us by the I/O Mgr
-            UDFGlobalData.DriverObject = DriverObject;
+            UdfData.DriverObject = DriverObject;
 
             //SeEnableAccessToExports();
 
             // initialize the mounted logical volume list head
-            InitializeListHead(&(UDFGlobalData.VCBQueue));
+            InitializeListHead(&(UdfData.VcbQueue));
 
             UDFPrint(("UDF: Init memory manager\n"));
             // Initialize internal memory management
-            if(!MyAllocInit()) {
+            if (!MyAllocInit()) {
                 try_return(RC = STATUS_INSUFFICIENT_RESOURCES);
             }
             InternalMMInitialized = TRUE;
@@ -102,29 +100,29 @@ DriverEntry(
             //  user supplied configurable values ...
 
             // Save RegistryPath
-            RtlCopyMemory(&(UDFGlobalData.SavedRegPath), RegistryPath, sizeof(UNICODE_STRING));
+            RtlCopyMemory(&(UdfData.SavedRegPath), RegistryPath, sizeof(UNICODE_STRING));
 
-            UDFGlobalData.SavedRegPath.Buffer = (PWSTR)MyAllocatePool__(NonPagedPool, RegistryPath->Length + 2);
-            if(!UDFGlobalData.SavedRegPath.Buffer) try_return (RC = STATUS_INSUFFICIENT_RESOURCES);
-            RtlCopyMemory(UDFGlobalData.SavedRegPath.Buffer, RegistryPath->Buffer, RegistryPath->Length + 2);
+            UdfData.SavedRegPath.Buffer = (PWSTR)MyAllocatePool__(NonPagedPool, RegistryPath->Length + 2);
+            if (!UdfData.SavedRegPath.Buffer) try_return (RC = STATUS_INSUFFICIENT_RESOURCES);
+            RtlCopyMemory(UdfData.SavedRegPath.Buffer, RegistryPath->Buffer, RegistryPath->Length + 2);
 
-            RegTGetKeyHandle(NULL, UDFGlobalData.SavedRegPath.Buffer, &hUdfRootKey);
+            RegTGetKeyHandle(NULL, UdfData.SavedRegPath.Buffer, &hUdfRootKey);
 
-            RtlInitUnicodeString(&UDFGlobalData.UnicodeStrRoot, L"\\");
-            RtlInitUnicodeString(&UDFGlobalData.UnicodeStrSDir, L":");
-            RtlInitUnicodeString(&UDFGlobalData.AclName, UDF_SN_NT_ACL);
+            RtlInitUnicodeString(&UdfData.UnicodeStrRoot, L"\\");
+            RtlInitUnicodeString(&UdfData.UnicodeStrSDir, L":");
+            RtlInitUnicodeString(&UdfData.AclName, UDF_SN_NT_ACL);
 
             UDFPrint(("UDF: Init delayed close queues\n"));
 #ifdef UDF_DELAYED_CLOSE
-            InitializeListHead( &UDFGlobalData.DelayedCloseQueue );
-            InitializeListHead( &UDFGlobalData.DirDelayedCloseQueue );
+            ExInitializeFastMutex(&UdfData.UdfDataMutex);
+            InitializeListHead(&UdfData.DelayedCloseQueue);
+            InitializeListHead(&UdfData.AsyncCloseQueue);
 
-            ExInitializeWorkItem( &UDFGlobalData.CloseItem,
-                                  UDFDelayedClose,
-                                  NULL );
+            ExInitializeWorkItem(&UdfData.CloseItem,
+                                 (PWORKER_THREAD_ROUTINE)UDFFspClose,
+                                 NULL);
 
-            UDFGlobalData.DelayedCloseCount = 0;
-            UDFGlobalData.DirDelayedCloseCount = 0;
+            UdfData.DelayedCloseCount = 0;
 #endif //UDF_DELAYED_CLOSE
 
             // we should have the registry data (if any), allocate zone memory ...
@@ -152,13 +150,11 @@ DriverEntry(
             if (!NT_SUCCESS(RC))
                 try_return(RC);
 
-            UDFGlobalData.CPU_Count = KeNumberProcessors;
-
             UDFPrint(("UDF: Create CD dev obj\n"));
             if (!NT_SUCCESS(RC = UDFCreateFsDeviceObject(UDF_FS_NAME_CD,
                                     DriverObject,
                                     FILE_DEVICE_CD_ROM_FILE_SYSTEM,
-                                    &(UDFGlobalData.UDFDeviceObject_CD)))) {
+                                    &(UdfData.UDFDeviceObject_CD)))) {
                 // failed to create a device object, leave ...
                 try_return(RC);
             }
@@ -167,19 +163,19 @@ DriverEntry(
             if (!NT_SUCCESS(RC = UDFCreateFsDeviceObject(UDF_FS_NAME_HDD,
                                     DriverObject,
                                     FILE_DEVICE_DISK_FILE_SYSTEM,
-                                    &(UDFGlobalData.UDFDeviceObject_HDD)))) {
+                                    &(UdfData.UDFDeviceObject_HDD)))) {
                 // failed to create a device object, leave ...
                 try_return(RC);
             }
 
-            if (UDFGlobalData.UDFDeviceObject_CD) {
+            if (UdfData.UDFDeviceObject_CD) {
                 UDFPrint(("UDFCreateFsDeviceObject: IoRegisterFileSystem() for CD\n"));
-                IoRegisterFileSystem(UDFGlobalData.UDFDeviceObject_CD);
+                IoRegisterFileSystem(UdfData.UDFDeviceObject_CD);
             }
 
-            if (UDFGlobalData.UDFDeviceObject_HDD) {
+            if (UdfData.UDFDeviceObject_HDD) {
                 UDFPrint(("UDFCreateFsDeviceObject: IoRegisterFileSystem() for HDD\n"));
-                IoRegisterFileSystem(UDFGlobalData.UDFDeviceObject_HDD);
+                IoRegisterFileSystem(UdfData.UDFDeviceObject_HDD);
             }
 
             RC = STATUS_SUCCESS;
@@ -202,27 +198,27 @@ DriverEntry(
             if (InternalMMInitialized) {
                 MyAllocRelease();
             }
-            if (UDFGlobalData.UDFDeviceObject_CD) {
-                IoDeleteDevice(UDFGlobalData.UDFDeviceObject_CD);
-                UDFGlobalData.UDFDeviceObject_CD = NULL;
+            if (UdfData.UDFDeviceObject_CD) {
+                IoDeleteDevice(UdfData.UDFDeviceObject_CD);
+                UdfData.UDFDeviceObject_CD = NULL;
             }
 
-            if (UDFGlobalData.UDFDeviceObject_HDD) {
-                IoDeleteDevice(UDFGlobalData.UDFDeviceObject_HDD);
-                UDFGlobalData.UDFDeviceObject_HDD = NULL;
+            if (UdfData.UDFDeviceObject_HDD) {
+                IoDeleteDevice(UdfData.UDFDeviceObject_HDD);
+                UdfData.UDFDeviceObject_HDD = NULL;
             }
 
             // free up any memory we might have reserved for zones/lookaside
             //  lists
-            if (UDFGlobalData.UDFFlags & UDF_DATA_FLAGS_ZONES_INITIALIZED) {
+            if (UdfData.Flags & UDF_DATA_FLAGS_ZONES_INITIALIZED) {
                 UDFDestroyZones();
             }
 
             // delete the resource we may have initialized
-            if (UDFGlobalData.UDFFlags & UDF_DATA_FLAGS_RESOURCE_INITIALIZED) {
+            if (UdfData.Flags & UDF_DATA_FLAGS_RESOURCE_INITIALIZED) {
                 // un-initialize this resource
-                UDFDeleteResource(&(UDFGlobalData.GlobalDataResource));
-                ClearFlag(UDFGlobalData.UDFFlags, UDF_DATA_FLAGS_RESOURCE_INITIALIZED);
+                UDFDeleteResource(&(UdfData.GlobalDataResource));
+                ClearFlag(UdfData.Flags, UDF_DATA_FLAGS_RESOURCE_INITIALIZED);
             }
 //        } else {
         }
@@ -298,13 +294,10 @@ UDFInitializeFunctionPointers(
     DriverObject->MajorFunction[IRP_MJ_LOCK_CONTROL]        = UDFLockControl;
     DriverObject->MajorFunction[IRP_MJ_CLEANUP]             = UDFCleanup;
 
-//    if(MajorVersion >= 0x05) {
-        // w2k and higher
-//        DriverObject->MajorFunction[IRP_MJ_PNP]           = UDFPnp;
-//    }
+    DriverObject->MajorFunction[IRP_MJ_PNP]                 = UDFPnp;
 
     // Now, it is time to initialize the fast-io stuff ...
-    PtrFastIoDispatch = DriverObject->FastIoDispatch = &UDFGlobalData.UDFFastIoDispatch;
+    PtrFastIoDispatch = DriverObject->FastIoDispatch = &UdfData.UDFFastIoDispatch;
 
     // initialize the global fast-io structure
     //  NOTE: The fast-io structure has undergone a substantial revision
@@ -316,25 +309,19 @@ UDFInitializeFunctionPointers(
 
     PtrFastIoDispatch->SizeOfFastIoDispatch = sizeof(FAST_IO_DISPATCH);
     PtrFastIoDispatch->FastIoCheckIfPossible    = UDFFastIoCheckIfPossible;
-    PtrFastIoDispatch->FastIoRead               = FsRtlCopyRead;
-    PtrFastIoDispatch->FastIoWrite              = UDFFastIoCopyWrite /*FsRtlCopyWrite*/;
+    PtrFastIoDispatch->FastIoRead               = NULL;
+    PtrFastIoDispatch->FastIoWrite              = NULL;
     PtrFastIoDispatch->FastIoQueryBasicInfo     = UDFFastIoQueryBasicInfo;
     PtrFastIoDispatch->FastIoQueryStandardInfo  = UDFFastIoQueryStdInfo;
     PtrFastIoDispatch->FastIoLock               = UDFFastLock;         // Lock
     PtrFastIoDispatch->FastIoUnlockSingle       = UDFFastUnlockSingle; // UnlockSingle
     PtrFastIoDispatch->FastIoUnlockAll          = UDFFastUnlockAll;    // UnlockAll
-    PtrFastIoDispatch->FastIoUnlockAllByKey     =  (unsigned char (__stdcall *)(struct _FILE_OBJECT *,
-        PVOID ,unsigned long,struct _IO_STATUS_BLOCK *,struct _DEVICE_OBJECT *))UDFFastUnlockAllByKey;     //  UnlockAllByKey
+    PtrFastIoDispatch->FastIoUnlockAllByKey     = UDFFastUnlockAllByKey; //  UnlockAllByKey
 
     //  This callback has been replaced by UDFFilterCallbackAcquireForCreateSection
 
     PtrFastIoDispatch->AcquireFileForNtCreateSection = NULL;
     PtrFastIoDispatch->ReleaseFileForNtCreateSection = UDFFastIoRelCreateSec;
-
-//    PtrFastIoDispatch->FastIoDeviceControl = UDFFastIoDeviceControl;
-
-    // the remaining are only valid under NT Version 4.0 and later
-#if(_WIN32_WINNT >= 0x0400)
 
     PtrFastIoDispatch->FastIoQueryNetworkOpenInfo = UDFFastIoQueryNetInfo;
 
@@ -350,19 +337,13 @@ UDFInitializeFunctionPointers(
     PtrFastIoDispatch->PrepareMdlWrite          = UDFFastIoPrepareMdlWrite;
     PtrFastIoDispatch->MdlWriteComplete         = UDFFastIoMdlWriteComplete;*/
 
-    //  this FSD does not support compressed read/write functionality,
-    //  NTFS does, and if we design a FSD that can provide such functionality,
-    //  we should consider initializing the fast io entry points for reading
-    //  and/or writing compressed data ...
-#endif  // (_WIN32_WINNT >= 0x0400)
-
     // last but not least, initialize the Cache Manager callback functions
     //  which are used in CcInitializeCacheMap()
 
-    UDFGlobalData.CacheMgrCallBacks.AcquireForLazyWrite  = UDFAcqLazyWrite;
-    UDFGlobalData.CacheMgrCallBacks.ReleaseFromLazyWrite = UDFRelLazyWrite;
-    UDFGlobalData.CacheMgrCallBacks.AcquireForReadAhead  = UDFAcqReadAhead;
-    UDFGlobalData.CacheMgrCallBacks.ReleaseFromReadAhead = UDFRelReadAhead;
+    UdfData.CacheMgrCallBacks.AcquireForLazyWrite  = UDFAcqLazyWrite;
+    UdfData.CacheMgrCallBacks.ReleaseFromLazyWrite = UDFRelLazyWrite;
+    UdfData.CacheMgrCallBacks.AcquireForReadAhead  = UDFAcqReadAhead;
+    UdfData.CacheMgrCallBacks.ReleaseFromReadAhead = UDFRelReadAhead;
 
     DriverObject->DriverUnload = UDFDriverUnload;
 
@@ -406,10 +387,6 @@ UDFCreateFsDeviceObject(
     // Initialize the signature fields
     FSDevExt->NodeIdentifier.NodeTypeCode = UDF_NODE_TYPE_UDFFS_DEVOBJ;
     FSDevExt->NodeIdentifier.NodeByteSize = sizeof(UDFFS_DEV_EXTENSION);
-    // register the driver with the I/O Manager, pretend as if this is
-    //  a physical disk based FSD (or in order words, this FSD manages
-    //  logical volumes residing on physical disk drives)
-/*    UDFPrint(("UDFCreateFsDeviceObject: IoRegisterFileSystem()\n"));
-    IoRegisterFileSystem(*DeviceObject);*/
+
     return(RC);
 } // end UDFCreateFsDeviceObject()

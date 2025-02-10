@@ -36,11 +36,11 @@ UDFCheckAccessRights(
     ASSERT(Fcb);
     ASSERT(Fcb->Vcb);
 
-    if(Fcb->FCBFlags & UDF_FCB_READ_ONLY) {
+    if (Fcb->FcbState & UDF_FCB_READ_ONLY) {
         ROCheck = TRUE;
     } else
-    if((Fcb->Vcb->origIntegrityType == INTEGRITY_TYPE_OPEN) &&
-        Ccb && !(Ccb->CCBFlags & UDF_CCB_VOLUME_OPEN) &&
+    if ((Fcb->Vcb->origIntegrityType == INTEGRITY_TYPE_OPEN) &&
+        Ccb && !(Ccb->Flags & UDF_CCB_VOLUME_OPEN) &&
        (Fcb->Vcb->CompatFlags & UDF_VCB_IC_DIRTY_RO)) {
         AdPrint(("force R/O on dirty\n"));
         ROCheck = TRUE;
@@ -61,7 +61,7 @@ UDFCheckAccessRights(
         //  If this is a subdirectory also allow add file/directory and delete.
         //
 
-        if (FlagOn(Fcb->FCBFlags, UDF_FCB_DIRECTORY)) {
+        if (FlagOn(Fcb->FcbState, UDF_FCB_DIRECTORY)) {
 
             AccessMask |= FILE_ADD_SUBDIRECTORY | FILE_ADD_FILE | FILE_DELETE_CHILD;
         }
@@ -74,27 +74,27 @@ UDFCheckAccessRights(
         }
     }
 
-    if(DesiredAccess & ACCESS_SYSTEM_SECURITY) {
+    if (DesiredAccess & ACCESS_SYSTEM_SECURITY) {
         if (!SeSinglePrivilegeCheck(SeExports->SeSecurityPrivilege, UserMode))
             return STATUS_ACCESS_DENIED;
         Ccb->PreviouslyGrantedAccess |= ACCESS_SYSTEM_SECURITY;
     }
 
-    if(FileObject) {
-        if (Fcb->OpenHandleCount) {
+    if (FileObject) {
+        if (Fcb->FcbCleanup) {
             // The FCB is currently in use by some thread.
             // We must check whether the requested access/share access
             // conflicts with the existing open operations.
             RC = IoCheckShareAccess(DesiredAccess, ShareAccess, FileObject,
-                                            &Fcb->FCBShareAccess, TRUE);
+                                            &Fcb->ShareAccess, TRUE);
 
-            if(Ccb)
+            if (Ccb)
                 Ccb->PreviouslyGrantedAccess |= DesiredAccess;
-            IoUpdateShareAccess(FileObject, &Fcb->FCBShareAccess);
+            IoUpdateShareAccess(FileObject, &Fcb->ShareAccess);
         } else {
-            IoSetShareAccess(DesiredAccess, ShareAccess, FileObject, &Fcb->FCBShareAccess);
+            IoSetShareAccess(DesiredAccess, ShareAccess, FileObject, &Fcb->ShareAccess);
 
-            if(Ccb)
+            if (Ccb)
                 Ccb->PreviouslyGrantedAccess = DesiredAccess;
 
             RC = STATUS_SUCCESS;

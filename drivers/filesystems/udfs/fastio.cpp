@@ -51,21 +51,22 @@ UDFFastIoCheckIfPossible(
     )
 {
     BOOLEAN             ReturnedStatus = FALSE;
-    PFCB                Fcb = NULL;
-    PCCB                Ccb = NULL;
+    TYPE_OF_OPEN        TypeOfOpen;
+    PFCB                Fcb;
     LARGE_INTEGER       IoLength;
 
-    // Obtain a pointer to the FCB and CCB for the file stream.
-    Ccb = (PCCB)FileObject->FsContext2;
-    ASSERT(Ccb);
-    Fcb = Ccb->Fcb;
-    ASSERT(Fcb);
+    // Decode the type of file object we're being asked to process and
+    // make sure that is is only a user file open.
+
+    TypeOfOpen = UDFFastDecodeFileObject(FileObject, &Fcb);
+
+    ASSERT_FCB(Fcb);
 
     // Validate that this is a fast-IO request to a regular file.
     // The UDF FSD for example, will not allow fast-IO requests
     // to volume objects, or to directories.
-    if ((Fcb->NodeIdentifier.NodeTypeCode == UDF_NODE_TYPE_VCB) ||
-         (Fcb->FCBFlags & UDF_FCB_DIRECTORY)) {
+    if ((Fcb == Fcb->Vcb->VolumeDasdFcb) ||
+         (Fcb->FcbState & UDF_FCB_DIRECTORY)) {
         // This is not allowed.
         IoStatus->Status = STATUS_INVALID_PARAMETER;
         MmPrint(("    UDFFastIoCheckIfPossible() TRUE, Failed\n"));
@@ -73,7 +74,7 @@ UDFFastIoCheckIfPossible(
     }
 /*
     // back pressure for very smart and fast system cache ;)
-    if(Fcb->Vcb->VerifyCtx.ItemCount >= UDF_MAX_VERIFY_CACHE) {
+    if (Fcb->Vcb->VerifyCtx.ItemCount >= UDF_MAX_VERIFY_CACHE) {
         AdPrint(("    Verify queue overflow -> UDFFastIoCheckIfPossible() = FALSE\n"));
         return FALSE;
     }
@@ -105,7 +106,7 @@ UDFFastIoCheckIfPossible(
         // to see whether the write should be allowed to proceed.
         // Also check for a write-protected volume here.
         if (Fcb->FileLock == NULL ||
-            (!FlagOn(Fcb->Vcb->VCBFlags, VCB_STATE_MEDIA_WRITE_PROTECT | VCB_STATE_VOLUME_READ_ONLY) &&
+            (!FlagOn(Fcb->Vcb->VcbState, VCB_STATE_MEDIA_WRITE_PROTECT | VCB_STATE_VOLUME_READ_ONLY) &&
             FsRtlFastCheckLockForWrite(Fcb->FileLock,
                               FileOffset, &IoLength, LockKey, FileObject,
                                 PsGetCurrentProcess()))) {
@@ -135,7 +136,7 @@ UDFIsFastIoPossible(
     }
 /*
     // back pressure for very smart and fast system cache ;)
-    if(Fcb->Vcb->VerifyCtx.ItemCount >= UDF_MAX_VERIFY_CACHE) {
+    if (Fcb->Vcb->VerifyCtx.ItemCount >= UDF_MAX_VERIFY_CACHE) {
         AdPrint(("    Verify queue overflow -> UDFIsFastIoPossible() = FastIoIsNotPossible\n"));
         return FastIoIsNotPossible;
     }
@@ -175,37 +176,40 @@ UDFFastIoQueryBasicInfo(
     )
 {
     BOOLEAN          ReturnedStatus = FALSE;     // fast i/o failed/not allowed
+    TYPE_OF_OPEN TypeOfOpen;
     NTSTATUS         RC = STATUS_SUCCESS;
     PIRP_CONTEXT IrpContext = NULL;
     LONG             Length = sizeof(FILE_BASIC_INFORMATION);
     PFCB             Fcb;
-    PCCB             Ccb;
     BOOLEAN          MainResourceAcquired = FALSE;
 
     FsRtlEnterFileSystem();
 
     UDFPrint(("UDFFastIo  \n"));
+
+    // Decode the file object to find the type of open and the data
+    // structures.
+
+    TypeOfOpen = UDFFastDecodeFileObject(FileObject, &Fcb);
+
+    ASSERT_FCB(Fcb);
+
+
     // if the file is already opended we can satisfy this request
     // immediately 'cause all the data we need must be cached
     _SEH2_TRY {
 
         _SEH2_TRY {
 
-            // Get the FCB and CCB pointers.
-            Ccb = (PCCB)FileObject->FsContext2;
-            ASSERT(Ccb);
-            Fcb = Ccb->Fcb;
-            ASSERT(Fcb);
-
-            if (Fcb == NULL || Fcb->NodeIdentifier.NodeTypeCode == UDF_NODE_TYPE_VCB) {
+            if (Fcb == NULL || Fcb == Fcb->Vcb->VolumeDasdFcb) {
                 // This is not allowed.
                 try_return(RC = STATUS_INVALID_PARAMETER);
             }
 
-            if (!(Fcb->FCBFlags & UDF_FCB_PAGE_FILE)) {
+            if (!(Fcb->FcbState & UDF_FCB_PAGE_FILE)) {
                 // Acquire the MainResource shared.
                 UDF_CHECK_PAGING_IO_RESOURCE(Fcb);
-                if (!UDFAcquireResourceShared(&Fcb->MainResource, Wait)) {
+                if (!UDFAcquireResourceShared(&Fcb->FcbNonpaged->FcbResource, Wait)) {
                     try_return(RC = STATUS_CANT_WAIT);
                 }
                 MainResourceAcquired = TRUE;
@@ -226,13 +230,13 @@ try_exit: NOTHING;
 
         if (MainResourceAcquired) {
             UDF_CHECK_PAGING_IO_RESOURCE(Fcb);
-            UDFReleaseResource(&Fcb->MainResource);
+            UDFReleaseResource(&Fcb->FcbNonpaged->FcbResource);
             MainResourceAcquired = FALSE;
         }
 
         IoStatus->Status = RC;
 
-        if(ReturnedStatus) {
+        if (ReturnedStatus) {
             IoStatus->Information = sizeof(FILE_BASIC_INFORMATION);
         } else {
             IoStatus->Information = 0;
@@ -270,37 +274,39 @@ UDFFastIoQueryStdInfo(
     IN PDEVICE_OBJECT               DeviceObject)
 {
     BOOLEAN          ReturnedStatus = FALSE;     // fast i/o failed/not allowed
+    TYPE_OF_OPEN TypeOfOpen;
     NTSTATUS         RC = STATUS_SUCCESS;
     PIRP_CONTEXT IrpContext = NULL;
     LONG             Length = sizeof(FILE_STANDARD_INFORMATION);
     PFCB             Fcb;
-    PCCB             Ccb;
     BOOLEAN          MainResourceAcquired = FALSE;
 
     FsRtlEnterFileSystem();
 
     UDFPrint(("UDFFastIo  \n"));
+
+    // Decode the file object to find the type of open and the data
+    // structures.
+
+    TypeOfOpen = UDFFastDecodeFileObject(FileObject, &Fcb);
+
+    ASSERT_FCB(Fcb);
+
     // if the file is already opended we can satisfy this request
     // immediately 'cause all the data we need must be cached
     _SEH2_TRY {
 
         _SEH2_TRY {
 
-            // Get the FCB and CCB pointers.
-            Ccb = (PCCB)FileObject->FsContext2;
-            ASSERT(Ccb);
-            Fcb = Ccb->Fcb;
-            ASSERT(Fcb);
-
-            if (Fcb == NULL || Fcb->NodeIdentifier.NodeTypeCode == UDF_NODE_TYPE_VCB) {
+            if (Fcb == NULL || Fcb == Fcb->Vcb->VolumeDasdFcb) {
                 // This is not allowed.
                 try_return(RC = STATUS_INVALID_PARAMETER);
             }
 
-            if (!(Fcb->FCBFlags & UDF_FCB_PAGE_FILE)) {
+            if (!(Fcb->FcbState & UDF_FCB_PAGE_FILE)) {
                 // Acquire the MainResource shared.
                 UDF_CHECK_PAGING_IO_RESOURCE(Fcb);
-                if (!UDFAcquireResourceShared(&Fcb->MainResource, Wait)) {
+                if (!UDFAcquireResourceShared(&Fcb->FcbNonpaged->FcbResource, Wait)) {
                     try_return(RC = STATUS_CANT_WAIT);
                 }
                 MainResourceAcquired = TRUE;
@@ -321,13 +327,13 @@ try_exit: NOTHING;
 
         if (MainResourceAcquired) {
             UDF_CHECK_PAGING_IO_RESOURCE(Fcb);
-            UDFReleaseResource(&Fcb->MainResource);
+            UDFReleaseResource(&Fcb->FcbNonpaged->FcbResource);
             MainResourceAcquired = FALSE;
         }
 
         IoStatus->Status = RC;
 
-        if(ReturnedStatus) {
+        if (ReturnedStatus) {
             IoStatus->Information = sizeof(FILE_STANDARD_INFORMATION);
         } else {
             IoStatus->Information = 0;
@@ -356,9 +362,7 @@ UDFFilterCallbackAcquireForCreateSection(
     PFCB Fcb = (PFCB)CallbackData->FileObject->FsContext;
 
     // Acquire the MainResource exclusively for the file stream
-    UDFAcquireResourceExclusive(&Fcb->MainResource, TRUE);
-
-    Fcb->AcqSectionCount++;
+    UDFAcquireResourceExclusive(&Fcb->FcbNonpaged->FcbResource, TRUE);
 
     // Return the appropriate status based on the type of synchronization and whether anyone
     // has write access to this file.
@@ -367,7 +371,7 @@ UDFFilterCallbackAcquireForCreateSection(
 
         return STATUS_FSFILTER_OP_COMPLETED_SUCCESSFULLY;
 
-    } else if (Fcb->FCBShareAccess.Writers == 0) {
+    } else if (Fcb->ShareAccess.Writers == 0) {
 
         return STATUS_FILE_LOCKED_WITH_ONLY_READERS;
 
@@ -401,10 +405,8 @@ UDFFastIoRelCreateSec(
 
     MmPrint(("  RelFromCreateSection()\n"));
 
-    Fcb->AcqSectionCount--;
-
     // Release the MainResource for the file stream
-    UDFReleaseResource(&Fcb->MainResource);
+    UDFReleaseResource(&Fcb->FcbNonpaged->FcbResource);
 
     return;
 } // end UDFFastIoRelCreateSec()
@@ -443,12 +445,12 @@ BOOLEAN NTAPI UDFAcqLazyWrite(
     // lazy-writer thread id in the NT_REQ_FCB structure for identification
     // when an actual write request is received by the FSD.
     // Note: The lazy-writer typically always supplies WAIT set to TRUE.
-    if (!UDFAcquireResourceExclusive(&Fcb->MainResource, Wait))
+    if (!UDFAcquireResourceExclusive(&Fcb->FcbNonpaged->FcbResource, Wait))
         return FALSE;
 
     // Now, set the lazy-writer thread id.
-    ASSERT(!(Fcb->LazyWriterThreadID));
-    Fcb->LazyWriterThreadID = HandleToUlong(PsGetCurrentThreadId());
+    ASSERT(!(Fcb->LazyWriteThread));
+    Fcb->LazyWriteThread = PsGetCurrentThread();
 
     ASSERT(IoGetTopLevelIrp() == NULL);
     IoSetTopLevelIrp((PIRP)FSRTL_CACHE_TOP_LEVEL_IRP);
@@ -489,11 +491,11 @@ UDFRelLazyWrite(
 
     // Remove the current thread-id from the NT_REQ_FCB
     // and release the MainResource.
-    ASSERT((Fcb->LazyWriterThreadID) == HandleToUlong(PsGetCurrentThreadId()));
-    Fcb->LazyWriterThreadID = 0;
+    ASSERT(Fcb->LazyWriteThread == PsGetCurrentThread());
+    Fcb->LazyWriteThread = 0;
 
     // Release the acquired resource.
-    UDFReleaseResource(&Fcb->MainResource);
+    UDFReleaseResource(&Fcb->FcbNonpaged->FcbResource);
 
     IoSetTopLevelIrp( NULL );
     return;
@@ -534,7 +536,7 @@ UDFAcqReadAhead(
     // Acquire the MainResource in the NT_REQ_FCB shared.
     // Note: The read-ahead thread typically always supplies WAIT set to TRUE.
     UDF_CHECK_PAGING_IO_RESOURCE(Fcb);
-    if (!UDFAcquireResourceShared(&Fcb->MainResource, Wait))
+    if (!UDFAcquireResourceShared(&Fcb->FcbNonpaged->FcbResource, Wait))
         return FALSE;
 
     ASSERT(IoGetTopLevelIrp() == NULL);
@@ -574,7 +576,7 @@ UDFRelReadAhead(
 
     // Release the acquired resource.
     UDF_CHECK_PAGING_IO_RESOURCE(Fcb);
-    UDFReleaseResource(&Fcb->MainResource);
+    UDFReleaseResource(&Fcb->FcbNonpaged->FcbResource);
 
     // Of course, the FSD should undo whatever else seems appropriate at this
     // time.
@@ -582,10 +584,6 @@ UDFRelReadAhead(
 
     return;
 } // end UDFRelReadAhead()
-
-/* the remaining are only valid under NT Version 4.0 and later */
-#if(_WIN32_WINNT >= 0x0400)
-
 
 /*************************************************************************
 *
@@ -612,37 +610,39 @@ UDFFastIoQueryNetInfo(
     IN PDEVICE_OBJECT                               DeviceObject)
 {
     BOOLEAN          ReturnedStatus = FALSE;     // fast i/o failed/not allowed
+    TYPE_OF_OPEN TypeOfOpen;
     NTSTATUS         RC = STATUS_SUCCESS;
     PIRP_CONTEXT IrpContext = NULL;
     LONG             Length = sizeof(FILE_NETWORK_OPEN_INFORMATION);
     PFCB             Fcb;
-    PCCB             Ccb;
     BOOLEAN          MainResourceAcquired = FALSE;
 
     FsRtlEnterFileSystem();
 
     UDFPrint(("UDFFastIo  \n"));
+
+    // Decode the type of file object we're being asked to process and
+    // make sure that is is only a user file open.
+
+    TypeOfOpen = UDFFastDecodeFileObject(FileObject, &Fcb);
+
+    ASSERT_FCB(Fcb);
+
     // if the file is already opended we can satisfy this request
     // immediately 'cause all the data we need must be cached
     _SEH2_TRY {
 
         _SEH2_TRY {
 
-            // Get the FCB and CCB pointers.
-            Ccb = (PCCB)FileObject->FsContext2;
-            ASSERT(Ccb);
-            Fcb = Ccb->Fcb;
-            ASSERT(Fcb);
-
-            if (Fcb == NULL || Fcb->NodeIdentifier.NodeTypeCode == UDF_NODE_TYPE_VCB) {
+            if (Fcb == NULL || Fcb == Fcb->Vcb->VolumeDasdFcb) {
                 // This is not allowed.
                 try_return(RC = STATUS_INVALID_PARAMETER);
             }
 
-            if (!(Fcb->FCBFlags & UDF_FCB_PAGE_FILE)) {
+            if (!(Fcb->FcbState & UDF_FCB_PAGE_FILE)) {
                 // Acquire the MainResource shared.
                 UDF_CHECK_PAGING_IO_RESOURCE(Fcb);
-                if (!UDFAcquireResourceShared(&Fcb->MainResource, Wait)) {
+                if (!UDFAcquireResourceShared(&Fcb->FcbNonpaged->FcbResource, Wait)) {
                     try_return(RC = STATUS_CANT_WAIT);
                 }
                 MainResourceAcquired = TRUE;
@@ -663,13 +663,13 @@ try_exit: NOTHING;
 
         if (MainResourceAcquired) {
             UDF_CHECK_PAGING_IO_RESOURCE(Fcb);
-            UDFReleaseResource(&(Fcb->MainResource));
+            UDFReleaseResource(&Fcb->FcbNonpaged->FcbResource);
             MainResourceAcquired = FALSE;
         }
 
         IoStatus->Status = RC;
 
-        if(ReturnedStatus) {
+        if (ReturnedStatus) {
             IoStatus->Information = sizeof(FILE_NETWORK_OPEN_INFORMATION);
         } else {
             IoStatus->Information = 0;
@@ -962,16 +962,15 @@ UDFFastIoAcqModWrite(
     // the resource that we acquired (single return value). This pointer
     // will be returned back to we in the release call (below).
 
-    if(UDFAcquireResourceShared(&Fcb->PagingIoResource, FALSE)) {
+    if (UDFAcquireResourceShared(&Fcb->FcbNonpaged->FcbPagingIoResource, FALSE)) {
 
-        if(EndingOffset->QuadPart <= Fcb->Header.ValidDataLength.QuadPart) {
+        if (EndingOffset->QuadPart <= Fcb->Header.ValidDataLength.QuadPart) {
 
-            UDFReleaseResource(&Fcb->PagingIoResource);
+            UDFReleaseResource(&Fcb->FcbNonpaged->FcbPagingIoResource);
             RC = STATUS_CANT_WAIT;
         } else {
 
-            Fcb->AcqFlushCount++;
-            *ResourceToRelease = &Fcb->PagingIoResource;
+            *ResourceToRelease = &Fcb->FcbNonpaged->FcbPagingIoResource;
             MmPrint(("    AcqModW OK\n"));
         }
 
@@ -1015,8 +1014,7 @@ UDFFastIoRelModWrite(
     // We must undo here whatever it is that we did in the
     // UDFFastIoAcqModWrite() call above.
 
-    Fcb->AcqFlushCount--;
-    ASSERT(ResourceToRelease == &Fcb->PagingIoResource);
+    ASSERT(ResourceToRelease == &Fcb->FcbNonpaged->FcbPagingIoResource);
     UDFReleaseResource(ResourceToRelease);
 
     return(STATUS_SUCCESS);
@@ -1042,20 +1040,32 @@ UDFFastIoRelModWrite(
 NTSTATUS
 NTAPI
 UDFFastIoAcqCcFlush(
-    IN PFILE_OBJECT         FileObject,
-    IN PDEVICE_OBJECT       DeviceObject)
+    IN PFILE_OBJECT FileObject,
+    IN PDEVICE_OBJECT DeviceObject
+    )
 {
-    MmPrint(("  AcqCcFlush\n"));
+
+    // Once again, the hack for making this look like
+    // a recursive call if needed. We cannot let ourselves
+    // verify under something that has resources held.
+    //
+    // This value is good.  We should never try to acquire
+    // the file this way underneath of the cache.
+
+    NT_ASSERT(IoGetTopLevelIrp() != (PIRP)FSRTL_CACHE_TOP_LEVEL_IRP);
+    
+    if (IoGetTopLevelIrp() == NULL) {
+        
+        IoSetTopLevelIrp((PIRP)FSRTL_CACHE_TOP_LEVEL_IRP);
+    }
 
     // Acquire appropriate resources that will allow correct synchronization
     // with a flush call (and avoid deadlock).
 
     PFCB Fcb = (PFCB)FileObject->FsContext;
 
-    UDFAcquireResourceExclusive(&Fcb->MainResource, TRUE);
-    UDFAcquireResourceShared(&Fcb->PagingIoResource, TRUE);
-
-    Fcb->AcqFlushCount++;
+    UDFAcquireResourceExclusive(&Fcb->FcbNonpaged->FcbResource, TRUE);
+    UDFAcquireResourceShared(&Fcb->FcbNonpaged->FcbPagingIoResource, TRUE);
 
     return STATUS_SUCCESS;
 
@@ -1084,92 +1094,19 @@ UDFFastIoRelCcFlush(
     IN PDEVICE_OBJECT       DeviceObject
     )
 {
-    MmPrint(("  RelCcFlush\n"));
+    //  Clear up our hint.
+    
+    if (IoGetTopLevelIrp() == (PIRP)FSRTL_CACHE_TOP_LEVEL_IRP) {
+
+        IoSetTopLevelIrp(NULL);
+    }
 
     // Release resources acquired in UDFFastIoAcqCcFlush() above.
     PFCB Fcb = (PFCB)FileObject->FsContext;
 
-    Fcb->AcqFlushCount--;
-    UDFReleaseResource(&Fcb->PagingIoResource);
-    UDFReleaseResource(&Fcb->MainResource);
+    UDFReleaseResource(&Fcb->FcbNonpaged->FcbPagingIoResource);
+    UDFReleaseResource(&Fcb->FcbNonpaged->FcbResource);
 
     return STATUS_SUCCESS;
 
 } // end UDFFastIoRelCcFlush()
-
-
-/*BOOLEAN
-UDFFastIoDeviceControl (
-    IN PFILE_OBJECT FileObject,
-    IN BOOLEAN Wait,
-    IN PVOID InputBuffer OPTIONAL,
-    IN ULONG InputBufferLength,
-    OUT PVOID OutputBuffer OPTIONAL,
-    IN ULONG OutputBufferLength,
-    IN ULONG IoControlCode,
-    OUT PIO_STATUS_BLOCK IoStatus,
-    IN PDEVICE_OBJECT DeviceObject
-    )
-{
-    switch(IoControlCode) {
-    case FSCTL_ALLOW_EXTENDED_DASD_IO: {
-        IoStatus->Information = 0;
-        IoStatus->Status = STATUS_SUCCESS;
-        break;
-    }
-    case FSCTL_IS_VOLUME_MOUNTED: {
-        PtrUDFFCB Fcb;
-        PtrUDFCCB Ccb;
-
-        Ccb = (PtrUDFCCB)(FileObject->FsContext2);
-        Fcb = Ccb->Fcb;
-
-        if(Fcb &&
-           !(Fcb->Vcb->VCBFlags & UDF_VCB_FLAGS_RAW_DISK) &&
-           !(Fcb->Vcb->VCBFlags & UDF_VCB_FLAGS_VOLUME_LOCKED) ) {
-            return FALSE;
-        }
-
-        IoStatus->Information = 0;
-        IoStatus->Status = STATUS_SUCCESS;
-
-        break;
-    }
-    default:
-        return FALSE;
-    }
-    return TRUE;
-}*/
-
-#endif  //_WIN32_WINNT >= 0x0400
-
-BOOLEAN
-NTAPI
-UDFFastIoCopyWrite (
-    IN PFILE_OBJECT FileObject,
-    IN PLARGE_INTEGER FileOffset,
-    IN ULONG Length,
-    IN BOOLEAN Wait,
-    IN ULONG LockKey,
-    IN PVOID Buffer,
-    OUT PIO_STATUS_BLOCK IoStatus,
-    IN PDEVICE_OBJECT DeviceObject
-    )
-{
-
-    // Obtain a pointer to the FCB and CCB for the file stream.
-    PCCB Ccb = (PCCB)FileObject->FsContext2;
-    ASSERT(Ccb);
-    PFCB Fcb = Ccb->Fcb;
-    ASSERT(Fcb);
-
-    // back pressure for very smart and fast system cache ;)
-    if(Fcb->Vcb->VerifyCtx.QueuedCount ||
-       Fcb->Vcb->VerifyCtx.ItemCount >= UDF_MAX_VERIFY_CACHE) {
-        AdPrint(("    Verify queue overflow -> UDFFastIoCopyWrite() = FALSE\n"));
-        return FALSE;
-    }
-
-    return FsRtlCopyWrite(FileObject, FileOffset, Length, Wait, LockKey, Buffer, IoStatus, DeviceObject);
-
-} // end UDFFastIoCopyWrite()

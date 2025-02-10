@@ -37,7 +37,7 @@ RegTGetKeyHandle(
                 &ObjectAttributes
                 );
 
-    if(!NT_SUCCESS(status)) {
+    if (!NT_SUCCESS(status)) {
         //UDFPrint(("    status %x\n", status));
         *hKey = NULL;
     }
@@ -64,7 +64,7 @@ RegTGetKeyHandle(
 {
     LONG status;
 
-    if(!hRootKey)
+    if (!hRootKey)
         hRootKey = HKEY_LOCAL_MACHINE;
 
     status = RegOpenKeyExW(
@@ -75,7 +75,7 @@ RegTGetKeyHandle(
                 hKey
                 );
 
-    if(status != ERROR_SUCCESS) {
+    if (status != ERROR_SUCCESS) {
         *hKey = NULL;
     }
 
@@ -87,7 +87,7 @@ RegTCloseKeyHandle(
     IN HKEY hKey
 )
 {
-    if(!hKey) {
+    if (!hKey) {
         return;
     }
     RegCloseKey(hKey);
@@ -114,23 +114,23 @@ RegTGetDwordValue(
     BOOLEAN free_h = FALSE;
 
 #ifdef WIN_32_MODE
-    if(!hRootKey)
+    if (!hRootKey)
         hRootKey = HKEY_LOCAL_MACHINE;
 #endif //WIN_32_MODE
 
-    if(RegistryPath && RegistryPath[0]) {
+    if (RegistryPath && RegistryPath[0]) {
         status = RegTGetKeyHandle(hRootKey, RegistryPath, &hKey);
 #ifdef WIN_32_MODE
-        if(status != ERROR_SUCCESS)
+        if (status != ERROR_SUCCESS)
 #else //WIN_32_MODE
-        if(!NT_SUCCESS(status))
+        if (!NT_SUCCESS(status))
 #endif //WIN_32_MODE
             return FALSE;
         free_h = TRUE;
     } else {
         hKey = hRootKey;
     }
-    if(!hKey)
+    if (!hKey)
         return FALSE;
 
 #ifndef WIN_32_MODE
@@ -141,8 +141,8 @@ RegTGetDwordValue(
     len = sizeof(KEY_VALUE_PARTIAL_INFORMATION) + sizeof(ULONG) + 0x20;
     ValInfo = (PKEY_VALUE_PARTIAL_INFORMATION)
         MyAllocatePool__(NonPagedPool, len);
-    if(!ValInfo) {
-        if(free_h) {
+    if (!ValInfo) {
+        if (free_h) {
             RegTCloseKeyHandle(hKey);
         }
         return FALSE;
@@ -156,7 +156,7 @@ RegTGetDwordValue(
                              ValInfo,
                              len,
                              &len);
-    if(NT_SUCCESS(status) &&
+    if (NT_SUCCESS(status) &&
        ValInfo->DataLength == sizeof(ULONG)) {
         RtlCopyMemory(pUlong, ValInfo->Data, sizeof(ULONG));
         retval = TRUE;
@@ -179,7 +179,7 @@ RegTGetDwordValue(
         retval = TRUE;
     }
 #endif //WIN_32_MODE
-    if(free_h) {
+    if (free_h) {
         RegTCloseKeyHandle(hKey);
     }
     return retval;
@@ -205,23 +205,23 @@ RegTGetStringValue(
     BOOLEAN free_h = FALSE;
 
 #ifdef WIN_32_MODE
-    if(!hRootKey)
+    if (!hRootKey)
         hRootKey = HKEY_LOCAL_MACHINE;
 #endif //WIN_32_MODE
 
-    if(RegistryPath && RegistryPath[0]) {
+    if (RegistryPath && RegistryPath[0]) {
         status = RegTGetKeyHandle(hRootKey, RegistryPath, &hKey);
 #ifdef WIN_32_MODE
-        if(status != ERROR_SUCCESS)
+        if (status != ERROR_SUCCESS)
 #else //WIN_32_MODE
-        if(!NT_SUCCESS(status))
+        if (!NT_SUCCESS(status))
 #endif //WIN_32_MODE
             return FALSE;
         free_h = TRUE;
     } else {
         hKey = hRootKey;
     }
-    if(!hKey)
+    if (!hKey)
         return FALSE;
 
     pStr[0] = 0;
@@ -229,8 +229,8 @@ RegTGetStringValue(
     len = sizeof(KEY_VALUE_PARTIAL_INFORMATION) + MaxLen + 0x20;
     ValInfo = (PKEY_VALUE_PARTIAL_INFORMATION)
         MyAllocatePool__(NonPagedPool, len);
-    if(!ValInfo) {
-        if(free_h) {
+    if (!ValInfo) {
+        if (free_h) {
             RegTCloseKeyHandle(hKey);
         }
         return FALSE;
@@ -244,10 +244,10 @@ RegTGetStringValue(
                              ValInfo,
                              len,
                              &len);
-    if(NT_SUCCESS(status) &&
+    if (NT_SUCCESS(status) &&
        ValInfo->DataLength) {
         RtlCopyMemory(pStr, ValInfo->Data, min(ValInfo->DataLength, MaxLen) );
-        if(pStr[(ValInfo->DataLength)/sizeof(WCHAR)-1]) {
+        if (pStr[(ValInfo->DataLength)/sizeof(WCHAR)-1]) {
             pStr[(ValInfo->DataLength)/sizeof(WCHAR)-1] = 0;
         }
         retval = TRUE;
@@ -264,14 +264,14 @@ RegTGetStringValue(
         (BYTE *)pStr,    // address of data buffer
         &len             // address of data buffer size
         ) && len) {
-        if(pStr[len-1]) {
+        if (pStr[len-1]) {
             pStr[len-1] = 0;
         }
         retval = TRUE;
     }
 #endif //WIN_32_MODE
 
-    if(free_h) {
+    if (free_h) {
         RegTCloseKeyHandle(hKey);
     }
     return retval;

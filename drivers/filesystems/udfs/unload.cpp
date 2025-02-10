@@ -25,7 +25,7 @@ UDFDriverUnload(
     UDFPrint( ("UDF: Unloading!!\n") );
 
     // prevent mount oparations
-    UDFGlobalData.UDFFlags |= UDF_DATA_FLAGS_BEING_UNLOADED;
+    UdfData.Flags |= UDF_DATA_FLAGS_SHUTDOWN;
 
     // wait for all volumes to be dismounted
     delay.QuadPart = 10*1000*1000*10;

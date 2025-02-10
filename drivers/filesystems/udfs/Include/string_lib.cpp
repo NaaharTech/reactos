@@ -15,7 +15,7 @@ MyRtlCompareMemory(
     ULONG i;
 
     for(i=0; i<len; i++) {
-        if( ((char*)s1)[i] != ((char*)s2)[i] )
+        if ( ((char*)s1)[i] != ((char*)s2)[i] )
             break;
     }
     return i;
@@ -36,7 +36,7 @@ RtlCompareUnicodeString(
 {
     ULONG i;
 
-    if(s1->Length != s2->Length) return (-1);
+    if (s1->Length != s2->Length) return (-1);
     i = memcmp(s1->Buffer, s2->Buffer, (s1->Length) ? (s1->Length) : (s2->Length));
     return i;
 }
@@ -49,7 +49,7 @@ RtlUpcaseUnicodeString(
     BOOLEAN Alloc
     )
 {
-//    if(s1->Length != s2->Length) return (-1);
+//    if (s1->Length != s2->Length) return (-1);
     memcpy(dst->Buffer, src->Buffer, src->Length);
     dst->Buffer[src->Length/sizeof(WCHAR)] = 0;
     dst->Length = src->Length;
@@ -95,9 +95,9 @@ EO_Scan:
 
     tmp = Str1->Buffer;
     ASSERT(Str1->MaximumLength);
-    if((Str1->Length+i+sizeof(WCHAR)) > Str1->MaximumLength) {
+    if ((Str1->Length+i+sizeof(WCHAR)) > Str1->MaximumLength) {
         PWCHAR tmp2 = (PWCHAR)ExAllocatePoolWithTag(NonPagedPool, STRING_BUFFER_ALIGN(i + Str1->Length + sizeof(WCHAR))*2, 'ilTS');
-        if(!tmp2)
+        if (!tmp2)
             return STATUS_INSUFFICIENT_RESOURCES;
         memcpy(tmp2, tmp, Str1->MaximumLength);
         ExFreePool(tmp);
@@ -156,7 +156,7 @@ EO_Scan:
 
     Str1->MaximumLength = STRING_BUFFER_ALIGN((Str1->Length = i) + sizeof(WCHAR));
     Str1->Buffer = (PWCHAR)MyAllocatePool__(NonPagedPool, Str1->MaximumLength);
-    if(!Str1->Buffer)
+    if (!Str1->Buffer)
         return STATUS_INSUFFICIENT_RESOURCES;
     RtlCopyMemory(Str1->Buffer, Str2, i);
     Str1->Buffer[i/sizeof(WCHAR)] = 0;

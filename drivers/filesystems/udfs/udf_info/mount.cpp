@@ -36,7 +36,7 @@
 #define         UDF_BUG_CHECK_ID                UDF_FILE_UDF_INFO_MOUNT
 #define         MRW_DMA_OFFSET           0x500
 
-OSSTATUS
+NTSTATUS
 __fastcall
 UDFSetDstring(
     IN PUNICODE_STRING UName,
@@ -48,8 +48,9 @@ UDFSetDstring(
     This routine loads specified bitmap.
     It is also allocate space if the bitmap is not allocated.
  */
-OSSTATUS
+NTSTATUS
 UDFPrepareXSpaceBitmap(
+    PIRP_CONTEXT IrpContext,
     IN PVCB Vcb,
  IN OUT PSHORT_AD XSpaceBitmap,
  IN OUT PEXTENT_INFO XSBMExtInfo,
@@ -59,7 +60,7 @@ UDFPrepareXSpaceBitmap(
 {
     uint32 BS, j, LBS;
     uint32 plen;
-    OSSTATUS status;
+    NTSTATUS status;
     EXTENT_MAP TmpExt;
     lb_addr locAddr;
     int8* _XSBM;
@@ -67,7 +68,7 @@ UDFPrepareXSpaceBitmap(
     SIZE_T ReadBytes;
     uint32 RefPartNum;
 
-    if(!(XSpaceBitmap->extLength)) {
+    if (!(XSpaceBitmap->extLength)) {
         *XSl = 0;
         *XSBM = NULL;
         return STATUS_SUCCESS;
@@ -92,7 +93,7 @@ UDFPrepareXSpaceBitmap(
         // TmpExt.extLength = XSpaceBitmap->extLength = *XSl;
         TmpExt.extLength = XSpaceBitmap->extLength;
         TmpExt.extLocation = UDFPartLbaToPhys(Vcb, &locAddr);
-        if(TmpExt.extLocation == LBA_OUT_OF_EXTENT) {
+        if (TmpExt.extLocation == LBA_OUT_OF_EXTENT) {
             BrutePoint();
         }
         XSBMExtInfo->Mapping = UDFExtentToMapping(&TmpExt);
@@ -103,10 +104,10 @@ UDFPrepareXSpaceBitmap(
     case EXTENT_NEXT_EXTENT_ALLOCDESC:
     case EXTENT_NOT_RECORDED_NOT_ALLOCATED: {
         // allocate space for bitmap
-        if(!OS_SUCCESS(status = UDFAllocFreeExtent(Vcb, *XSl,
+        if (!NT_SUCCESS(status = UDFAllocFreeExtent(IrpContext, Vcb, *XSl,
                UDFPartStart(Vcb, RefPartNum), UDFPartEnd(Vcb, RefPartNum), XSBMExtInfo, EXTENT_FLAG_ALLOC_SEQUENTIAL) ))
             return status;
-        if(XSBMExtInfo->Mapping[1].extLength) {
+        if (XSBMExtInfo->Mapping[1].extLength) {
             UDFPrint(("Can't allocate space for Freed Space bitmap\n"));
             *XSl = 0;
         } else {
@@ -121,7 +122,7 @@ UDFPrepareXSpaceBitmap(
         *XSl = min((XSpaceBitmap->extLength & UDF_EXTENT_LENGTH_MASK), *XSl);
         TmpExt.extLength = XSpaceBitmap->extLength = *XSl;
         TmpExt.extLocation = UDFPartLbaToPhys(Vcb, &locAddr);
-        if(TmpExt.extLocation == LBA_OUT_OF_EXTENT) {
+        if (TmpExt.extLocation == LBA_OUT_OF_EXTENT) {
             BrutePoint();
         }
         XSBMExtInfo->Mapping = UDFExtentToMapping(&TmpExt);
@@ -131,7 +132,7 @@ UDFPrepareXSpaceBitmap(
     }
     }
 
-    if(!_XSBM) {
+    if (!_XSBM) {
         BrutePoint();
         return STATUS_INSUFFICIENT_RESOURCES;
     }
@@ -139,15 +140,15 @@ UDFPrepareXSpaceBitmap(
     switch (XSpaceBitmap->extLength >> 30) {
     case EXTENT_RECORDED_ALLOCATED: {
         // read descriptor & bitmap
-        if((!OS_SUCCESS(status = UDFReadTagged(Vcb, *XSBM, (j = TmpExt.extLocation),
+        if ((!NT_SUCCESS(status = UDFReadTagged(IrpContext, Vcb, *XSBM, (j = TmpExt.extLocation),
                              locAddr.logicalBlockNum, &Ident))) ||
            (Ident != TID_SPACE_BITMAP_DESC) ||
-           (!OS_SUCCESS(status = UDFReadExtent(Vcb, XSBMExtInfo, 0, *XSl, FALSE, *XSBM, &ReadBytes))) ) {
-            if(OS_SUCCESS(status)) {
+           (!NT_SUCCESS(status = UDFReadExtent(IrpContext, Vcb, XSBMExtInfo, 0, *XSl, FALSE, *XSBM, &ReadBytes))) ) {
+            if (NT_SUCCESS(status)) {
                 BrutePoint();
                 status = STATUS_FILE_CORRUPT_ERROR;
             }
-            if(XSBMExtInfo->Mapping) {
+            if (XSBMExtInfo->Mapping) {
                 MyFreePool__(XSBMExtInfo->Mapping);
                 XSBMExtInfo->Mapping = NULL;
             }
@@ -184,8 +185,9 @@ UDFPrepareXSpaceBitmap(
 /*
     This routine updates Freed & Unallocated space bitmaps
  */
-OSSTATUS
+NTSTATUS
 UDFUpdateXSpaceBitmaps(
+    IN PIRP_CONTEXT IrpContext,
     IN PVCB Vcb,
     IN uint32 RefPartNum,
     IN PPARTITION_HEADER_DESC phd // partition header pointing to Bitmaps
@@ -198,7 +200,7 @@ UDFUpdateXSpaceBitmaps(
     int8* new_bm;
     int8* fpart_bm;
     int8* upart_bm;
-    OSSTATUS status, status2;
+    NTSTATUS status, status2;
     int8* USBM=NULL;
     int8* FSBM=NULL;
     uint32 USl, FSl;
@@ -210,10 +212,10 @@ UDFUpdateXSpaceBitmaps(
     plen = UDFPartLen(Vcb, RefPartNum);
     // prepare bitmaps for updating
 
-    status =  UDFPrepareXSpaceBitmap(Vcb, &(phd->unallocatedSpaceBitmap), &USBMExtInfo, &USBM, &USl);
-    status2 = UDFPrepareXSpaceBitmap(Vcb, &(phd->freedSpaceBitmap), &FSBMExtInfo, &FSBM, &FSl);
-    if(!OS_SUCCESS(status) ||
-       !OS_SUCCESS(status2)) {
+    status =  UDFPrepareXSpaceBitmap(IrpContext, Vcb, &phd->unallocatedSpaceBitmap, &USBMExtInfo, &USBM, &USl);
+    status2 = UDFPrepareXSpaceBitmap(IrpContext, Vcb, &phd->freedSpaceBitmap, &FSBMExtInfo, &FSBM, &FSl);
+    if (!NT_SUCCESS(status) ||
+       !NT_SUCCESS(status2)) {
         BrutePoint();
     }
 
@@ -222,38 +224,38 @@ UDFUpdateXSpaceBitmaps(
     old_bm = Vcb->FSBM_OldBitmap;
     bad_bm = Vcb->BSBM_Bitmap;
 
-    if((status  == STATUS_INSUFFICIENT_RESOURCES) ||
+    if ((status  == STATUS_INSUFFICIENT_RESOURCES) ||
        (status2 == STATUS_INSUFFICIENT_RESOURCES)) {
         // try to recover insufficient resources
-        if(USl && USBMExtInfo.Mapping) {
+        if (USl && USBMExtInfo.Mapping) {
             USl -= sizeof(SPACE_BITMAP_DESC);
-            status  = UDFWriteExtent(Vcb, &USBMExtInfo, sizeof(SPACE_BITMAP_DESC), USl, FALSE, new_bm, &WrittenBytes);
+            status  = UDFWriteExtent(IrpContext, Vcb, &USBMExtInfo, sizeof(SPACE_BITMAP_DESC), USl, FALSE, new_bm, &WrittenBytes);
 #ifdef UDF_DBG
         } else {
             UDFPrint(("Can't update USBM\n"));
 #endif // UDF_DBG
         }
-        if(USBMExtInfo.Mapping) MyFreePool__(USBMExtInfo.Mapping);
+        if (USBMExtInfo.Mapping) MyFreePool__(USBMExtInfo.Mapping);
 
-        if(FSl && FSBMExtInfo.Mapping) {
+        if (FSl && FSBMExtInfo.Mapping) {
             FSl -= sizeof(SPACE_BITMAP_DESC);
-            status2 = UDFWriteExtent(Vcb, &FSBMExtInfo, sizeof(SPACE_BITMAP_DESC), FSl, FALSE, new_bm, &WrittenBytes);
+            status2 = UDFWriteExtent(IrpContext, Vcb, &FSBMExtInfo, sizeof(SPACE_BITMAP_DESC), FSl, FALSE, new_bm, &WrittenBytes);
         } else {
             status2 = status;
             UDFPrint(("Can't update FSBM\n"));
         }
-        if(FSBMExtInfo.Mapping) MyFreePool__(FSBMExtInfo.Mapping);
+        if (FSBMExtInfo.Mapping) MyFreePool__(FSBMExtInfo.Mapping);
     } else {
         // normal way to record BitMaps
-        if(USBM) upart_bm =  USBM + sizeof(SPACE_BITMAP_DESC);
-        if(FSBM) fpart_bm =  FSBM + sizeof(SPACE_BITMAP_DESC);
+        if (USBM) upart_bm =  USBM + sizeof(SPACE_BITMAP_DESC);
+        if (FSBM) fpart_bm =  FSBM + sizeof(SPACE_BITMAP_DESC);
         pend = min(pstart + plen, Vcb->FSBM_BitCount);
 
         d=1<<Vcb->LB2B_Bits;
         // if we have some bad bits, mark corresponding area as BAD
-        if(bad_bm) {
+        if (bad_bm) {
             for(i=pstart; i<pend; i++) {
-                if(UDFGetBadBit(bad_bm, i)) {
+                if (UDFGetBadBit(bad_bm, i)) {
                     // TODO: would be nice to add these blocks to unallocatable space
                     UDFSetUsedBits(new_bm, i & ~(d-1), d);
                 }
@@ -261,25 +263,25 @@ UDFUpdateXSpaceBitmaps(
         }
         j=0;
         for(i=pstart; i<pend; i+=d) {
-            if(UDFGetUsedBit(old_bm, i) && UDFGetFreeBit(new_bm, i)) {
+            if (UDFGetUsedBit(old_bm, i) && UDFGetFreeBit(new_bm, i)) {
                 // sector was deallocated during last session
-                if(USBM) UDFSetFreeBit(upart_bm, j);
-                if(FSBM) UDFSetFreeBit(fpart_bm, j);
-            } else if(UDFGetUsedBit(new_bm, i)) {
+                if (USBM) UDFSetFreeBit(upart_bm, j);
+                if (FSBM) UDFSetFreeBit(fpart_bm, j);
+            } else if (UDFGetUsedBit(new_bm, i)) {
                 // allocated
-                if(USBM) UDFSetUsedBit(upart_bm, j);
-                if(FSBM) UDFSetUsedBit(fpart_bm, j);
+                if (USBM) UDFSetUsedBit(upart_bm, j);
+                if (FSBM) UDFSetUsedBit(fpart_bm, j);
             }
             j++;
         }
         // flush updates
-        if(USBM) {
-            status  = UDFWriteExtent(Vcb, &USBMExtInfo, 0, USl, FALSE, USBM, &WrittenBytes);
+        if (USBM) {
+            status  = UDFWriteExtent(IrpContext, Vcb, &USBMExtInfo, 0, USl, FALSE, USBM, &WrittenBytes);
             DbgFreePool(USBM);
             MyFreePool__(USBMExtInfo.Mapping);
         }
-        if(FSBM) {
-            status2 = UDFWriteExtent(Vcb, &FSBMExtInfo, 0, FSl, FALSE, FSBM, &WrittenBytes);
+        if (FSBM) {
+            status2 = UDFWriteExtent(IrpContext, Vcb, &FSBMExtInfo, 0, FSl, FALSE, FSBM, &WrittenBytes);
             DbgFreePool(FSBM);
             MyFreePool__(FSBMExtInfo.Mapping);
         } else {
@@ -287,7 +289,7 @@ UDFUpdateXSpaceBitmaps(
         }
     }
 
-    if(!OS_SUCCESS(status))
+    if (!NT_SUCCESS(status))
         return status;
     return status2;
 } // end UDFUpdateXSpaceBitmaps()
@@ -295,8 +297,9 @@ UDFUpdateXSpaceBitmaps(
 /*
     This routine updates Partition Desc & associated data structures
  */
-OSSTATUS
+NTSTATUS
 UDFUpdatePartDesc(
+    PIRP_CONTEXT IrpContext,
     PVCB Vcb,
     int8* Buf
     )
@@ -308,7 +311,7 @@ UDFUpdatePartDesc(
 
     for(i=0; i<Vcb->PartitionMaps; i++)
     {
-        if((UDFGetPartNumByPartRef(Vcb,i) == p->partitionNumber) &&
+        if ((UDFGetPartNumByPartRef(Vcb,i) == p->partitionNumber) &&
            (!strcmp((int8*)&(p->partitionContents.ident), PARTITION_CONTENTS_NSR02) ||
             !strcmp((int8*)&(p->partitionContents.ident), PARTITION_CONTENTS_NSR03)))
         {
@@ -316,19 +319,19 @@ UDFUpdatePartDesc(
 
             phd = (PPARTITION_HEADER_DESC)(p->partitionContentsUse);
 #ifdef UDF_DBG
-            if(phd->unallocatedSpaceTable.extLength) {
+            if (phd->unallocatedSpaceTable.extLength) {
                 // rebuild unallocatedSpaceTable
                 UDFPrint(("unallocatedSpaceTable (part %d)\n", i));
             }
-            if(phd->freedSpaceTable.extLength) {
+            if (phd->freedSpaceTable.extLength) {
                 // rebuild freedSpaceTable
                 UDFPrint(("freedSpaceTable (part %d)\n", i));
             }
 #endif // UDF_DBG
-            UDFUpdateXSpaceBitmaps(Vcb, i, phd);
+            UDFUpdateXSpaceBitmaps(IrpContext, Vcb, i, phd);
             PTag = (tag*)Buf;
             UDFSetUpTag(Vcb, PTag, PTag->descCRCLength + sizeof(tag), PTag->tagLocation, 0);
-            UDFWriteSectors(Vcb, TRUE, PTag->tagLocation, 1, FALSE, Buf, &WrittenBytes);
+            UDFWriteSectors(IrpContext, Vcb, TRUE, PTag->tagLocation, 1, FALSE, Buf, &WrittenBytes);
         }
     }
     return STATUS_SUCCESS;
@@ -337,7 +340,7 @@ UDFUpdatePartDesc(
 /*
     This routine blanks Unalloc Space Desc
  *//*
-OSSTATUS
+NTSTATUS
 UDFUpdateUSpaceDesc(
     IN PVCB Vcb,
     int8* Buf
@@ -357,13 +360,14 @@ UDFUpdateUSpaceDesc(
 /*
    update Logical volume integrity descriptor
  */
-OSSTATUS
+NTSTATUS
 UDFUpdateLogicalVolInt(
+    PIRP_CONTEXT IrpContext,
     PVCB            Vcb,
     BOOLEAN         Close
     )
 {
-    OSSTATUS    RC = STATUS_SUCCESS;
+    NTSTATUS    RC = STATUS_SUCCESS;
     uint32      i, len;
     SIZE_T      WrittenBytes;
 //    uint32      lvid_count = 0;
@@ -375,22 +379,22 @@ UDFUpdateLogicalVolInt(
     uint32*     partFreeSpace;
     BOOLEAN     equal = FALSE;
 
-    if(Vcb->CDR_Mode)
+    if (Vcb->CDR_Mode)
         return STATUS_SUCCESS;
-    if(!Vcb->LVid) {
+    if (!Vcb->LVid) {
         return STATUS_UNSUCCESSFUL;
     }
 
     UDFPrint(("UDF: Updating LVID @%x (%x)\n", Vcb->LVid_loc.extLocation, Vcb->LVid_loc.extLength));
     len = max(Vcb->LVid_loc.extLength, Vcb->BlockSize);
     lvid = Vcb->LVid;
-    if(lvid->descTag.tagSerialNum > UDF_LVID_TTL) {
+    if (lvid->descTag.tagSerialNum > UDF_LVID_TTL) {
         // TODO: allocate space for new LVID
     }
 
     LVID_iUse = UDFGetLVIDiUse(Vcb);
 
-    if((LVID_iUse->minUDFReadRev  == Vcb->minUDFReadRev) &&
+    if ((LVID_iUse->minUDFReadRev  == Vcb->minUDFReadRev) &&
        (LVID_iUse->minUDFWriteRev == Vcb->minUDFWriteRev) &&
        (LVID_iUse->maxUDFWriteRev == Vcb->maxUDFWriteRev) &&
        (LVID_iUse->numFiles == Vcb->numFiles) &&
@@ -408,7 +412,7 @@ UDFUpdateLogicalVolInt(
     UDFSetEntityID_imp(&(LVID_iUse->impIdent), UDF_ID_DEVELOPER);
 #endif
 
-    if(Close){
+    if (Close){
         UDFPrint(("UDF: Opening LVID\n"));
         lvid->integrityType = INTEGRITY_TYPE_CLOSE;
     } else {
@@ -431,7 +435,7 @@ UDFUpdateLogicalVolInt(
     equal = equal && (LVID_hd->uniqueID == Vcb->NextUniqueId);
     LVID_hd->uniqueID = Vcb->NextUniqueId;
 
-    if(equal) {
+    if (equal) {
         UDFPrint(("UDF: equal Ids\n"));
         return STATUS_SUCCESS;
     }
@@ -446,8 +450,8 @@ UDFUpdateLogicalVolInt(
         PTag->tagLocation, 0);
 
     Vcb->IntegrityType = INTEGRITY_TYPE_OPEN; // make happy auto-dirty
-    RC = UDFWriteSectors(Vcb, TRUE, PTag->tagLocation, len >> Vcb->BlockSizeBits, FALSE, (int8*)(lvid), &WrittenBytes);
-    WCacheFlushBlocks__(&(Vcb->FastCache), Vcb, PTag->tagLocation, len >> Vcb->BlockSizeBits);
+    RC = UDFWriteSectors(IrpContext, Vcb, TRUE, PTag->tagLocation, len >> Vcb->BlockSizeBits, FALSE, (int8*)(lvid), &WrittenBytes);
+    WCacheFlushBlocks__(IrpContext, &Vcb->FastCache, Vcb, PTag->tagLocation, len >> Vcb->BlockSizeBits);
     // update it here to prevent recursion
     Vcb->IntegrityType = lvid->integrityType;
 
@@ -458,15 +462,16 @@ UDFUpdateLogicalVolInt(
     This routine reads all sparing tables & stores them in contiguos memory
     space
  */
-OSSTATUS
+NTSTATUS
 UDFUpdateSparingTable(
+    IN PIRP_CONTEXT IrpContext,
     IN PVCB Vcb
     )
 {
     PSPARING_MAP RelocMap;
 //    PSPARING_MAP NewRelocMap;
-    OSSTATUS status = STATUS_SUCCESS;
-    OSSTATUS status2 = STATUS_SUCCESS;
+    NTSTATUS status = STATUS_SUCCESS;
+    NTSTATUS status2 = STATUS_SUCCESS;
     uint32 i=0, BC, BC2;
     PSPARING_TABLE SparTable;
     SIZE_T ReadBytes;
@@ -475,12 +480,12 @@ UDFUpdateSparingTable(
     BOOLEAN sorted;
 
     UDFPrint(("UDF: Updating Sparable Part Map:\n"));
-    if(!Vcb->SparingTableModified) return STATUS_SUCCESS;
-    if(!Vcb->SparingTable) return STATUS_SUCCESS;
+    if (!Vcb->SparingTableModified) return STATUS_SUCCESS;
+    if (!Vcb->SparingTable) return STATUS_SUCCESS;
 
     BC = (Vcb->SparingTableLength >> Vcb->BlockSizeBits) + 1;
     SparTable = (PSPARING_TABLE)MyAllocatePool__(NonPagedPool, BC*Vcb->BlockSize);
-    if(!SparTable) return STATUS_INSUFFICIENT_RESOURCES;
+    if (!SparTable) return STATUS_INSUFFICIENT_RESOURCES;
     // if a part of Sparing Table is already loaded,
     // update it with data from another one
     RelocMap = Vcb->SparingTable;
@@ -489,14 +494,14 @@ UDFUpdateSparingTable(
     do {
         sorted = FALSE;
         for(i=1;i<Vcb->SparingCount;i++) {
-            if(RelocMap[i-1].origLocation > RelocMap[i].origLocation) {
+            if (RelocMap[i-1].origLocation > RelocMap[i].origLocation) {
                 XCHG_DD(RelocMap[i-1].origLocation,   RelocMap[i].origLocation);
 swp_loc:
                 XCHG_DD(RelocMap[i-1].mappedLocation, RelocMap[i].mappedLocation);
                 //merged = TRUE;
                 sorted = TRUE;
             } else
-            if(RelocMap[i-1].origLocation == SPARING_LOC_AVAILABLE &&
+            if (RelocMap[i-1].origLocation == SPARING_LOC_AVAILABLE &&
                RelocMap[i].origLocation   == SPARING_LOC_AVAILABLE &&
                RelocMap[i-1].mappedLocation > RelocMap[i].mappedLocation) {
                 goto swp_loc;
@@ -510,7 +515,7 @@ swp_loc:
     }
 
     Vcb->SparingTableModified = FALSE;
-//    if(!merged) {
+//    if (!merged) {
 //        UDFPrint(("  sparing table unchanged\n"));
 //        MyFreePool__(SparTable);
 //        return STATUS_SUCCESS;
@@ -520,24 +525,24 @@ swp_loc:
     for(i=0;i<Vcb->SparingTableCount;i++) {
         // read (next) table
         UDFPrint(("  sparing table @%x\n", Vcb->SparingTableLoc[i]));
-        status = UDFReadSectors(Vcb, FALSE, Vcb->SparingTableLoc[i], 1, FALSE, (int8*)SparTable, &ReadBytes);
+        status = UDFReadSectors(IrpContext, Vcb, FALSE, Vcb->SparingTableLoc[i], 1, FALSE, (int8*)SparTable, &ReadBytes);
         // tag should be set to TID_UNUSED_DESC
-        if(OS_SUCCESS(status) && (SparTable->descTag.tagIdent == TID_UNUSED_DESC)) {
+        if (NT_SUCCESS(status) && (SparTable->descTag.tagIdent == TID_UNUSED_DESC)) {
 
             BC2 = ((sizeof(SPARING_TABLE) +
                     SparTable->reallocationTableLen*sizeof(SparingEntry) +
                     Vcb->BlockSize-1)
                                       >> Vcb->BlockSizeBits);
-            if(BC2 > BC) {
+            if (BC2 > BC) {
                 UDFPrint((" sizeSparingTable @%x too long: %x > %x\n",
                     Vcb->SparingTableLoc[i], BC2, BC
                     ));
                 continue;
             }
-            status = UDFReadSectors(Vcb, FALSE, Vcb->SparingTableLoc[i],
+            status = UDFReadSectors(IrpContext, Vcb, FALSE, Vcb->SparingTableLoc[i],
                 BC2, FALSE, (int8*)SparTable, &ReadBytes);
 
-            if(!OS_SUCCESS(status)) {
+            if (!NT_SUCCESS(status)) {
                 UDFPrint((" Error reading sizeSparingTable @%x (%x)\n",
                     Vcb->SparingTableLoc[i], BC2
                     ));
@@ -548,7 +553,7 @@ swp_loc:
                     Vcb->SparingCount*sizeof(SparingEntry) +
                     Vcb->BlockSize-1)
                                       >> Vcb->BlockSizeBits);
-            if(BC2 > BC) {
+            if (BC2 > BC) {
                 UDFPrint((" new sizeSparingTable @%x too long: %x > %x\n",
                     Vcb->SparingTableLoc[i], BC2, BC
                     ));
@@ -562,8 +567,8 @@ swp_loc:
             NewRelocMap = (PSPARING_MAP)(SparTable+1);
             for(n=0; n<SparTable->reallocationTableLen; n++) {
                 for(m=0; m<Vcb->SparingCount; m++) {
-                    if(RelocMap[m].mappedLocation == NewRelocMap[n].mappedLocation) {
-                        if(RelocMap[m].origLocation != NewRelocMap[n].origLocation) {
+                    if (RelocMap[m].mappedLocation == NewRelocMap[n].mappedLocation) {
+                        if (RelocMap[m].origLocation != NewRelocMap[n].origLocation) {
                             UDFPrint(("  update @%x (%x) -> @%x (%x)\n",
                                 NewRelocMap[m].origLocation, NewRelocMap[m].mappedLocation,
                                 RelocMap[m].origLocation, RelocMap[m].mappedLocation));
@@ -573,11 +578,11 @@ swp_loc:
                 }
             }
 */
-//            if(merged) {
+//            if (merged) {
             UDFPrint(("UDF: record updated\n"));
-            status = UDFWriteSectors(Vcb, FALSE, Vcb->SparingTableLoc[i], BC2, FALSE, (int8*)SparTable, &ReadBytes);
-            if(!OS_SUCCESS(status)) {
-                if(!OS_SUCCESS(status2)) {
+            status = UDFWriteSectors(IrpContext, Vcb, FALSE, Vcb->SparingTableLoc[i], BC2, FALSE, (int8*)SparTable, &ReadBytes);
+            if (!NT_SUCCESS(status)) {
+                if (!NT_SUCCESS(status2)) {
                     status2 = status;
                 }
 //                }
@@ -585,7 +590,7 @@ swp_loc:
         }
     }
     MyFreePool__(SparTable);
-    if(!OS_SUCCESS(status2)) {
+    if (!NT_SUCCESS(status2)) {
         status = status2;
     }
     return status;
@@ -594,8 +599,9 @@ swp_loc:
 /*
     update Logical volume descriptor
  */
-OSSTATUS
+NTSTATUS
 UDFUpdateLogicalVol(
+    IN PIRP_CONTEXT IrpContext,
     IN PVCB            Vcb,
     IN UDF_VDS_RECORD  Lba,
     IN PUNICODE_STRING VolIdent
@@ -606,18 +612,18 @@ UDFUpdateLogicalVol(
     dstring CS0[CUR_IDENT_SZ];
     uint16 ident;
     SIZE_T WrittenBytes;
-    OSSTATUS status = STATUS_SUCCESS;
-//    OSSTATUS status2 = STATUS_SUCCESS;
+    NTSTATUS status = STATUS_SUCCESS;
+//    NTSTATUS status2 = STATUS_SUCCESS;
 
-    status = UDFUpdateSparingTable(Vcb);
+    status = UDFUpdateSparingTable(IrpContext, Vcb);
 
-    if(!(Vcb->CompatFlags & UDF_VCB_IC_W2K_COMPAT_VLABEL)) {
+    if (!(Vcb->CompatFlags & UDF_VCB_IC_W2K_COMPAT_VLABEL)) {
         goto Err_SetVI;
     }
 
     lvd = (LogicalVolDesc*)MyAllocatePool__(NonPagedPool, max(Vcb->BlockSize, sizeof(LogicalVolDesc)) );
 
-    if(!lvd) {
+    if (!lvd) {
         status = STATUS_INSUFFICIENT_RESOURCES;
         goto Err_SetVI;
     }
@@ -625,25 +631,25 @@ UDFUpdateLogicalVol(
     UDFPrint(("UDF: Updating LVD @%x (%x)\n", Lba.block, Vcb->BlockSize));
 
     status = UDFSetDstring(&(Vcb->VolIdent), (dstring*)&CS0, CUR_IDENT_SZ);
-    if(!OS_SUCCESS(status)) {
-        if(status == STATUS_INVALID_PARAMETER) {
+    if (!NT_SUCCESS(status)) {
+        if (status == STATUS_INVALID_PARAMETER) {
             status = STATUS_INVALID_VOLUME_LABEL;
         }
         goto Err_SetVI;
     }
 
-    if(!Lba.block) {
+    if (!Lba.block) {
         status = STATUS_INVALID_PARAMETER;
         goto Err_SetVI;
     }
-    status = UDFReadTagged(Vcb, (int8*)lvd, Lba.block, Lba.block, &ident);
-    if(!OS_SUCCESS(status)) goto Err_SetVI;
-    if(ident != TID_LOGICAL_VOL_DESC) {
+    status = UDFReadTagged(IrpContext, Vcb, (int8*)lvd, Lba.block, Lba.block, &ident);
+    if (!NT_SUCCESS(status)) goto Err_SetVI;
+    if (ident != TID_LOGICAL_VOL_DESC) {
         status = STATUS_FILE_CORRUPT_ERROR;
         goto Err_SetVI;
     }
 
-    if(RtlCompareMemory(lvd->logicalVolIdent, CS0, CUR_IDENT_SZ) == CUR_IDENT_SZ) {
+    if (RtlCompareMemory(lvd->logicalVolIdent, CS0, CUR_IDENT_SZ) == CUR_IDENT_SZ) {
         // no changes
         UDFPrint(("UDF: equal VolIds\n"));
         status = STATUS_SUCCESS;
@@ -654,10 +660,10 @@ UDFUpdateLogicalVol(
     lvd->descTag.tagSerialNum --;
     UDFSetUpTag(Vcb, (tag*)lvd, lvd->descTag.descCRCLength + sizeof(tag), Lba.block, 0);
 
-    status = UDFWriteSectors(Vcb, TRUE, Lba.block, 1, FALSE, (int8*)lvd, &WrittenBytes);
+    status = UDFWriteSectors(IrpContext, Vcb, TRUE, Lba.block, 1, FALSE, (int8*)lvd, &WrittenBytes);
 
 Err_SetVI:
-    if(lvd)
+    if (lvd)
         MyFreePool__(lvd);
 
 #undef CUR_IDENT_SZ
@@ -669,15 +675,16 @@ Err_SetVI:
 /*
     This routine updates volume descriptor sequence
  */
-OSSTATUS
+NTSTATUS
 UDFUpdateVDS(
+    IN PIRP_CONTEXT IrpContext,
     IN PVCB Vcb,
     IN uint32 block,
     IN uint32 lastblock,
     IN uint32 flags
     )
 {
-    OSSTATUS status;
+    NTSTATUS status;
     int8*    Buf = (int8*)DbgAllocatePool(NonPagedPool,Vcb->LBlockSize);
     UDF_VDS_RECORD vds[VDS_POS_LENGTH];
     uint32 i,j;
@@ -685,7 +692,7 @@ UDFUpdateVDS(
 
     if (!Buf) return STATUS_INSUFFICIENT_RESOURCES;
     RtlZeroMemory(vds, sizeof(UDF_VDS_RECORD) * VDS_POS_LENGTH);
-    if(!OS_SUCCESS(status = UDFReadVDS(Vcb, block, lastblock, (PUDF_VDS_RECORD)&vds, Buf))) {
+    if (!NT_SUCCESS(status = UDFReadVDS(IrpContext, Vcb, block, lastblock, (PUDF_VDS_RECORD)&vds, Buf))) {
         DbgFreePool(Buf);
         return status;
     }
@@ -695,7 +702,7 @@ UDFUpdateVDS(
     for (i=0; i<VDS_POS_LENGTH; i++) {
         if (vds[i].block) {
             status = UDFReadTagged(Vcb, Buf, vds[i].block, vds[i].block, &ident);
-            if(OS_SUCCESS(status) && (i == VDS_POS_PARTITION_DESC)) {
+            if (NT_SUCCESS(status) && (i == VDS_POS_PARTITION_DESC)) {
                 // load partition descriptor(s)
                 int8*  Buf2 = (int8*)DbgAllocatePool(NonPagedPool,Vcb->BlockSize);
                 if (!Buf2) {
@@ -716,12 +723,12 @@ UDFUpdateVDS(
     }*/
     for (i=0; i<VDS_POS_LENGTH; i++) {
         if (vds[i].block) {
-            status = UDFReadTagged(Vcb, Buf, vds[i].block, vds[i].block, &ident);
-            if(!OS_SUCCESS(status))
+            status = UDFReadTagged(IrpContext, Vcb, Buf, vds[i].block, vds[i].block, &ident);
+            if (!NT_SUCCESS(status))
                 continue;
             // update XBMs
-            if(i == VDS_POS_PARTITION_DESC) {
-                if(!(flags & 1))
+            if (i == VDS_POS_PARTITION_DESC) {
+                if (!(flags & 1))
                     continue;
                 // update partition descriptor(s)
                 int8*  Buf2 = (int8*)DbgAllocatePool(NonPagedPool,Vcb->BlockSize);
@@ -729,19 +736,19 @@ UDFUpdateVDS(
                     DbgFreePool(Buf);
                     return STATUS_INSUFFICIENT_RESOURCES;
                 }
-                UDFUpdatePartDesc(Vcb,Buf);
+                UDFUpdatePartDesc(IrpContext, Vcb, Buf);
                 for (j=vds[i].block+1; j<vds[VDS_POS_TERMINATING_DESC].block; j++) {
-                    UDFReadTagged(Vcb,Buf2, j, j, &ident);
+                    UDFReadTagged(IrpContext, Vcb,Buf2, j, j, &ident);
                     if (ident == TID_PARTITION_DESC)
-                        UDFUpdatePartDesc(Vcb,Buf2);
+                        UDFUpdatePartDesc(IrpContext, Vcb, Buf2);
                 }
                 DbgFreePool(Buf2);
 //                continue;
             } else
             // update Vol Ident Desc
-            if(i == VDS_POS_LOGICAL_VOL_DESC) {
-                status = UDFUpdateLogicalVol(Vcb, vds[VDS_POS_LOGICAL_VOL_DESC], &(Vcb->VolIdent));
-                if(!OS_SUCCESS(status))
+            if (i == VDS_POS_LOGICAL_VOL_DESC) {
+                status = UDFUpdateLogicalVol(IrpContext, Vcb, vds[VDS_POS_LOGICAL_VOL_DESC], &Vcb->VolIdent);
+                if (!NT_SUCCESS(status))
                     continue;
             }
         }
@@ -751,7 +758,7 @@ UDFUpdateVDS(
     return status;
 } // end UDFUpdateVDS()
 
-OSSTATUS
+NTSTATUS
 __fastcall
 UDFSetDstring(
     IN PUNICODE_STRING UName,
@@ -769,15 +776,15 @@ UDFSetDstring(
     }
 
     UDFCompressUnicode(UName, &CS0, &len);
-    if(!CS0)
+    if (!CS0)
         return STATUS_INSUFFICIENT_RESOURCES;
-    if(len > Length-1) {
+    if (len > Length-1) {
         MyFreePool__(CS0);
         return STATUS_INVALID_PARAMETER;
     }
     RtlCopyMemory(Dest, CS0, len);
     MyFreePool__(CS0);
-    if(len < Length-1)
+    if (len < Length-1)
         RtlZeroMemory(Dest+len, Length-1-len);
     Dest[Length-1] = (uint8)len;
     return STATUS_SUCCESS;
@@ -801,8 +808,9 @@ UDFGetDstring(
     This routine updates Volume Label & some other features stored in
     VolIdentDesc
  */
-OSSTATUS
+NTSTATUS
 UDFUpdateVolIdent(
+    IN PIRP_CONTEXT IrpContext,
     IN PVCB Vcb,
     IN UDF_VDS_RECORD Lba,
     IN PUNICODE_STRING VolIdent
@@ -810,35 +818,35 @@ UDFUpdateVolIdent(
 {
 #define CUR_IDENT_SZ (sizeof(pvoldesc->volIdent))
     PrimaryVolDesc* pvoldesc = (PrimaryVolDesc*)MyAllocatePool__(NonPagedPool, max(Vcb->BlockSize, sizeof(PrimaryVolDesc)) );
-    OSSTATUS status;
+    NTSTATUS status;
     dstring CS0[CUR_IDENT_SZ];
     uint16 ident;
     SIZE_T WrittenBytes;
 
-    if(!pvoldesc) return STATUS_INSUFFICIENT_RESOURCES;
+    if (!pvoldesc) return STATUS_INSUFFICIENT_RESOURCES;
 
     UDFPrint(("UDF: Updating PVD @%x (%x)\n", Lba.block, Vcb->BlockSize));
 
     status = UDFSetDstring(&(Vcb->VolIdent), (dstring*)&CS0, CUR_IDENT_SZ);
-    if(!OS_SUCCESS(status)) {
-        if(status == STATUS_INVALID_PARAMETER) {
+    if (!NT_SUCCESS(status)) {
+        if (status == STATUS_INVALID_PARAMETER) {
             status = STATUS_INVALID_VOLUME_LABEL;
         }
         goto Err_SetVI;
     }
 
-    if(!Lba.block) {
+    if (!Lba.block) {
         status = STATUS_INVALID_PARAMETER;
         goto Err_SetVI;
     }
-    status = UDFReadTagged(Vcb, (int8*)pvoldesc, Lba.block, Lba.block, &ident);
-    if(!OS_SUCCESS(status)) goto Err_SetVI;
-    if(ident != TID_PRIMARY_VOL_DESC) {
+    status = UDFReadTagged(IrpContext, Vcb, (int8*)pvoldesc, Lba.block, Lba.block, &ident);
+    if (!NT_SUCCESS(status)) goto Err_SetVI;
+    if (ident != TID_PRIMARY_VOL_DESC) {
         status = STATUS_FILE_CORRUPT_ERROR;
         goto Err_SetVI;
     }
 
-    if(RtlCompareMemory(pvoldesc->volIdent, CS0, CUR_IDENT_SZ) == CUR_IDENT_SZ) {
+    if (RtlCompareMemory(pvoldesc->volIdent, CS0, CUR_IDENT_SZ) == CUR_IDENT_SZ) {
         // no changes
         status = STATUS_SUCCESS;
         goto Err_SetVI;
@@ -848,7 +856,7 @@ UDFUpdateVolIdent(
     pvoldesc->descTag.tagSerialNum --;
     UDFSetUpTag(Vcb, (tag*)pvoldesc, pvoldesc->descTag.descCRCLength + sizeof(tag), Lba.block, 0);
 
-    status = UDFWriteSectors(Vcb, TRUE, Lba.block, 1, FALSE, (int8*)pvoldesc, &WrittenBytes);
+    status = UDFWriteSectors(IrpContext, Vcb, TRUE, Lba.block, 1, FALSE, (int8*)pvoldesc, &WrittenBytes);
 Err_SetVI:
     MyFreePool__(pvoldesc);
     return status;
@@ -856,8 +864,9 @@ Err_SetVI:
 #undef CUR_IDENT_SZ
 } // end UDFUpdateVolIdent()
 
-OSSTATUS
+NTSTATUS
 UDFUpdateNonAllocated(
+    IN PIRP_CONTEXT IrpContext,
     IN PVCB Vcb
     )
 {
@@ -870,16 +879,16 @@ UDFUpdateNonAllocated(
     PEXTENT_INFO DataLoc;
 
     UDFPrint(("UDFUpdateNonAllocated:\n"));
-    if(!Vcb->NonAllocFileInfo) {
+    if (!Vcb->NonAllocFileInfo) {
         return STATUS_SUCCESS;
     }
-    if(!(bad_bm = Vcb->BSBM_Bitmap)) {
+    if (!(bad_bm = Vcb->BSBM_Bitmap)) {
         return STATUS_SUCCESS;
     }
 
     DataLoc = &(Vcb->NonAllocFileInfo->Dloc->DataLoc);
     ASSERT(!DataLoc->Offset);
-    if(Vcb->NonAllocFileInfo->Dloc->DataLoc.Offset) {
+    if (Vcb->NonAllocFileInfo->Dloc->DataLoc.Offset) {
         UDFPrint(("NonAllocFileInfo in IN_ICB mode !!!\n"));
         return STATUS_SUCCESS;
     }
@@ -890,11 +899,11 @@ UDFUpdateNonAllocated(
 
     //BrutePoint();
     for(i=pstart; i<pend; i++) {
-        if(!UDFGetBadBit(bad_bm, i))
+        if (!UDFGetBadBit(bad_bm, i))
             continue;
         // add BAD blocks to unallocatable space
         // if the block is already in NonAllocatable, ignore it
-        if(UDFLocateLbaInExtent(Vcb, DataLoc->Mapping, i) != LBA_OUT_OF_EXTENT) {
+        if (UDFLocateLbaInExtent(Vcb, DataLoc->Mapping, i) != LBA_OUT_OF_EXTENT) {
             UDFPrint(("lba %#x is already in NonAllocFileInfo\n", i));
             continue;
         }
@@ -908,7 +917,7 @@ UDFUpdateNonAllocated(
     }
     UDFPackMapping(Vcb, DataLoc);
     DataLoc->Length = UDFGetExtentLength(DataLoc->Mapping);
-    UDFFlushFile__(Vcb, Vcb->NonAllocFileInfo);
+    UDFFlushFile__(IrpContext, Vcb, Vcb->NonAllocFileInfo);
 
     // ensure that BAD space is marked as USED
     UDFMarkSpaceAsXXX(Vcb, 0, &(DataLoc->Mapping[0]), AS_USED); // mark as used
@@ -920,81 +929,82 @@ UDFUpdateNonAllocated(
 /*
     This routine rebuilds & flushes all system areas
  */
-OSSTATUS
+NTSTATUS
 UDFUmount__(
+    IN PIRP_CONTEXT IrpContext,
     IN PVCB Vcb
     )
 {
     uint32 flags = 0;
 
-    if ((Vcb->VCBFlags & VCB_STATE_VOLUME_READ_ONLY)
+    if ((Vcb->VcbState & VCB_STATE_VOLUME_READ_ONLY)
         || !Vcb->Modified)
         return STATUS_SUCCESS;
     // prevent discarding metadata
-    Vcb->VCBFlags |= UDF_VCB_ASSUME_ALL_USED;
-    if(Vcb->CDR_Mode) {
+    Vcb->VcbState |= UDF_VCB_ASSUME_ALL_USED;
+    if (Vcb->CDR_Mode) {
         // flush internal cache
-        if(WCacheGetWriteBlockCount__(&(Vcb->FastCache)) >= (Vcb->WriteBlockSize >> Vcb->BlockSizeBits) )
-            WCacheFlushAll__(&(Vcb->FastCache), Vcb);
+        if (WCacheGetWriteBlockCount__(&(Vcb->FastCache)) >= (Vcb->WriteBlockSize >> Vcb->BlockSizeBits) )
+            WCacheFlushAll__(IrpContext, &Vcb->FastCache, Vcb);
         // record VAT
-        return UDFRecordVAT(Vcb);
+        return UDFRecordVAT(IrpContext, Vcb);
     }
 
     UDFFlushAllCachedAllocations(Vcb, UDF_PREALLOC_CLASS_FE);
     UDFFlushAllCachedAllocations(Vcb, UDF_PREALLOC_CLASS_DIR);
 
-    if(Vcb->VerifyOnWrite) {
+    if (Vcb->VerifyOnWrite) {
         UDFPrint(("UDF: Flushing cache for verify\n"));
         //WCacheFlushAll__(&(Vcb->FastCache), Vcb);
-        WCacheFlushBlocks__(&(Vcb->FastCache), Vcb, 0, Vcb->LastLBA);
+        WCacheFlushBlocks__(IrpContext, &Vcb->FastCache, Vcb, 0, Vcb->LastLBA);
         UDFVFlush(Vcb);
     }
 
     // synchronize BAD Block bitmap and NonAllocatable
-    UDFUpdateNonAllocated(Vcb);
+    UDFUpdateNonAllocated(IrpContext, Vcb);
 
     UDFAcquireResourceExclusive(&(Vcb->BitMapResource1),TRUE);
 
     // RAM mode
 #ifdef UDF_DBG
-    if(!OS_SUCCESS(UDFUpdateVolIdent(Vcb, Vcb->PVolDescAddr, &(Vcb->VolIdent))))
+    if (!NT_SUCCESS(UDFUpdateVolIdent(IrpContext, Vcb, Vcb->PVolDescAddr, &Vcb->VolIdent)))
         UDFPrint(("Error updating VolIdent (1)\n"));
-    if(!OS_SUCCESS(UDFUpdateVolIdent(Vcb, Vcb->PVolDescAddr2, &(Vcb->VolIdent))))
+    if (!NT_SUCCESS(UDFUpdateVolIdent(IrpContext, Vcb, Vcb->PVolDescAddr2, &Vcb->VolIdent)))
         UDFPrint(("Error updating VolIdent (2)\n"));
 #else
-    UDFUpdateVolIdent(Vcb, Vcb->PVolDescAddr, &(Vcb->VolIdent));
-    UDFUpdateVolIdent(Vcb, Vcb->PVolDescAddr2, &(Vcb->VolIdent));
+    UDFUpdateVolIdent(IrpContext, Vcb, Vcb->PVolDescAddr, &Vcb->VolIdent);
+    UDFUpdateVolIdent(IrpContext, Vcb, Vcb->PVolDescAddr2, &Vcb->VolIdent);
 #endif // UDF_DBG
 
     UDF_CHECK_BITMAP_RESOURCE(Vcb);
     // check if we should update BM
-    if(Vcb->FSBM_ByteCount == RtlCompareMemory(Vcb->FSBM_Bitmap, Vcb->FSBM_OldBitmap, Vcb->FSBM_ByteCount)) {
+    if (Vcb->FSBM_ByteCount == RtlCompareMemory(Vcb->FSBM_Bitmap, Vcb->FSBM_OldBitmap, Vcb->FSBM_ByteCount)) {
         flags &= ~1;
     } else {
         flags |= 1;
     }
 
 #ifdef UDF_DBG
-    if(!OS_SUCCESS(UDFUpdateVDS(Vcb, Vcb->VDS1, Vcb->VDS1 + Vcb->VDS1_Len, flags)))
+    if (!NT_SUCCESS(UDFUpdateVDS(IrpContext, Vcb, Vcb->VDS1, Vcb->VDS1 + Vcb->VDS1_Len, flags)))
         UDFPrint(("Error updating Main VDS\n"));
-    if(!OS_SUCCESS(UDFUpdateVDS(Vcb, Vcb->VDS2, Vcb->VDS2 + Vcb->VDS2_Len, flags)))
+    if (!NT_SUCCESS(UDFUpdateVDS(IrpContext, Vcb, Vcb->VDS2, Vcb->VDS2 + Vcb->VDS2_Len, flags)))
         UDFPrint(("Error updating Reserve VDS\n"));
 #else
-    UDFUpdateVDS(Vcb, Vcb->VDS1, Vcb->VDS1 + Vcb->VDS1_Len, flags);
-    UDFUpdateVDS(Vcb, Vcb->VDS2, Vcb->VDS2 + Vcb->VDS2_Len, flags);
+    UDFUpdateVDS(IrpContext, Vcb, Vcb->VDS1, Vcb->VDS1 + Vcb->VDS1_Len, flags);
+    UDFUpdateVDS(IrpContext, Vcb, Vcb->VDS2, Vcb->VDS2 + Vcb->VDS2_Len, flags);
 #endif // UDF_DBG
 
     // Update Integrity Desc if any
-    if(Vcb->LVid && Vcb->origIntegrityType == INTEGRITY_TYPE_CLOSE) {
-        UDFUpdateLogicalVolInt(Vcb, TRUE);
+    if (Vcb->LVid && Vcb->origIntegrityType == INTEGRITY_TYPE_CLOSE) {
+        UDFUpdateLogicalVolInt(IrpContext, Vcb, TRUE);
     }
 
-    if(flags & 1)
+    if (flags & 1)
         RtlCopyMemory(Vcb->FSBM_OldBitmap, Vcb->FSBM_Bitmap, Vcb->FSBM_ByteCount);
 
 //skip_update_bitmap:
 
-    Vcb->VCBFlags &= ~UDF_VCB_ASSUME_ALL_USED;
+    Vcb->VcbState &= ~UDF_VCB_ASSUME_ALL_USED;
 
     UDFReleaseResource(&(Vcb->BitMapResource1));
 
@@ -1010,19 +1020,20 @@ UDFUmount__(
 */
 lba_t
 UDFFindAnchor(
+    IN PIRP_CONTEXT IrpContext,
     PVCB           Vcb           // Volume control block
     )
 {
-//    OSSTATUS    RC = STATUS_SUCCESS;
+//    NTSTATUS    RC = STATUS_SUCCESS;
 
     uint16 ident;
     uint32 i;
     uint32 LastBlock;
-    OSSTATUS status;
+    NTSTATUS status;
     int8* Buf = (int8*)MyAllocatePool__(NonPagedPool,Vcb->BlockSize);
     BOOLEAN MRW_candidate;
     BOOLEAN IsMRW = (Vcb->MRWStatus != 0);
-    if(!Buf)
+    if (!Buf)
         return 0;
 
     UDFPrint(("UDFFindAnchor\n"));
@@ -1046,18 +1057,18 @@ UDFFindAnchor(
     LastBlock = 0;
     // ... and check them
     for (i=0; i<sizeof(Vcb->Anchor)/sizeof(int); i++) {
-        if(Vcb->Anchor[i] > Vcb->LastLBA)
+        if (Vcb->Anchor[i] > Vcb->LastLBA)
             Vcb->Anchor[i] = 0;
         MRW_candidate = FALSE;
-        if(Vcb->Anchor[i]) {
+        if (Vcb->Anchor[i]) {
             UDFPrint(("check Anchor %x\n", Vcb->Anchor[i]));
-            if(!OS_SUCCESS(status = UDFReadTagged(Vcb,Buf,
+            if (!NT_SUCCESS(status = UDFReadTagged(IrpContext, Vcb, Buf,
                 Vcb->Anchor[i], Vcb->Anchor[i], &ident))) {
 
                 // Fucking MRW...
-                if(!IsMRW && (i<2) &&
+                if (!IsMRW && (i<2) &&
                    (Vcb->CompatFlags & UDF_VCB_IC_MRW_ADDR_PROBLEM)) {
-                    if(OS_SUCCESS(status = UDFReadTagged(Vcb,Buf,
+                    if (NT_SUCCESS(status = UDFReadTagged(IrpContext, Vcb, Buf,
                         Vcb->Anchor[i]+MRW_DMA_OFFSET, Vcb->Anchor[i], &ident))) {
                         // do MRW workaround.....
                         UDFPrint(("UDF: looks like we have MRW....\n"));
@@ -1067,30 +1078,27 @@ UDFFindAnchor(
                 }
 
                 Vcb->Anchor[i] = 0;
-                if(status == STATUS_NONEXISTENT_SECTOR) {
+                if (status == STATUS_NONEXISTENT_SECTOR) {
                     UDFPrint(("UDF: disk seems to be incomplete\n"));
                     break;
                 }
             } else {
 MRW_workaround:
-                if((ident != TID_ANCHOR_VOL_DESC_PTR) && ((i<6) ||
+                if ((ident != TID_ANCHOR_VOL_DESC_PTR) && ((i<6) ||
                     (ident != TID_FILE_ENTRY && ident != TID_EXTENDED_FILE_ENTRY))) {
                     Vcb->Anchor[i] = 0;
                 } else {
                     UDFPrint(("UDF: Found AVD at %x (point %d)\n",Vcb->Anchor[i], i));
-                    if(!LastBlock)
+                    if (!LastBlock)
                         LastBlock = Vcb->LastLBA;
-                    if(MRW_candidate) {
+                    if (MRW_candidate) {
                         UDFPrint(("UDF: looks like we _*really*_ have MRW....\n"));
                         IsMRW = TRUE;
                         ASSERT(Vcb->LastReadTrack == 1);
                         Vcb->TrackMap[Vcb->LastReadTrack].Flags |= TrackMap_FixMRWAddressing;
-                        WCachePurgeAll__(&(Vcb->FastCache), Vcb);
+                        WCachePurgeAll__(IrpContext, &Vcb->FastCache, Vcb);
                         UDFPrint(("UDF: MRW on non-MRW drive => ReadOnly"));
-                        Vcb->VCBFlags |= VCB_STATE_VOLUME_READ_ONLY;
-
-                        UDFRegisterFsStructure(Vcb, Vcb->Anchor[i], Vcb->BlockSize);
-
+                        Vcb->VcbState |= VCB_STATE_VOLUME_READ_ONLY;
                     }
                 }
             }
@@ -1107,18 +1115,19 @@ MRW_workaround:
  */
 uint32
 UDFFindVRS(
-    PVCB           Vcb
+    IN PIRP_CONTEXT IrpContext,
+    IN PVCB Vcb
     )
 {
     VolStructDesc  *vsd = NULL;
     uint32       offset;
     uint32       retStat = 0;
     uint32       BeginOffset = Vcb->FirstLBA;
-    OSSTATUS     RC;
+    NTSTATUS     RC;
     int8*        buffer = (int8*)MyAllocatePool__(NonPagedPool,Vcb->BlockSize);
     SIZE_T       ReadBytes;
 
-    if(!buffer) return 0;
+    if (!buffer) return 0;
     // Relative to First LBA in Last Session
     offset = Vcb->FirstLBA + 0x10;
 
@@ -1127,14 +1136,14 @@ UDFFindVRS(
     // Process the sequence (if applicable)
     for (;(offset-BeginOffset <=0x20); offset ++) {
         // Read a block
-        RC = UDFReadSectors(Vcb, FALSE, offset, 1, FALSE, buffer, &ReadBytes);
-        if(!OS_SUCCESS(RC)) continue;
+        RC = UDFReadSectors(IrpContext, Vcb, FALSE, offset, 1, FALSE, buffer, &ReadBytes);
+        if (!NT_SUCCESS(RC)) continue;
 
         // Look for ISO descriptors
         vsd = (VolStructDesc *)(buffer);
 
-        if(vsd->stdIdent[0]) {
-            if(!strncmp((int8*)(&vsd->stdIdent), STD_ID_CD001, STD_ID_LEN))
+        if (vsd->stdIdent[0]) {
+            if (!strncmp((int8*)(&vsd->stdIdent), STD_ID_CD001, STD_ID_LEN))
             {
                 retStat |= VRS_ISO9660_FOUND;
                 switch (vsd->structType)
@@ -1159,22 +1168,22 @@ UDFFindVRS(
                         break;
                 }
             }
-            else if(!strncmp((int8*)(&vsd->stdIdent), STD_ID_BEA01, STD_ID_LEN))
+            else if (!strncmp((int8*)(&vsd->stdIdent), STD_ID_BEA01, STD_ID_LEN))
             {
                 UDFPrint(("UDF: BEA01 Found\n"));
             }
-            else if(!strncmp((int8*)(&vsd->stdIdent), STD_ID_TEA01, STD_ID_LEN))
+            else if (!strncmp((int8*)(&vsd->stdIdent), STD_ID_TEA01, STD_ID_LEN))
             {
                 UDFPrint(("UDF: TEA01 Found\n"));
                 break;
             }
-            else if(!strncmp((int8*)(&vsd->stdIdent), STD_ID_NSR02, STD_ID_LEN))
+            else if (!strncmp((int8*)(&vsd->stdIdent), STD_ID_NSR02, STD_ID_LEN))
             {
                 retStat |= VRS_NSR02_FOUND;
                 UDFPrint(("UDF: NSR02 Found\n"));
                 break;
             }
-            else if(!strncmp((int8*)(&vsd->stdIdent), STD_ID_NSR03, STD_ID_LEN))
+            else if (!strncmp((int8*)(&vsd->stdIdent), STD_ID_NSR03, STD_ID_LEN))
             {
                 retStat |= VRS_NSR03_FOUND;
                 UDFPrint(("UDF: NSR03 Found\n"));
@@ -1198,7 +1207,7 @@ UDFLoadPVolDesc(
     )
 {
     PrimaryVolDesc *pvoldesc;
-//    OSSTATUS    RC = STATUS_SUCCESS;
+//    NTSTATUS    RC = STATUS_SUCCESS;
 
     pvoldesc = (PrimaryVolDesc *)Buf;
     UDFPrint(("UDF: PrimaryVolDesc:\n"));
@@ -1229,21 +1238,22 @@ UDFLoadPVolDesc(
     UDFPrint(("volSetIdent[] = '%ws'\n", instr.Buffer));
 //    UDFPrint(("maxInterchangeLvl = %d\n", pvoldesc->maxInterchangeLvl));
     UDFPrint(("flags             = %x\n", pvoldesc->flags));
-    if(instr.Buffer) MyFreePool__(instr.Buffer);
+    if (instr.Buffer) MyFreePool__(instr.Buffer);
 #endif // UDF_DBG
 } // end UDFLoadPVolDesc()
 
 /*
    load Logical volume integrity descriptor
  */
-OSSTATUS
+NTSTATUS
 UDFLoadLogicalVolInt(
+    IN PIRP_CONTEXT IrpContext,
     PDEVICE_OBJECT  DeviceObject,
     PVCB            Vcb,
     extent_ad       loc
     )
 {
-    OSSTATUS    RC = STATUS_SUCCESS;
+    NTSTATUS    RC = STATUS_SUCCESS;
     uint32      len;
     SIZE_T      _ReadBytes;
     int8*       Buf = NULL;
@@ -1255,7 +1265,7 @@ UDFLoadLogicalVolInt(
     uint32      lvid_count = 0;
 
     ASSERT(!Vcb->LVid);
-    if(Vcb->LVid) {
+    if (Vcb->LVid) {
         MyFreePool__(Vcb->LVid);
         Vcb->LVid = NULL;
     }
@@ -1264,21 +1274,21 @@ UDFLoadLogicalVolInt(
         UDFPrint(("UDF: Reading LVID @%x (%x)\n", loc.extLocation, loc.extLength));
         len = max(loc.extLength, Vcb->BlockSize);
         Buf = (int8*)MyAllocatePool__(NonPagedPool,len);
-        if(!Buf)
+        if (!Buf)
             return STATUS_INSUFFICIENT_RESOURCES;
-        RC = UDFReadTagged(Vcb,Buf, loc.extLocation, loc.extLocation, &ident);
-        if(!OS_SUCCESS(RC)) {
+        RC = UDFReadTagged(IrpContext, Vcb, Buf, loc.extLocation, loc.extLocation, &ident);
+        if (!NT_SUCCESS(RC)) {
 exit_with_err:
             UDFPrint(("UDF: Reading LVID @%x (%x) failed.\n", loc.extLocation, loc.extLength));
             switch(Vcb->PartitialDamagedVolumeAction) {
             case UDF_PART_DAMAGED_RO:
                 UDFPrint(("UDF: Switch to r/o mode.\n"));
-                Vcb->VCBFlags |= VCB_STATE_VOLUME_READ_ONLY;
+                Vcb->VcbState |= VCB_STATE_VOLUME_READ_ONLY;
                 RC = STATUS_SUCCESS;
                 break;
             case UDF_PART_DAMAGED_NO:
                 UDFPrint(("UDF: Switch to raw mount mode, return UNRECOGNIZED_VOLUME.\n"));
-                Vcb->VCBFlags |= UDF_VCB_FLAGS_RAW_DISK;
+                Vcb->VcbState |= UDF_VCB_FLAGS_RAW_DISK;
                 //RC = STATUS_WRONG_VOLUME;
                 break;
             case UDF_PART_DAMAGED_RW:
@@ -1293,31 +1303,31 @@ exit_with_err:
             MyFreePool__(Buf);
             return RC;
         }
-        UDFRegisterFsStructure(Vcb, loc.extLocation, len);
+
         // handle Terminal Entry
-        if(ident == TID_TERMINAL_ENTRY) {
+        if (ident == TID_TERMINAL_ENTRY) {
             read_last = TRUE;
             MyFreePool__(Buf);
             Vcb->LVid = NULL;
             loc = last_loc;
             continue;
         } else
-        if(ident != TID_LOGICAL_VOL_INTEGRITY_DESC) {
+        if (ident != TID_LOGICAL_VOL_INTEGRITY_DESC) {
             RC = STATUS_DISK_CORRUPT_ERROR;
             goto exit_with_err;
         }
 
         Vcb->LVid = (LogicalVolIntegrityDesc *)Buf;
-        RC = UDFReadData(Vcb, TRUE, ((uint64)(loc.extLocation)) << Vcb->BlockSizeBits, len, FALSE, Buf, &_ReadBytes);
+        RC = UDFReadData(IrpContext, Vcb, TRUE, ((uint64)(loc.extLocation)) << Vcb->BlockSizeBits, len, FALSE, Buf, &_ReadBytes);
         // update info
-        if( !read_last &&
+        if ( !read_last &&
             Vcb->LVid->nextIntegrityExt.extLength) {
             // go to next LVID
             last_loc = loc;
             loc = Vcb->LVid->nextIntegrityExt;
             Vcb->LVid = NULL;
             lvid_count++;
-            if(lvid_count > UDF_MAX_LVID_CHAIN_LENGTH) {
+            if (lvid_count > UDF_MAX_LVID_CHAIN_LENGTH) {
                 RC = STATUS_DISK_CORRUPT_ERROR;
                 goto exit_with_err;
             }
@@ -1347,12 +1357,12 @@ exit_with_err:
         UDFPrint(("     nDirs: %x\n",Vcb->numDirs ));
 
         // Check if we can understand this format
-        if(Vcb->minUDFReadRev > UDF_MAX_READ_REVISION)
+        if (Vcb->minUDFReadRev > UDF_MAX_READ_REVISION)
             RC = STATUS_UNRECOGNIZED_VOLUME;
         // Check if we know how to write here
-        if(Vcb->minUDFWriteRev > UDF_MAX_WRITE_REVISION) {
+        if (Vcb->minUDFWriteRev > UDF_MAX_WRITE_REVISION) {
             UDFPrint(("     Target FS requires: %x Revision => ReadOnly\n",Vcb->minUDFWriteRev));
-            Vcb->VCBFlags |= VCB_STATE_VOLUME_READ_ONLY;
+            Vcb->VcbState |= VCB_STATE_VOLUME_READ_ONLY;
         }
 
         LVID_hd = (LogicalVolHeaderDesc*)&(Vcb->LVid->logicalVolContentsUse);
@@ -1369,8 +1379,9 @@ exit_with_err:
 /*
     load Logical volume descriptor
  */
-OSSTATUS
+NTSTATUS
 UDFLoadLogicalVol(
+    IN PIRP_CONTEXT IrpContext,
     PDEVICE_OBJECT  DeviceObject,
     PVCB            Vcb,
     int8*           Buf,
@@ -1380,16 +1391,16 @@ UDFLoadLogicalVol(
     LogicalVolDesc *lvd = (LogicalVolDesc *)Buf;
     uint16 i, offset;
     uint8 type;
-    OSSTATUS status = STATUS_SUCCESS;
+    NTSTATUS status = STATUS_SUCCESS;
     UDFPrint(("UDF: LogicalVolDesc\n"));
     // Validate partition map counter
-    if(!(Vcb->Partitions)) {
+    if (!(Vcb->Partitions)) {
         Vcb->PartitionMaps = lvd->numPartitionMaps;
         Vcb->Partitions = (PUDFPartMap)MyAllocatePool__(NonPagedPool, sizeof(UDFPartMap) * Vcb->PartitionMaps );
-        if(!Vcb->Partitions)
+        if (!Vcb->Partitions)
             return STATUS_INSUFFICIENT_RESOURCES;
     } else {
-        if(Vcb->PartitionMaps != lvd->numPartitionMaps)
+        if (Vcb->PartitionMaps != lvd->numPartitionMaps)
             return STATUS_DISK_CORRUPT_ERROR;
     }
     UDFPrint(("UDF: volDescSeqNum = %x\n", lvd->volDescSeqNum));
@@ -1399,7 +1410,7 @@ UDFLoadLogicalVol(
     // Get Read-Only flags
     UDFReadEntityID_Domain(Vcb, &(lvd->domainIdent));
 
-    if(Vcb->LBlockSize < Vcb->BlockSize)
+    if (Vcb->LBlockSize < Vcb->BlockSize)
         return STATUS_DISK_CORRUPT_ERROR;
     switch(Vcb->LBlockSize) {
     case 512: Vcb->LBlockSizeBits = 9; break;
@@ -1426,7 +1437,7 @@ UDFLoadLogicalVol(
         GenericPartitionMap* gpm = (GenericPartitionMap *)(((uint8*)(lvd+1))+offset);
         type = gpm->partitionMapType;
         UDFPrint(("Partition (%d) type %x, len %x\n", i, type, gpm->partitionMapLength));
-        if(type == PARTITION_MAP_TYPE_1)
+        if (type == PARTITION_MAP_TYPE_1)
         {
             GenericPartitionMap1 *gpm1 = (GenericPartitionMap1 *)(((uint8*)(lvd+1))+offset);
 
@@ -1435,20 +1446,20 @@ UDFLoadLogicalVol(
             Vcb->Partitions[i].PartitionNum = gpm1->partitionNum;
             status = STATUS_SUCCESS;
         }
-        else if(type == PARTITION_MAP_TYPE_2)
+        else if (type == PARTITION_MAP_TYPE_2)
         {
             UdfPartitionMap2* upm2 = (UdfPartitionMap2 *)(((uint8*)(lvd+1))+offset);
-            if(!strncmp((int8*)&(upm2->partIdent.ident), UDF_ID_VIRTUAL, strlen(UDF_ID_VIRTUAL)))
+            if (!strncmp((int8*)&(upm2->partIdent.ident), UDF_ID_VIRTUAL, strlen(UDF_ID_VIRTUAL)))
             {
                 UDFIdentSuffix* udfis =
                     (UDFIdentSuffix*)&(upm2->partIdent.identSuffix);
 
-                if( (udfis->currentRev == 0x0150)/* ||
+                if ( (udfis->currentRev == 0x0150)/* ||
                     (Vcb->CurrentUDFRev == 0x0150)*/ ) {
                     UDFPrint(("Found VAT 1.50\n"));
                     Vcb->Partitions[i].PartitionType = UDF_VIRTUAL_MAP15;
                 } else
-                if( (udfis->currentRev == 0x0200) ||
+                if ( (udfis->currentRev == 0x0200) ||
                     (udfis->currentRev == 0x0201) /*||
                     (Vcb->CurrentUDFRev == 0x0200) ||
                     (Vcb->CurrentUDFRev == 0x0201)*/ ) {
@@ -1457,14 +1468,14 @@ UDFLoadLogicalVol(
                 }
                 status = STATUS_SUCCESS;
             }
-            else if(!strncmp((int8*)&(upm2->partIdent.ident), UDF_ID_SPARABLE, strlen(UDF_ID_SPARABLE)))
+            else if (!strncmp((int8*)&(upm2->partIdent.ident), UDF_ID_SPARABLE, strlen(UDF_ID_SPARABLE)))
             {
                 UDFPrint(("Load sparing table\n"));
                 PSPARABLE_PARTITION_MAP spm = (PSPARABLE_PARTITION_MAP)(((uint8*)(lvd+1))+offset);
                 Vcb->Partitions[i].PartitionType = UDF_SPARABLE_MAP15;
-                status = UDFLoadSparingTable(Vcb, spm);
+                status = UDFLoadSparingTable(IrpContext, Vcb, spm);
             }
-            else if(!strncmp((int8*)&(upm2->partIdent.ident), UDF_ID_METADATA, strlen(UDF_ID_METADATA)))
+            else if (!strncmp((int8*)&(upm2->partIdent.ident), UDF_ID_METADATA, strlen(UDF_ID_METADATA)))
             {
                 UDFPrint(("Found metadata partition\n"));
 //                PMETADATA_PARTITION_MAP mpm = (PMETADATA_PARTITION_MAP)(((uint8*)(lvd+1))+offset);
@@ -1481,7 +1492,7 @@ UDFLoadLogicalVol(
         }
     }
 
-    if(fileset) {
+    if (fileset) {
         // remember FileSet location
         long_ad *la = (long_ad *)&(lvd->logicalVolContentsUse[0]);
         *fileset = (la->extLocation);
@@ -1489,15 +1500,15 @@ UDFLoadLogicalVol(
             fileset->logicalBlockNum,
             fileset->partitionReferenceNum));
     }
-    if(OS_SUCCESS(status)) {
+    if (NT_SUCCESS(status)) {
         // load Integrity Desc if any
-        if(lvd->integritySeqExt.extLength)
-            status = UDFLoadLogicalVolInt(DeviceObject,Vcb,lvd->integritySeqExt);
+        if (lvd->integritySeqExt.extLength)
+            status = UDFLoadLogicalVolInt(IrpContext, DeviceObject, Vcb, lvd->integritySeqExt);
     }
     return status;
 } // end UDFLoadLogicalVol()
 
-OSSTATUS
+NTSTATUS
 UDFLoadBogusLogicalVol(
     PDEVICE_OBJECT  DeviceObject,
     PVCB            Vcb,
@@ -1508,13 +1519,13 @@ UDFLoadBogusLogicalVol(
 //    LogicalVolDesc *lvd = (LogicalVolDesc *)Buf;
     UDFPrint(("UDF: Bogus LogicalVolDesc\n"));
     // Validate partition map counter
-    if(!(Vcb->Partitions)) {
+    if (!(Vcb->Partitions)) {
         Vcb->PartitionMaps = 1;
         Vcb->Partitions = (PUDFPartMap)MyAllocatePool__(NonPagedPool, sizeof(UDFPartMap) * Vcb->PartitionMaps );
-        if(!Vcb->Partitions)
+        if (!Vcb->Partitions)
             return STATUS_INSUFFICIENT_RESOURCES;
     } else {
-        if(Vcb->PartitionMaps != 1)
+        if (Vcb->PartitionMaps != 1)
             return STATUS_DISK_CORRUPT_ERROR;
     }
     UDFPrint(("UDF: volDescSeqNum = %x\n", 0));
@@ -1524,7 +1535,7 @@ UDFLoadBogusLogicalVol(
     // Get Read-Only flags
 //    UDFReadEntityID_Domain(Vcb, &(lvd->domainIdent));
 
-    if(Vcb->LBlockSize < Vcb->BlockSize)
+    if (Vcb->LBlockSize < Vcb->BlockSize)
         return STATUS_DISK_CORRUPT_ERROR;
     Vcb->LBlockSizeBits = 11;
     UDFPrint(("UDF: logical block size (%ld)\n", Vcb->LBlockSize));
@@ -1532,14 +1543,14 @@ UDFLoadBogusLogicalVol(
     UDFPrint(("UDF: mapTableLength = %x\n", 0));
     UDFPrint(("UDF: numPartitionMaps = %x\n", 0));
 
-// if(CDRW) {
+// if (CDRW) {
 
     Vcb->Partitions[0].PartitionType = UDF_TYPE1_MAP15;
     Vcb->Partitions[0].VolumeSeqNum = 0;
     Vcb->Partitions[0].PartitionNum = 0;
 
-/* } else if(CDR)
-                if()
+/* } else if (CDR)
+                if ()
                     UDFPrint(("Found VAT 1.50\n"));
                     Vcb->Partitions[i].PartitionType = UDF_VIRTUAL_MAP15;
                 } else
@@ -1549,7 +1560,7 @@ UDFLoadBogusLogicalVol(
             }
     }
 */
-    if(fileset) {
+    if (fileset) {
         // remember FileSet location
 //        long_ad *la = (long_ad *)&(lvd->logicalVolContentsUse[0]);
         fileset->logicalBlockNum = 0;
@@ -1564,8 +1575,9 @@ UDFLoadBogusLogicalVol(
 /*
     This routine adds given Bitmap to existing one
  */
-OSSTATUS
+NTSTATUS
 UDFAddXSpaceBitmap(
+    IN PIRP_CONTEXT IrpContext,
     IN PVCB Vcb,
     IN uint32 RefPartNum,
     IN PSHORT_AD bm,
@@ -1576,7 +1588,7 @@ UDFAddXSpaceBitmap(
     int8* tmp_bm;
     uint32 i, lim, j, lba, l, lim2, l2, k;
     lb_addr locAddr;
-    OSSTATUS status;
+    NTSTATUS status;
     uint16 Ident;
     uint32 flags;
     SIZE_T Length;
@@ -1588,30 +1600,30 @@ UDFAddXSpaceBitmap(
         bm->extPosition,
         RefPartNum));
 
-    if(!(Length = (bm->extLength & UDF_EXTENT_LENGTH_MASK))) return STATUS_SUCCESS;
+    if (!(Length = (bm->extLength & UDF_EXTENT_LENGTH_MASK))) return STATUS_SUCCESS;
     i=UDFPartStart(Vcb, RefPartNum);
     flags = bm->extLength >> 30;
-    if(!flags /*|| flags == EXTENT_NOT_RECORDED_ALLOCATED*/) {
+    if (!flags /*|| flags == EXTENT_NOT_RECORDED_ALLOCATED*/) {
         tmp = (int8*)DbgAllocatePool(NonPagedPool, max(Length, Vcb->BlockSize));
-        if(!tmp) return STATUS_INSUFFICIENT_RESOURCES;
+        if (!tmp) return STATUS_INSUFFICIENT_RESOURCES;
         locAddr.partitionReferenceNum = (uint16)RefPartNum;
         locAddr.logicalBlockNum = bm->extPosition;
         // read header of the Bitmap
-        if(!OS_SUCCESS(status = UDFReadTagged(Vcb, tmp, lba = UDFPartLbaToPhys(Vcb, &(locAddr)),
-                             locAddr.logicalBlockNum, &Ident)) ) {
+        if (!NT_SUCCESS(status = UDFReadTagged(IrpContext, Vcb, tmp, lba = UDFPartLbaToPhys(Vcb, &locAddr),
+                             locAddr.logicalBlockNum, &Ident))) {
 err_addxsbm_1:
             DbgFreePool(tmp);
             return status;
         }
-        if(Ident != TID_SPACE_BITMAP_DESC) {
+        if (Ident != TID_SPACE_BITMAP_DESC) {
             status = STATUS_DISK_CORRUPT_ERROR;
             goto err_addxsbm_1;
         }
-        UDFRegisterFsStructure(Vcb, lba, Vcb->BlockSize);
+
         // read the whole Bitmap
-        if(!OS_SUCCESS(status = UDFReadData(Vcb, FALSE, ((uint64)lba)<<Vcb->BlockSizeBits, Length, FALSE, tmp, &ReadBytes)))
+        if (!NT_SUCCESS(status = UDFReadData(IrpContext, Vcb, FALSE, ((uint64)lba)<<Vcb->BlockSizeBits, Length, FALSE, tmp, &ReadBytes)))
             goto err_addxsbm_1;
-        UDFRegisterFsStructure(Vcb, lba, Length);
+
         lim = min(i + ((lim2 = ((PSPACE_BITMAP_DESC)tmp)->numOfBits) << Vcb->LB2B_Bits), Vcb->FSBM_BitCount);
         tmp_bm = tmp + sizeof(SPACE_BITMAP_DESC);
         j = 0;
@@ -1619,10 +1631,10 @@ err_addxsbm_1:
             // expand LBlocks to Sectors...
             l2 = l << Vcb->LB2B_Bits;
             // ...and mark them
-            if(bm_type == UDF_FSPACE_BM) {
+            if (bm_type == UDF_FSPACE_BM) {
                 bit_set = UDFGetFreeBit(tmp_bm, j);
                 for(k=0;(k<l2) && (i<lim);k++) {
-                    if(bit_set) {
+                    if (bit_set) {
                         // FREE block
                         UDFSetFreeBit(Vcb->FSBM_Bitmap, i);
                         UDFSetFreeBitOwner(Vcb, i);
@@ -1636,7 +1648,7 @@ err_addxsbm_1:
             } else {
                 bit_set = UDFGetZeroBit(tmp_bm, j);
                 for(k=0;(k<l2) && (i<lim);k++) {
-                    if(bit_set) {
+                    if (bit_set) {
                         // ZERO block
                         UDFSetZeroBit(Vcb->ZSBM_Bitmap, i);
                     } else {
@@ -1649,7 +1661,7 @@ err_addxsbm_1:
             j += l;
         }
         DbgFreePool(tmp);
-/*    } else if((bm->extLength >> 30) == EXTENT_NOT_RECORDED_ALLOCATED) {
+/*    } else if ((bm->extLength >> 30) == EXTENT_NOT_RECORDED_ALLOCATED) {
         i=Vcb->Partitions[RefPartNum].PartitionRoot;
         lim = i + Vcb->Partitions[RefPartNum].PartitionLen;
         for(;i<lim;i++) {
@@ -1662,8 +1674,9 @@ err_addxsbm_1:
 /*
     This routine adds given Bitmap to existing one
  */
-OSSTATUS
+NTSTATUS
 UDFVerifyXSpaceBitmap(
+    IN PIRP_CONTEXT IrpContext,
     IN PVCB Vcb,
     IN uint32 RefPartNum,
     IN PSHORT_AD bm,
@@ -1675,7 +1688,7 @@ UDFVerifyXSpaceBitmap(
 //    uint32 i, l2, k, lim, j, lim2;
     uint32 lba;
     lb_addr locAddr;
-    OSSTATUS status;
+    NTSTATUS status;
     uint16 Ident;
     uint32 flags;
     uint32 Length;
@@ -1686,30 +1699,30 @@ UDFVerifyXSpaceBitmap(
 
     UDFPrint((" UDFVerifyXSpaceBitmap: part %x\n", RefPartNum));
 
-    if(!(Length = (bm->extLength & UDF_EXTENT_LENGTH_MASK))) return STATUS_SUCCESS;
+    if (!(Length = (bm->extLength & UDF_EXTENT_LENGTH_MASK))) return STATUS_SUCCESS;
 //    i=UDFPartStart(Vcb, RefPartNum);
     flags = bm->extLength >> 30;
-    if(!flags /*|| flags == EXTENT_NOT_RECORDED_ALLOCATED*/) {
+    if (!flags /*|| flags == EXTENT_NOT_RECORDED_ALLOCATED*/) {
         tmp = (int8*)DbgAllocatePool(NonPagedPool, max(Length, Vcb->BlockSize));
-        if(!tmp) return STATUS_INSUFFICIENT_RESOURCES;
+        if (!tmp) return STATUS_INSUFFICIENT_RESOURCES;
         locAddr.partitionReferenceNum = (uint16)RefPartNum;
         locAddr.logicalBlockNum = bm->extPosition;
         // read header of the Bitmap
-        if(!OS_SUCCESS(status = UDFReadTagged(Vcb, tmp, lba = UDFPartLbaToPhys(Vcb, &(locAddr)),
-                             locAddr.logicalBlockNum, &Ident)) ) {
+        if (!NT_SUCCESS(status = UDFReadTagged(IrpContext, Vcb, tmp, lba = UDFPartLbaToPhys(Vcb, &locAddr),
+                             locAddr.logicalBlockNum, &Ident))) {
 err_vfyxsbm_1:
             DbgFreePool(tmp);
             return status;
         }
         UDFPrint((" BM Lba %x\n", lba));
-        if(Ident != TID_SPACE_BITMAP_DESC) {
+        if (Ident != TID_SPACE_BITMAP_DESC) {
             status = STATUS_DISK_CORRUPT_ERROR;
             goto err_vfyxsbm_1;
         }
         // read the whole Bitmap
-        if(!OS_SUCCESS(status = UDFReadData(Vcb, FALSE, ((uint64)lba)<<Vcb->BlockSizeBits, Length, FALSE, tmp, &ReadBytes)))
+        if (!NT_SUCCESS(status = UDFReadData(IrpContext, Vcb, FALSE, ((uint64)lba)<<Vcb->BlockSizeBits, Length, FALSE, tmp, &ReadBytes)))
             goto err_vfyxsbm_1;
-        UDFRegisterFsStructure(Vcb, lba, Length);
+
 //        lim = min(i + ((lim2 = ((PSPACE_BITMAP_DESC)tmp)->numOfBits) << Vcb->LB2B_Bits), Vcb->FSBM_BitCount);
 //        tmp_bm = tmp + sizeof(SPACE_BITMAP_DESC);
 //        j = 0;
@@ -1717,10 +1730,10 @@ err_vfyxsbm_1:
             // expand LBlocks to Sectors...
             l2 = l << Vcb->LB2B_Bits;
             // ...and mark them
-            if(bm_type == UDF_FSPACE_BM) {
+            if (bm_type == UDF_FSPACE_BM) {
                 bit_set = UDFGetFreeBit(tmp_bm, j);
                 for(k=0;(k<l2) && (i<lim);k++) {
-                    if(bit_set) {
+                    if (bit_set) {
                         // FREE block
                         UDFSetFreeBit(Vcb->FSBM_Bitmap, i);
                         UDFSetFreeBitOwner(Vcb, i);
@@ -1734,7 +1747,7 @@ err_vfyxsbm_1:
             } else {
                 bit_set = UDFGetZeroBit(tmp_bm, j);
                 for(k=0;(k<l2) && (i<lim);k++) {
-                    if(bit_set) {
+                    if (bit_set) {
                         // ZERO block
                         UDFSetZeroBit(Vcb->ZSBM_Bitmap, i);
                     } else {
@@ -1747,7 +1760,7 @@ err_vfyxsbm_1:
             j += l;
         }*/
         DbgFreePool(tmp);
-/*    } else if((bm->extLength >> 30) == EXTENT_NOT_RECORDED_ALLOCATED) {
+/*    } else if ((bm->extLength >> 30) == EXTENT_NOT_RECORDED_ALLOCATED) {
         i=Vcb->Partitions[RefPartNum].PartitionRoot;
         lim = i + Vcb->Partitions[RefPartNum].PartitionLen;
         for(;i<lim;i++) {
@@ -1760,7 +1773,7 @@ err_vfyxsbm_1:
 /*
     This routine subtracts given Bitmap to existing one
  */
-/*OSSTATUS
+/*NTSTATUS
 UDFDelXSpaceBitmap(
     IN PVCB Vcb,
     IN uint32 RefPartNum,
@@ -1770,27 +1783,27 @@ UDFDelXSpaceBitmap(
     int8* tmp, tmp_bm;
     uint32 i, lim, j;
     lb_addr locAddr;
-    OSSTATUS status;
+    NTSTATUS status;
     uint16 Ident;
     uint32 flags;
     uint32 Length;
     SIZE_T ReadBytes;
 
-    if(!(Length = (bm->extLength & UDF_EXTENT_LENGTH_MASK))) return STATUS_SUCCESS;
+    if (!(Length = (bm->extLength & UDF_EXTENT_LENGTH_MASK))) return STATUS_SUCCESS;
     i=0;
     flags = bm->extLength >> 30;
-    if(!flags || flags == EXTENT_NOT_RECORDED_ALLOCATED) {
+    if (!flags || flags == EXTENT_NOT_RECORDED_ALLOCATED) {
         tmp = (int8*)MyAllocatePool__(NonPagedPool, Length);
-        if(!tmp) return STATUS_INSUFFICIENT_RESOURCES;
+        if (!tmp) return STATUS_INSUFFICIENT_RESOURCES;
         locAddr.partitionReferenceNum = (uint16)RefPartNum;
         locAddr.logicalBlockNum = bm->extPosition;
-        if((!OS_SUCCESS(status = UDFReadTagged(Vcb, tmp, (j = UDFPartLbaToPhys(Vcb, &(locAddr))),
+        if ((!NT_SUCCESS(status = UDFReadTagged(Vcb, tmp, (j = UDFPartLbaToPhys(Vcb, &(locAddr))),
                              locAddr.logicalBlockNum, &Ident))) ||
            (Ident != TID_SPACE_BITMAP_DESC) ) {
             MyFreePool__(tmp);
             return status;
         }
-        if(!OS_SUCCESS(status = UDFReadData(Vcb, FALSE, ((uint64)j)<<Vcb->BlockSizeBits, Length, FALSE, tmp, &ReadBytes))) {
+        if (!NT_SUCCESS(status = UDFReadData(Vcb, FALSE, ((uint64)j)<<Vcb->BlockSizeBits, Length, FALSE, tmp, &ReadBytes))) {
             MyFreePool__(tmp);
             return status;
         }
@@ -1798,11 +1811,11 @@ UDFDelXSpaceBitmap(
         tmp_bm = tmp + sizeof(SPACE_BITMAP_DESC);
         j = 0;
         for(;i<lim;i++) {
-            if(UDFGetUsedBit(tmp_bm, j)) UDFSetFreeBit(Vcb->FSBM_Bitmap, i);
+            if (UDFGetUsedBit(tmp_bm, j)) UDFSetFreeBit(Vcb->FSBM_Bitmap, i);
             j++;
         }
         MyFreePool__(tmp);
-//    } else if((bm->extLength >> 30) == EXTENT_NOT_RECORDED_ALLOCATED) {
+//    } else if ((bm->extLength >> 30) == EXTENT_NOT_RECORDED_ALLOCATED) {
 //        i=Vcb->Partitions[RefPartNum].PartitionRoot;
 //        lim = i + Vcb->Partitions[RefPartNum].PartitionLen;
 //        for(;i<lim;i++) {
@@ -1816,15 +1829,16 @@ UDFDelXSpaceBitmap(
     This routine verifues FreeSpaceBitmap (internal) according to media
     parameters & input data
  */
-OSSTATUS
+NTSTATUS
 UDFVerifyFreeSpaceBitmap(
+    IN PIRP_CONTEXT IrpContext,
     IN PVCB Vcb,
     IN uint32 RefPartNum,
     IN PPARTITION_HEADER_DESC phd, // partition header pointing to Bitmaps
     IN uint32 Lba                   // UnallocSpaceDesc
     )
 {
-    OSSTATUS status;
+    NTSTATUS status;
     uint32 i, l;
     uint16 Ident;
     int8* AllocDesc;
@@ -1833,26 +1847,26 @@ UDFVerifyFreeSpaceBitmap(
 
     UDFPrint(("UDFVerifyFreeSpaceBitmap:\n"));
     // read info for partition header (if any)
-    if(phd) {
+    if (phd) {
         // read unallocated Bitmap
-        if(!OS_SUCCESS(status = UDFVerifyXSpaceBitmap(Vcb, RefPartNum, &(phd->unallocatedSpaceBitmap), UDF_FSPACE_BM)))
+        if (!NT_SUCCESS(status = UDFVerifyXSpaceBitmap(IrpContext, Vcb, RefPartNum, &(phd->unallocatedSpaceBitmap), UDF_FSPACE_BM)))
             return status;
         // read freed Bitmap
-        if(!OS_SUCCESS(status = UDFVerifyXSpaceBitmap(Vcb, RefPartNum, &(phd->freedSpaceBitmap), UDF_ZSPACE_BM)))
+        if (!NT_SUCCESS(status = UDFVerifyXSpaceBitmap(IrpContext, Vcb, RefPartNum, &(phd->freedSpaceBitmap), UDF_ZSPACE_BM)))
             return status;
     }
     // read UnallocatedSpaceDesc & convert to Bitmap
-    if(Lba) {
+    if (Lba) {
         UDFPrint((" Lba @%x\n", Lba));
-        if(!(AllocDesc = (int8*)MyAllocatePool__(NonPagedPool, Vcb->LBlockSize + sizeof(EXTENT_AD) )))
+        if (!(AllocDesc = (int8*)MyAllocatePool__(NonPagedPool, Vcb->LBlockSize + sizeof(EXTENT_AD) )))
             return STATUS_INSUFFICIENT_RESOURCES;
         RtlZeroMemory(((int8*)AllocDesc) + Vcb->LBlockSize, sizeof(EXTENT_AD));
-        if(!OS_SUCCESS(status = UDFReadTagged(Vcb, AllocDesc, Lba, Lba, &Ident)) ||
+        if (!NT_SUCCESS(status = UDFReadTagged(IrpContext, Vcb, AllocDesc, Lba, Lba, &Ident)) ||
            !(Extent = (PEXTENT_MAP)MyAllocatePool__(NonPagedPool, l = (((PUNALLOC_SPACE_DESC)AllocDesc)->numAllocDescs+1) * sizeof(EXTENT_AD) ))) {
             MyFreePool__(AllocDesc);
             return status;
         }
-        UDFRegisterFsStructure(Vcb, Lba, Vcb->BlockSize);
+
         RtlCopyMemory((int8*)Extent, AllocDesc+sizeof(UNALLOC_SPACE_DESC), (((PUNALLOC_SPACE_DESC)AllocDesc)->numAllocDescs+1) * sizeof(EXTENT_AD) );
         locAddr.partitionReferenceNum = (uint16)RefPartNum;
         // read extent is recorded with relative addresses
@@ -1860,7 +1874,7 @@ UDFVerifyFreeSpaceBitmap(
         for(i=0; Extent[i].extLength; i++) {
             locAddr.logicalBlockNum = Extent[i].extLocation;
             Extent[i].extLocation = UDFPartLbaToPhys(Vcb, &locAddr);
-            if(Extent[i].extLocation == LBA_OUT_OF_EXTENT) {
+            if (Extent[i].extLocation == LBA_OUT_OF_EXTENT) {
                 BrutePoint();
                 MyFreePool__(AllocDesc);
                 return STATUS_DISK_CORRUPT_ERROR;
@@ -1870,17 +1884,17 @@ UDFVerifyFreeSpaceBitmap(
                 UDFPrint(("Bigger\n"));
                 // continue;
             }
-            if((Extent[i].extLocation >> 30) == EXTENT_NEXT_EXTENT_ALLOCDESC) {
+            if ((Extent[i].extLocation >> 30) == EXTENT_NEXT_EXTENT_ALLOCDESC) {
                 // load continuation
                 Lba = Extent[i].extLocation & UDF_EXTENT_LENGTH_MASK;
-                if(!OS_SUCCESS(status = UDFReadTagged(Vcb, AllocDesc, Lba, Lba, &Ident)) ||
+                if (!NT_SUCCESS(status = UDFReadTagged(IrpContext, Vcb, AllocDesc, Lba, Lba, &Ident)) ||
                    !(Extent = (PEXTENT_MAP)MyAllocatePool__(NonPagedPool, (((PUNALLOC_SPACE_DESC)AllocDesc)->numAllocDescs+1) * sizeof(EXTENT_AD) ))) {
                     MyFreePool__(AllocDesc);
                     return status;
                 }
-                if(Ident == TID_UNALLOC_SPACE_DESC) {
-                    UDFRegisterFsStructure(Vcb, Lba, Vcb->BlockSize);
-                    if(!(l = MyReallocPool__((int8*)Extent, l, (int8**)&Extent, i*sizeof(EXTENT_MAP)))) {
+                if (Ident == TID_UNALLOC_SPACE_DESC) {
+
+                    if (!(l = MyReallocPool__((int8*)Extent, l, (int8**)&Extent, i*sizeof(EXTENT_MAP)))) {
                         MyFreePool__(Extent);
                         MyFreePool__(AllocDesc);
                         return STATUS_INSUFFICIENT_RESOURCES;
@@ -1907,15 +1921,16 @@ UDFVerifyFreeSpaceBitmap(
     This routine builds FreeSpaceBitmap (internal) according to media
     parameters & input data
  */
-OSSTATUS
+NTSTATUS
 UDFBuildFreeSpaceBitmap(
+    IN PIRP_CONTEXT IrpContext,
     IN PVCB Vcb,
     IN uint32 RefPartNum,
     IN PPARTITION_HEADER_DESC phd, // partition header pointing to Bitmaps
     IN uint32 Lba                   // UnallocSpaceDesc
     )
 {
-    OSSTATUS status;
+    NTSTATUS status;
     uint32 i, l;
     uint16 Ident;
     int8* AllocDesc;
@@ -1923,13 +1938,13 @@ UDFBuildFreeSpaceBitmap(
     lb_addr locAddr;
     BOOLEAN UnallocSpaceExtent = FALSE;
 
-    if(!(Vcb->FSBM_Bitmap)) {
+    if (!(Vcb->FSBM_Bitmap)) {
         // init Bitmap buffer if necessary
         Vcb->FSBM_Bitmap = (int8*)DbgAllocatePool(NonPagedPool, (i = (Vcb->LastPossibleLBA+1+7)>>3) );
-        if(!(Vcb->FSBM_Bitmap)) return STATUS_INSUFFICIENT_RESOURCES;
+        if (!(Vcb->FSBM_Bitmap)) return STATUS_INSUFFICIENT_RESOURCES;
 
         Vcb->ZSBM_Bitmap = (int8*)DbgAllocatePool(NonPagedPool, (i = (Vcb->LastPossibleLBA+1+7)>>3) );
-        if(!(Vcb->ZSBM_Bitmap)) {
+        if (!(Vcb->ZSBM_Bitmap)) {
 #ifdef UDF_TRACK_ONDISK_ALLOCATION_OWNERS
 free_fsbm:
 #endif //UDF_TRACK_ONDISK_ALLOCATION_OWNERS
@@ -1942,7 +1957,7 @@ free_fsbm:
         RtlZeroMemory(Vcb->ZSBM_Bitmap, i);
 #ifdef UDF_TRACK_ONDISK_ALLOCATION_OWNERS
         Vcb->FSBM_Bitmap_owners = (uint32*)DbgAllocatePool(NonPagedPool, (Vcb->LastPossibleLBA+1)*sizeof(uint32));
-        if(!(Vcb->FSBM_Bitmap_owners)) {
+        if (!(Vcb->FSBM_Bitmap_owners)) {
             MyFreePool__(Vcb->ZSBM_Bitmap);
             Vcb->ZSBM_Bitmap = NULL;
             goto free_fsbm;
@@ -1953,25 +1968,25 @@ free_fsbm:
         Vcb->FSBM_BitCount = Vcb->LastPossibleLBA+1;
     }
     // read info for partition header (if any)
-    if(phd) {
+    if (phd) {
         // read unallocated Bitmap
-        if(!OS_SUCCESS(status = UDFAddXSpaceBitmap(Vcb, RefPartNum, &(phd->unallocatedSpaceBitmap), UDF_FSPACE_BM)))
+        if (!NT_SUCCESS(status = UDFAddXSpaceBitmap(IrpContext, Vcb, RefPartNum, &phd->unallocatedSpaceBitmap, UDF_FSPACE_BM)))
             return status;
         // read freed Bitmap
-        if(!OS_SUCCESS(status = UDFAddXSpaceBitmap(Vcb, RefPartNum, &(phd->freedSpaceBitmap), UDF_ZSPACE_BM)))
+        if (!NT_SUCCESS(status = UDFAddXSpaceBitmap(IrpContext, Vcb, RefPartNum, &phd->freedSpaceBitmap, UDF_ZSPACE_BM)))
             return status;
     }
     // read UnallocatedSpaceDesc & convert to Bitmap
-    if(Lba) {
-        if(!(AllocDesc = (int8*)MyAllocatePool__(NonPagedPool, Vcb->LBlockSize + sizeof(EXTENT_AD) )))
+    if (Lba) {
+        if (!(AllocDesc = (int8*)MyAllocatePool__(NonPagedPool, Vcb->LBlockSize + sizeof(EXTENT_AD) )))
             return STATUS_INSUFFICIENT_RESOURCES;
         RtlZeroMemory(((int8*)AllocDesc) + Vcb->LBlockSize, sizeof(EXTENT_AD));
-        if(!OS_SUCCESS(status = UDFReadTagged(Vcb, AllocDesc, Lba, Lba, &Ident)) ||
+        if (!NT_SUCCESS(status = UDFReadTagged(IrpContext, Vcb, AllocDesc, Lba, Lba, &Ident)) ||
            !(Extent = (PEXTENT_MAP)MyAllocatePool__(NonPagedPool, l = (((PUNALLOC_SPACE_DESC)AllocDesc)->numAllocDescs+1) * sizeof(EXTENT_AD) ))) {
             MyFreePool__(AllocDesc);
             return status;
         }
-        UDFRegisterFsStructure(Vcb, Lba, Vcb->BlockSize);
+
         RtlCopyMemory((int8*)Extent, AllocDesc+sizeof(UNALLOC_SPACE_DESC), (((PUNALLOC_SPACE_DESC)AllocDesc)->numAllocDescs+1) * sizeof(EXTENT_AD) );
         locAddr.partitionReferenceNum = (uint16)RefPartNum;
         // read extent is recorded with relative addresses
@@ -1979,7 +1994,7 @@ free_fsbm:
         for (i = 0; i < ((PUNALLOC_SPACE_DESC)AllocDesc)->numAllocDescs; i++) {
             locAddr.logicalBlockNum = Extent[i].extLocation;
             Extent[i].extLocation = UDFPartLbaToPhys(Vcb, &locAddr);
-            if(Extent[i].extLocation == LBA_OUT_OF_EXTENT) {
+            if (Extent[i].extLocation == LBA_OUT_OF_EXTENT) {
                 BrutePoint();
                 MyFreePool__(AllocDesc);
                 return STATUS_DISK_CORRUPT_ERROR;
@@ -1989,17 +2004,17 @@ free_fsbm:
                 UDFPrint(("Bigger\n"));
                 // continue;
             }
-            if((Extent[i].extLocation >> 30) == EXTENT_NEXT_EXTENT_ALLOCDESC) {
+            if ((Extent[i].extLocation >> 30) == EXTENT_NEXT_EXTENT_ALLOCDESC) {
                 // load continuation
                 Lba = Extent[i].extLocation & UDF_EXTENT_LENGTH_MASK;
-                if(!OS_SUCCESS(status = UDFReadTagged(Vcb, AllocDesc, Lba, Lba, &Ident)) ||
+                if (!NT_SUCCESS(status = UDFReadTagged(IrpContext, Vcb, AllocDesc, Lba, Lba, &Ident)) ||
                    !(Extent = (PEXTENT_MAP)MyAllocatePool__(NonPagedPool, (((PUNALLOC_SPACE_DESC)AllocDesc)->numAllocDescs+1) * sizeof(EXTENT_AD) ))) {
                     MyFreePool__(AllocDesc);
                     return status;
                 }
-                if(Ident == TID_UNALLOC_SPACE_DESC) {
-                    UDFRegisterFsStructure(Vcb, Lba, Vcb->BlockSize);
-                    if(!(l = MyReallocPool__((int8*)Extent, l, (int8**)&Extent, i*sizeof(EXTENT_MAP)))) {
+                if (Ident == TID_UNALLOC_SPACE_DESC) {
+
+                    if (!(l = MyReallocPool__((int8*)Extent, l, (int8**)&Extent, i*sizeof(EXTENT_MAP)))) {
                         MyFreePool__(Extent);
                         MyFreePool__(AllocDesc);
                         return STATUS_INSUFFICIENT_RESOURCES;
@@ -2031,15 +2046,16 @@ free_fsbm:
 /*
     process Partition descriptor
  */
-OSSTATUS
+NTSTATUS
 UDFLoadPartDesc(
+    PIRP_CONTEXT IrpContext,
     PVCB      Vcb,
     int8*     Buf
     )
 {
     PartitionDesc *p = (PartitionDesc *)Buf;
     uint32 i;
-    OSSTATUS RC;
+    NTSTATUS RC;
     BOOLEAN Found = FALSE;
     UDFPrint(("UDF: Pard Descr:\n"));
     UDFPrint((" volDescSeqNum   = %x\n", p->volDescSeqNum));
@@ -2053,7 +2069,7 @@ UDFLoadPartDesc(
     for (i=0; i<Vcb->PartitionMaps; i++) {
         UDFPrint(("Searching map: (%d == %d)\n",
             Vcb->Partitions[i].PartitionNum, (p->partitionNumber) ));
-        if(Vcb->Partitions[i].PartitionNum == (p->partitionNumber)) {
+        if (Vcb->Partitions[i].PartitionNum == (p->partitionNumber)) {
             Found = TRUE;
             Vcb->Partitions[i].PartitionRoot = p->partitionStartingLocation + Vcb->FirstLBA;
             Vcb->Partitions[i].PartitionLen = p->partitionLength;
@@ -2061,65 +2077,65 @@ UDFLoadPartDesc(
             Vcb->Partitions[i].FspaceBitmap = 0xFFFFFFFF;
             Vcb->Partitions[i].AccessType = p->accessType;
             UDFPrint(("Access mode %x\n", p->accessType));
-            if(p->accessType == PARTITION_ACCESS_WO) {
+            if (p->accessType == PARTITION_ACCESS_WO) {
                 Vcb->CDR_Mode = TRUE;
 //                Vcb->Partitions[i].PartitionLen = Vcb->LastPossibleLBA - p->partitionStartingLocation;
-            } else if(p->accessType < PARTITION_ACCESS_WO) {
+            } else if (p->accessType < PARTITION_ACCESS_WO) {
                 // Soft-read-only volume
                 UDFPrint(("Soft Read-only volume\n"));
-                Vcb->VCBFlags |= VCB_STATE_VOLUME_READ_ONLY;
-            } else if(p->accessType > PARTITION_ACCESS_MAX_KNOWN) {
+                Vcb->VcbState |= VCB_STATE_VOLUME_READ_ONLY;
+            } else if (p->accessType > PARTITION_ACCESS_MAX_KNOWN) {
                 return STATUS_UNRECOGNIZED_MEDIA;
             }
 
-            if(!strcmp((int8*)&(p->partitionContents.ident), PARTITION_CONTENTS_NSR02) ||
+            if (!strcmp((int8*)&(p->partitionContents.ident), PARTITION_CONTENTS_NSR02) ||
                 !strcmp((int8*)&(p->partitionContents.ident), PARTITION_CONTENTS_NSR03))
             {
                 PPARTITION_HEADER_DESC phd;
 
                 phd = (PPARTITION_HEADER_DESC)(p->partitionContentsUse);
 #ifdef UDF_DBG
-                if(phd->unallocatedSpaceTable.extLength)
+                if (phd->unallocatedSpaceTable.extLength)
                     UDFPrint(("unallocatedSpaceTable (part %d)\n", i));
 #endif // UDF_DBG
-                if(phd->unallocatedSpaceBitmap.extLength) {
+                if (phd->unallocatedSpaceBitmap.extLength) {
                     Vcb->Partitions[i].UspaceBitmap =
                         phd->unallocatedSpaceBitmap.extPosition;
                     UDFPrint(("unallocatedSpaceBitmap (part %d) @ %x\n",
                         i, Vcb->Partitions[i].UspaceBitmap ));
                 }
 #ifdef UDF_DBG
-                if(phd->partitionIntegrityTable.extLength)
+                if (phd->partitionIntegrityTable.extLength)
                     UDFPrint(("partitionIntegrityTable (part %d)\n", i));
-                if(phd->freedSpaceTable.extLength)
+                if (phd->freedSpaceTable.extLength)
                     UDFPrint(("freedSpaceTable (part %d)\n", i));
 #endif // UDF_DBG
-                if(phd->freedSpaceBitmap.extLength) {
+                if (phd->freedSpaceBitmap.extLength) {
                     Vcb->Partitions[i].FspaceBitmap =
                         phd->freedSpaceBitmap.extPosition;
                     UDFPrint(("freedSpaceBitmap (part %d)\n", i));
                 }
-                RC = UDFBuildFreeSpaceBitmap(Vcb, i, phd, 0);
+                RC = UDFBuildFreeSpaceBitmap(IrpContext, Vcb, i, phd, 0);
                 //Vcb->Modified = FALSE;
                 UDFPreClrModified(Vcb);
                 UDFClrModified(Vcb);
-                if(!OS_SUCCESS(RC))
+                if (!NT_SUCCESS(RC))
                     return RC;
 
                 if ((Vcb->Partitions[i].PartitionType == UDF_VIRTUAL_MAP15) ||
                     (Vcb->Partitions[i].PartitionType == UDF_VIRTUAL_MAP20)) {
-                    RC = UDFLoadVAT(Vcb, i);
-                    if(!OS_SUCCESS(RC))
+                    RC = UDFLoadVAT(IrpContext, Vcb, i);
+                    if (!NT_SUCCESS(RC))
                         return RC;
-                    WCacheFlushAll__(&(Vcb->FastCache), Vcb);
-                    WCacheSetMode__(&(Vcb->FastCache), WCACHE_MODE_R);
+                    WCacheFlushAll__(IrpContext, &Vcb->FastCache, Vcb);
+                    WCacheSetMode__(&Vcb->FastCache, WCACHE_MODE_R);
                     Vcb->LastModifiedTrack = 0;
                 }
             }
         }
     }
 #ifdef UDF_DBG
-    if(!Found) {
+    if (!Found) {
         UDFPrint(("Partition (%d) not found in partition map\n", (p->partitionNumber) ));
     } else {
         UDFPrint(("Partition (%d:%d type %x) starts at physical %x, length %x\n",
@@ -2133,15 +2149,16 @@ UDFLoadPartDesc(
 /*
     process Partition descriptor
  */
-OSSTATUS
+NTSTATUS
 UDFVerifyPartDesc(
+    IN PIRP_CONTEXT IrpContext,
     PVCB      Vcb,
     int8*     Buf
     )
 {
     PartitionDesc *p = (PartitionDesc *)Buf;
     uint32 i;
-    OSSTATUS RC;
+    NTSTATUS RC;
     BOOLEAN Found = FALSE;
     UDFPrint(("UDF: Verify Part Descr:\n"));
     UDFPrint((" volDescSeqNum   = %x\n", p->volDescSeqNum));
@@ -2155,44 +2172,44 @@ UDFVerifyPartDesc(
     for (i=0; i<Vcb->PartitionMaps; i++) {
         UDFPrint(("Searching map: (%d == %d)\n",
             Vcb->Partitions[i].PartitionNum, (p->partitionNumber) ));
-        if(Vcb->Partitions[i].PartitionNum == (p->partitionNumber)) {
+        if (Vcb->Partitions[i].PartitionNum == (p->partitionNumber)) {
             Found = TRUE;
-            if(Vcb->Partitions[i].PartitionRoot != p->partitionStartingLocation + Vcb->FirstLBA)
+            if (Vcb->Partitions[i].PartitionRoot != p->partitionStartingLocation + Vcb->FirstLBA)
                 return STATUS_DISK_CORRUPT_ERROR;
-            if(Vcb->Partitions[i].PartitionLen !=
+            if (Vcb->Partitions[i].PartitionLen !=
                 min(p->partitionLength,
                     Vcb->LastPossibleLBA - Vcb->Partitions[i].PartitionRoot)) /* sectors */
                 return STATUS_DISK_CORRUPT_ERROR;
 //            Vcb->Partitions[i].UspaceBitmap = 0xFFFFFFFF;
 //            Vcb->Partitions[i].FspaceBitmap = 0xFFFFFFFF;
-            if(Vcb->Partitions[i].AccessType != p->accessType)
+            if (Vcb->Partitions[i].AccessType != p->accessType)
                 return STATUS_DISK_CORRUPT_ERROR;
             UDFPrint(("Access mode %x\n", p->accessType));
-            if(p->accessType == PARTITION_ACCESS_WO) {
-                if(Vcb->CDR_Mode != TRUE)
+            if (p->accessType == PARTITION_ACCESS_WO) {
+                if (Vcb->CDR_Mode != TRUE)
                     return STATUS_DISK_CORRUPT_ERROR;
 //                Vcb->Partitions[i].PartitionLen = Vcb->LastPossibleLBA - p->partitionStartingLocation;
-            } else if(p->accessType < PARTITION_ACCESS_WO) {
+            } else if (p->accessType < PARTITION_ACCESS_WO) {
                 // Soft-read-only volume
                 UDFPrint(("Soft Read-only volume\n"));
-                if(!(Vcb->VCBFlags & VCB_STATE_VOLUME_READ_ONLY))
+                if (!(Vcb->VcbState & VCB_STATE_VOLUME_READ_ONLY))
                     return STATUS_DISK_CORRUPT_ERROR;
-            } else if(p->accessType > PARTITION_ACCESS_MAX_KNOWN) {
+            } else if (p->accessType > PARTITION_ACCESS_MAX_KNOWN) {
                 return STATUS_UNRECOGNIZED_MEDIA;
             }
 
-            if(!strcmp((int8*)&(p->partitionContents.ident), PARTITION_CONTENTS_NSR02) ||
+            if (!strcmp((int8*)&(p->partitionContents.ident), PARTITION_CONTENTS_NSR02) ||
                 !strcmp((int8*)&(p->partitionContents.ident), PARTITION_CONTENTS_NSR03))
             {
                 PPARTITION_HEADER_DESC phd;
 
                 phd = (PPARTITION_HEADER_DESC)(p->partitionContentsUse);
 #ifdef UDF_DBG
-                if(phd->unallocatedSpaceTable.extLength)
+                if (phd->unallocatedSpaceTable.extLength)
                     UDFPrint(("unallocatedSpaceTable (part %d)\n", i));
 #endif // UDF_DBG
-                if(phd->unallocatedSpaceBitmap.extLength) {
-                    if(Vcb->Partitions[i].UspaceBitmap ==
+                if (phd->unallocatedSpaceBitmap.extLength) {
+                    if (Vcb->Partitions[i].UspaceBitmap ==
                         phd->unallocatedSpaceBitmap.extPosition) {
                         UDFPrint(("Warning: both USpaceBitmaps have same location\n"));
                     }
@@ -2200,29 +2217,29 @@ UDFVerifyPartDesc(
                         i, Vcb->Partitions[i].UspaceBitmap ));
                 }
 #ifdef UDF_DBG
-                if(phd->partitionIntegrityTable.extLength)
+                if (phd->partitionIntegrityTable.extLength)
                     UDFPrint(("partitionIntegrityTable (part %d)\n", i));
-                if(phd->freedSpaceTable.extLength)
+                if (phd->freedSpaceTable.extLength)
                     UDFPrint(("freedSpaceTable (part %d)\n", i));
 #endif // UDF_DBG
-                if(phd->freedSpaceBitmap.extLength) {
-                    if(Vcb->Partitions[i].FspaceBitmap ==
+                if (phd->freedSpaceBitmap.extLength) {
+                    if (Vcb->Partitions[i].FspaceBitmap ==
                         phd->freedSpaceBitmap.extPosition) {
                         UDFPrint(("Warning: both FSpaceBitmaps have same location\n"));
                     }
                     UDFPrint(("freedSpaceBitmap (part %d)\n", i));
                 }
-                RC = UDFVerifyFreeSpaceBitmap(Vcb, i, phd, 0);
+                RC = UDFVerifyFreeSpaceBitmap(IrpContext, Vcb, i, phd, 0);
                 //Vcb->Modified = FALSE;
                 //UDFPreClrModified(Vcb);
                 //UDFClrModified(Vcb);
-                if(!OS_SUCCESS(RC))
+                if (!NT_SUCCESS(RC))
                     return RC;
 
                 if ((Vcb->Partitions[i].PartitionType == UDF_VIRTUAL_MAP15) ||
                     (Vcb->Partitions[i].PartitionType == UDF_VIRTUAL_MAP20)) {
 /*                    RC = UDFLoadVAT(Vcb, i);
-                    if(!OS_SUCCESS(RC))
+                    if (!NT_SUCCESS(RC))
                         return RC;
                     WCacheFlushAll__(&(Vcb->FastCache), Vcb);
                     WCacheSetMode__(&(Vcb->FastCache), WCACHE_MODE_R);
@@ -2232,7 +2249,7 @@ UDFVerifyPartDesc(
         }
     }
 #ifdef UDF_DBG
-    if(!Found) {
+    if (!Found) {
         UDFPrint(("Partition (%d) not found in partition map\n", (p->partitionNumber) ));
     } else {
         UDFPrint(("Partition (%d:%d type %x) starts at physical %x, length %x\n",
@@ -2246,8 +2263,9 @@ UDFVerifyPartDesc(
 /*
     This routine scans VDS & fills special array with Desc locations
  */
-OSSTATUS
+NTSTATUS
 UDFReadVDS(
+    IN PIRP_CONTEXT IrpContext,
     IN PVCB Vcb,
     IN uint32 block,
     IN uint32 lastblock,
@@ -2255,7 +2273,7 @@ UDFReadVDS(
     IN int8* Buf
     )
 {
-    OSSTATUS status;
+    NTSTATUS status;
     GenericDesc* gd;
     BOOLEAN done=FALSE;
     uint32 vdsn;
@@ -2265,10 +2283,9 @@ UDFReadVDS(
     // Read the main descriptor sequence
     for (;(!done && block <= lastblock); block++)
     {
-        status = UDFReadTagged(Vcb, Buf, block, block, &ident);
-        if(!OS_SUCCESS(status))
+        status = UDFReadTagged(IrpContext, Vcb, Buf, block, block, &ident);
+        if (!NT_SUCCESS(status))
             return status;
-        UDFRegisterFsStructure(Vcb, block, Vcb->BlockSize);
 
         // Process each descriptor (ISO 13346 3/8.3-8.4)
         gd = (struct GenericDesc *)Buf;
@@ -2277,7 +2294,7 @@ UDFReadVDS(
         switch (ident)
         {
             case TID_PRIMARY_VOL_DESC: // ISO 13346 3/10.1
-                if(vdsn >= vds[VDS_POS_PRIMARY_VOL_DESC].volDescSeqNum)
+                if (vdsn >= vds[VDS_POS_PRIMARY_VOL_DESC].volDescSeqNum)
                 {
                     vds[VDS_POS_PRIMARY_VOL_DESC].volDescSeqNum = vdsn;
                     vds[VDS_POS_PRIMARY_VOL_DESC].block = block;
@@ -2285,43 +2302,43 @@ UDFReadVDS(
                 break;
             case TID_VOL_DESC_PTR: // ISO 13346 3/10.3
                 struct VolDescPtr* pVDP;
-                if(vdsn >= vds[VDS_POS_VOL_DESC_PTR].volDescSeqNum)
+                if (vdsn >= vds[VDS_POS_VOL_DESC_PTR].volDescSeqNum)
                 {
                     vds[VDS_POS_VOL_DESC_PTR].volDescSeqNum = vdsn;
                     vds[VDS_POS_VOL_DESC_PTR].block = block;
                     vds[VDS_POS_RECURSION_COUNTER].volDescSeqNum++;
-                    if(vds[VDS_POS_RECURSION_COUNTER].volDescSeqNum > MAX_VDS_PARTS) {
+                    if (vds[VDS_POS_RECURSION_COUNTER].volDescSeqNum > MAX_VDS_PARTS) {
                        UDFPrint(("too long multipart VDS -> abort\n"));
                         return STATUS_DISK_CORRUPT_ERROR;
                     }
                     pVDP = (struct VolDescPtr*)Buf;
                     UDFPrint(("multipart VDS...\n"));
-                    return UDFReadVDS(Vcb, pVDP->nextVolDescSeqExt.extLocation,
+                    return UDFReadVDS(IrpContext, Vcb, pVDP->nextVolDescSeqExt.extLocation,
                                          pVDP->nextVolDescSeqExt.extLocation + (pVDP->nextVolDescSeqExt.extLocation >> Vcb->BlockSizeBits),
                                          vds, Buf);
                 }
                 break;
             case TID_IMP_USE_VOL_DESC: // ISO 13346 3/10.4
-                if(vdsn >= vds[VDS_POS_IMP_USE_VOL_DESC].volDescSeqNum)
+                if (vdsn >= vds[VDS_POS_IMP_USE_VOL_DESC].volDescSeqNum)
                 {
                     vds[VDS_POS_IMP_USE_VOL_DESC].volDescSeqNum = vdsn;
                     vds[VDS_POS_IMP_USE_VOL_DESC].block = block;
                 }
                 break;
             case TID_PARTITION_DESC: // ISO 13346 3/10.5
-                if(!vds[VDS_POS_PARTITION_DESC].block)
+                if (!vds[VDS_POS_PARTITION_DESC].block)
                     vds[VDS_POS_PARTITION_DESC].block = block;
                 break;
             case TID_LOGICAL_VOL_DESC: // ISO 13346 3/10.6
             case TID_ADAPTEC_LOGICAL_VOL_DESC: // Adaptec Compressed UDF extesion
-                if(vdsn >= vds[VDS_POS_LOGICAL_VOL_DESC].volDescSeqNum)
+                if (vdsn >= vds[VDS_POS_LOGICAL_VOL_DESC].volDescSeqNum)
                 {
                     vds[VDS_POS_LOGICAL_VOL_DESC].volDescSeqNum = vdsn;
                     vds[VDS_POS_LOGICAL_VOL_DESC].block = block;
                 }
                 break;
             case TID_UNALLOC_SPACE_DESC: // ISO 13346 3/10.8
-                if(vdsn >= vds[VDS_POS_UNALLOC_SPACE_DESC].volDescSeqNum)
+                if (vdsn >= vds[VDS_POS_UNALLOC_SPACE_DESC].volDescSeqNum)
                 {
                     vds[VDS_POS_UNALLOC_SPACE_DESC].volDescSeqNum = vdsn;
                     vds[VDS_POS_UNALLOC_SPACE_DESC].block = block;
@@ -2336,7 +2353,7 @@ UDFReadVDS(
     return STATUS_SUCCESS;
 } // UDFReadVDS()
 
-OSSTATUS
+NTSTATUS
 UDFLoadImpUseVolDesc(
     IN PVCB   Vcb,
     int8*     Buf
@@ -2353,7 +2370,7 @@ UDFLoadImpUseVolDesc(
     return STATUS_SUCCESS;
 } // UDFLoadImpUseVolDesc()
 
-OSSTATUS
+NTSTATUS
 UDFLoadUnallocatedSpaceDesc(
     IN PVCB   Vcb,
     int8*     Buf
@@ -2367,17 +2384,18 @@ UDFLoadUnallocatedSpaceDesc(
 /*
     Process a main/reserve volume descriptor sequence.
 */
-OSSTATUS
+NTSTATUS
 UDFProcessSequence(
-     IN PDEVICE_OBJECT    DeviceObject,
-     IN PVCB              Vcb,
-     IN uint32            block,
-     IN uint32            lastblock,
-    OUT lb_addr           *fileset,
-    OUT UDF_VDS_RECORD    *volDesc
+    IN PIRP_CONTEXT IrpContext,
+    IN PDEVICE_OBJECT DeviceObject,
+    IN PVCB Vcb,
+    IN uint32 block,
+    IN uint32 lastblock,
+    OUT lb_addr *fileset,
+    OUT UDF_VDS_RECORD *volDesc
     )
 {
-    OSSTATUS    RC = STATUS_SUCCESS;
+    NTSTATUS    RC = STATUS_SUCCESS;
     int8*       Buf = (int8*)MyAllocatePool__(NonPagedPool,Vcb->BlockSize);
     UDF_VDS_RECORD vds[VDS_POS_LENGTH];
 //    GenericDesc   *gd;
@@ -2386,58 +2404,57 @@ UDFProcessSequence(
     int8*  Buf2 = NULL;
 
     _SEH2_TRY {
-        if(!Buf) try_return(RC = STATUS_INSUFFICIENT_RESOURCES);
+        if (!Buf) try_return(RC = STATUS_INSUFFICIENT_RESOURCES);
         RtlZeroMemory(vds, sizeof(UDF_VDS_RECORD) * VDS_POS_LENGTH);
-        if(!OS_SUCCESS(RC = UDFReadVDS(Vcb, block, lastblock, (PUDF_VDS_RECORD)&vds, Buf)))
+        if (!NT_SUCCESS(RC = UDFReadVDS(IrpContext, Vcb, block, lastblock, (PUDF_VDS_RECORD)&vds, Buf)))
             try_return(RC);
         // walk through Vol Desc Sequence according to locations gained by
         // UDFReadVDS() & do some procesing for each one
         // It is very simple dispath routine...
         for (i=0; i<VDS_POS_LENGTH; i++)
         {
-            if(vds[i].block)
+            if (vds[i].block)
             {
-                if(!OS_SUCCESS(RC = UDFReadTagged(Vcb, Buf, vds[i].block, vds[i].block, &ident)))
+                if (!NT_SUCCESS(RC = UDFReadTagged(IrpContext, Vcb, Buf, vds[i].block, vds[i].block, &ident)))
                     try_return(RC);
-                UDFRegisterFsStructure(Vcb, vds[i].block, Vcb->BlockSize);
 
-                if(i == VDS_POS_PRIMARY_VOL_DESC) {
+                if (i == VDS_POS_PRIMARY_VOL_DESC) {
                     UDFLoadPVolDesc(Vcb,Buf);
                     *volDesc = vds[i];
                 } else
-                if(i == VDS_POS_LOGICAL_VOL_DESC) {
-                    RC = UDFLoadLogicalVol(DeviceObject,Vcb, Buf, fileset);
-                    if(!OS_SUCCESS(RC)) try_return(RC);
+                if (i == VDS_POS_LOGICAL_VOL_DESC) {
+                    RC = UDFLoadLogicalVol(IrpContext, DeviceObject, Vcb, Buf, fileset);
+                    if (!NT_SUCCESS(RC)) try_return(RC);
                 } else
 
-                if(i == VDS_POS_IMP_USE_VOL_DESC) {
+                if (i == VDS_POS_IMP_USE_VOL_DESC) {
                     UDFLoadImpUseVolDesc(Vcb, Buf);
                 } else
-                if(i == VDS_POS_UNALLOC_SPACE_DESC) {
+                if (i == VDS_POS_UNALLOC_SPACE_DESC) {
                     UDFLoadUnallocatedSpaceDesc(Vcb, Buf);
                 } else
 
-                if(i == VDS_POS_PARTITION_DESC)
+                if (i == VDS_POS_PARTITION_DESC)
                 {
                     Buf2 = (int8*)MyAllocatePool__(NonPagedPool,Vcb->BlockSize);
-                    if(!Buf2) try_return(RC = STATUS_INSUFFICIENT_RESOURCES);
-                    RC = UDFLoadPartDesc(Vcb,Buf);
-                    if(!OS_SUCCESS(RC)) try_return(RC);
+                    if (!Buf2) try_return(RC = STATUS_INSUFFICIENT_RESOURCES);
+                    RC = UDFLoadPartDesc(IrpContext, Vcb, Buf);
+                    if (!NT_SUCCESS(RC)) try_return(RC);
                     for (j=vds[i].block+1; j<vds[VDS_POS_TERMINATING_DESC].block; j++)
                     {
-                        RC = UDFReadTagged(Vcb,Buf2, j, j, &ident);
-                        if(!OS_SUCCESS(RC)) try_return(RC);
-                        UDFRegisterFsStructure(Vcb, j, Vcb->BlockSize);
+                        RC = UDFReadTagged(IrpContext, Vcb, Buf2, j, j, &ident);
+                        if (!NT_SUCCESS(RC)) try_return(RC);
+
 //                        gd = (struct GenericDesc *)Buf2;
-                        if(ident == TID_PARTITION_DESC) {
-                            RC = UDFLoadPartDesc(Vcb,Buf2);
-                            if(!OS_SUCCESS(RC)) try_return(RC);
-                        } else if(ident == TID_UNALLOC_SPACE_DESC) {
-                            RC = UDFBuildFreeSpaceBitmap(Vcb,0,NULL,j);
+                        if (ident == TID_PARTITION_DESC) {
+                            RC = UDFLoadPartDesc(IrpContext, Vcb, Buf2);
+                            if (!NT_SUCCESS(RC)) try_return(RC);
+                        } else if (ident == TID_UNALLOC_SPACE_DESC) {
+                            RC = UDFBuildFreeSpaceBitmap(IrpContext, Vcb, 0, NULL, j);
                             //Vcb->Modified = FALSE;
                             UDFPreClrModified(Vcb);
                             UDFClrModified(Vcb);
-                            if(!OS_SUCCESS(RC))
+                            if (!NT_SUCCESS(RC))
                                 try_return(RC);
                         }
                     }
@@ -2445,9 +2462,9 @@ UDFProcessSequence(
                     Buf2 = NULL;
                 }
             } else {
-                if(i == VDS_POS_LOGICAL_VOL_DESC) {
+                if (i == VDS_POS_LOGICAL_VOL_DESC) {
                     RC = UDFLoadBogusLogicalVol(DeviceObject,Vcb, Buf, fileset);
-                    if(!OS_SUCCESS(RC)) try_return(RC);
+                    if (!NT_SUCCESS(RC)) try_return(RC);
                 }
             }
         }
@@ -2455,8 +2472,8 @@ UDFProcessSequence(
 try_exit: NOTHING;
 
     } _SEH2_FINALLY {
-        if(Buf) MyFreePool__(Buf);
-        if(Buf2) MyFreePool__(Buf2);
+        if (Buf) MyFreePool__(Buf);
+        if (Buf2) MyFreePool__(Buf2);
     } _SEH2_END;
 
     return RC;
@@ -2465,17 +2482,18 @@ try_exit: NOTHING;
 /*
     Verifies a main/reserve volume descriptor sequence.
 */
-OSSTATUS
+NTSTATUS
 UDFVerifySequence(
-     IN PDEVICE_OBJECT    DeviceObject,
-     IN PVCB              Vcb,
-     IN uint32             block,
-     IN uint32             lastblock,
-     OUT lb_addr          *fileset,
-     OUT UDF_VDS_RECORD   *volDesc
-     )
+    IN PIRP_CONTEXT IrpContext,
+    IN PDEVICE_OBJECT    DeviceObject,
+    IN PVCB              Vcb,
+    IN uint32             block,
+    IN uint32             lastblock,
+    OUT lb_addr          *fileset,
+    OUT UDF_VDS_RECORD   *volDesc
+    )
 {
-    OSSTATUS    RC = STATUS_SUCCESS;
+    NTSTATUS    RC = STATUS_SUCCESS;
     int8*       Buf = (int8*)MyAllocatePool__(NonPagedPool,Vcb->BlockSize);
     UDF_VDS_RECORD vds[VDS_POS_LENGTH];
 //    GenericDesc   *gd;
@@ -2484,44 +2502,43 @@ UDFVerifySequence(
     int8*  Buf2 = NULL;
 
     _SEH2_TRY {
-        if(!Buf) try_return(RC = STATUS_INSUFFICIENT_RESOURCES);
-        if(!block) try_return (RC = STATUS_SUCCESS);
+        if (!Buf) try_return(RC = STATUS_INSUFFICIENT_RESOURCES);
+        if (!block) try_return (RC = STATUS_SUCCESS);
         RtlZeroMemory(vds, sizeof(UDF_VDS_RECORD) * VDS_POS_LENGTH);
-        if(!OS_SUCCESS(RC = UDFReadVDS(Vcb, block, lastblock, (PUDF_VDS_RECORD)&vds, Buf)))
+        if (!NT_SUCCESS(RC = UDFReadVDS(IrpContext, Vcb, block, lastblock, (PUDF_VDS_RECORD)&vds, Buf)))
             try_return(RC);
 
         for (i=0; i<VDS_POS_LENGTH; i++)
         {
-            if(vds[i].block)
+            if (vds[i].block)
             {
-                if(!OS_SUCCESS(RC = UDFReadTagged(Vcb, Buf, vds[i].block, vds[i].block, &ident)))
+                if (!NT_SUCCESS(RC = UDFReadTagged(IrpContext, Vcb, Buf, vds[i].block, vds[i].block, &ident)))
                     try_return(RC);
-                UDFRegisterFsStructure(Vcb, vds[i].block, Vcb->BlockSize);
 
-                if(i == VDS_POS_PRIMARY_VOL_DESC) {
+                if (i == VDS_POS_PRIMARY_VOL_DESC) {
                     *volDesc = vds[i];
                 }
-                else if(i == VDS_POS_LOGICAL_VOL_DESC) {
+                else if (i == VDS_POS_LOGICAL_VOL_DESC) {
                 }
-                else if(i == VDS_POS_PARTITION_DESC)
+                else if (i == VDS_POS_PARTITION_DESC)
                 {
                     Buf2 = (int8*)MyAllocatePool__(NonPagedPool,Vcb->BlockSize);
-                    if(!Buf2) try_return(RC = STATUS_INSUFFICIENT_RESOURCES);
-                    RC = UDFVerifyPartDesc(Vcb,Buf);
-                    if(!OS_SUCCESS(RC)) try_return(RC);
+                    if (!Buf2) try_return(RC = STATUS_INSUFFICIENT_RESOURCES);
+                    RC = UDFVerifyPartDesc(IrpContext, Vcb, Buf);
+                    if (!NT_SUCCESS(RC)) try_return(RC);
                     for (j=vds[i].block+1; j<vds[VDS_POS_TERMINATING_DESC].block; j++)
                     {
-                        RC = UDFReadTagged(Vcb,Buf2, j, j, &ident);
-                        if(!OS_SUCCESS(RC)) try_return(RC);
-                        UDFRegisterFsStructure(Vcb, j, Vcb->BlockSize);
+                        RC = UDFReadTagged(IrpContext, Vcb, Buf2, j, j, &ident);
+                        if (!NT_SUCCESS(RC)) try_return(RC);
+
 //                        gd = (struct GenericDesc *)Buf2;
-                        if(ident == TID_PARTITION_DESC) {
-                            RC = UDFVerifyPartDesc(Vcb,Buf2);
-                            if(!OS_SUCCESS(RC)) try_return(RC);
-                        } else if(ident == TID_UNALLOC_SPACE_DESC) {
-                            RC = UDFVerifyFreeSpaceBitmap(Vcb,0,NULL,j);
+                        if (ident == TID_PARTITION_DESC) {
+                            RC = UDFVerifyPartDesc(IrpContext, Vcb, Buf2);
+                            if (!NT_SUCCESS(RC)) try_return(RC);
+                        } else if (ident == TID_UNALLOC_SPACE_DESC) {
+                            RC = UDFVerifyFreeSpaceBitmap(IrpContext, Vcb, 0, NULL, j);
                             Vcb->Modified = FALSE;
-                            if(!OS_SUCCESS(RC))
+                            if (!NT_SUCCESS(RC))
                                 try_return(RC);
                         }
                     }
@@ -2533,8 +2550,8 @@ UDFVerifySequence(
 try_exit: NOTHING;
 
     } _SEH2_FINALLY {
-        if(Buf) MyFreePool__(Buf);
-        if(Buf2) MyFreePool__(Buf2);
+        if (Buf) MyFreePool__(Buf);
+        if (Buf2) MyFreePool__(Buf2);
     } _SEH2_END;
 
     return RC;
@@ -2555,7 +2572,7 @@ UDFLoadFileset(
     Vcb->SerialNumber = fset->descTag.tagSerialNum;
     UDFPrint(("Rootdir at block=%x, partition=%d\n",
         root->logicalBlockNum, root->partitionReferenceNum));
-    if(sysstream) {
+    if (sysstream) {
         *sysstream = fset->streamDirectoryICB.extLocation;
         UDFPrint(("SysStream at block=%x, partition=%d\n",
             sysstream->logicalBlockNum, sysstream->partitionReferenceNum));
@@ -2573,17 +2590,17 @@ UDFLoadFileset(
 
 } // end UDFLoadFileset()
 
-OSSTATUS
+NTSTATUS
 UDFIsCachedBadSequence(
     IN PVCB Vcb,
     IN uint32 Lba
     )
 {
     ULONG j;
-    OSSTATUS RC = STATUS_SUCCESS;
+    NTSTATUS RC = STATUS_SUCCESS;
     // Check if it is known bad sequence
     for(j=0; j<Vcb->BadSeqLocIndex; j++) {
-        if(Vcb->BadSeqLoc[j] == Lba) {
+        if (Vcb->BadSeqLoc[j] == Lba) {
             RC = Vcb->BadSeqStatus[j];
             break;
         }
@@ -2595,11 +2612,11 @@ VOID
 UDFRememberBadSequence(
     IN PVCB Vcb,
     IN uint32 Lba,
-    IN OSSTATUS RC
+    IN NTSTATUS RC
     )
 {
     int j;
-    if(!OS_SUCCESS(UDFIsCachedBadSequence(Vcb, Lba)))
+    if (!NT_SUCCESS(UDFIsCachedBadSequence(Vcb, Lba)))
         return;
     // Remenber bad sequence
     j = Vcb->BadSeqLocIndex;
@@ -2611,15 +2628,16 @@ UDFRememberBadSequence(
 /*
     load partition info
  */
-OSSTATUS
+NTSTATUS
 UDFLoadPartition(
-     IN PDEVICE_OBJECT  DeviceObject,
-     IN PVCB            Vcb,
-    OUT lb_addr         *fileset
+    IN PIRP_CONTEXT IrpContext,
+    IN PDEVICE_OBJECT DeviceObject,
+    IN PVCB Vcb,
+    OUT lb_addr* fileset
     )
 {
-    OSSTATUS            RC = STATUS_UNRECOGNIZED_VOLUME;
-    OSSTATUS            RC2 = STATUS_UNRECOGNIZED_VOLUME;
+    NTSTATUS            RC = STATUS_UNRECOGNIZED_VOLUME;
+    NTSTATUS            RC2 = STATUS_UNRECOGNIZED_VOLUME;
     AnchorVolDescPtr    *anchor;
     uint16              ident;
     int8*               Buf = (int8*)MyAllocatePool__(NonPagedPool,Vcb->BlockSize);
@@ -2629,11 +2647,11 @@ UDFLoadPartition(
     UDF_VDS_RECORD      reserveVolDesc;
     int                 i;
 
-    if(!Buf) return STATUS_INSUFFICIENT_RESOURCES;
+    if (!Buf) return STATUS_INSUFFICIENT_RESOURCES;
     // walk through all available Anchors & load data
     for (i=0; i<MAX_ANCHOR_LOCATIONS; i++)
     {
-        if(Vcb->Anchor[i] && (OS_SUCCESS(UDFReadTagged(Vcb, Buf,
+        if (Vcb->Anchor[i] && (NT_SUCCESS(UDFReadTagged(IrpContext, Vcb, Buf,
             Vcb->Anchor[i], Vcb->Anchor[i] - Vcb->FirstLBA, &ident))))
         {
             anchor = (AnchorVolDescPtr *)Buf;
@@ -2652,30 +2670,30 @@ UDFLoadPartition(
 
             // Check if it is known bad sequence
             RC = UDFIsCachedBadSequence(Vcb, main_s);
-            if(OS_SUCCESS(RC)) {
+            if (NT_SUCCESS(RC)) {
                 // Process the main & reserve sequences
                 // responsible for finding the PartitionDesc(s)
                 UDFPrint(("-----------------------------------\n"));
                 UDFPrint(("UDF: Main sequence:\n"));
-                RC = UDFProcessSequence(DeviceObject, Vcb, main_s, main_e, fileset, &mainVolDesc);
+                RC = UDFProcessSequence(IrpContext, DeviceObject, Vcb, main_s, main_e, fileset, &mainVolDesc);
             }
 
-            if(!OS_SUCCESS(RC)) {
+            if (!NT_SUCCESS(RC)) {
                 // Remenber bad sequence
                 UDFRememberBadSequence(Vcb, main_s, RC);
 
                 UDFPrint(("-----------------------------------\n"));
                 UDFPrint(("UDF: Main sequence failed.\n"));
                 UDFPrint(("UDF: Reserve sequence\n"));
-                if(Vcb->LVid) MyFreePool__(Vcb->LVid);
+                if (Vcb->LVid) MyFreePool__(Vcb->LVid);
                 Vcb->LVid = NULL;
 
                 RC2 = UDFIsCachedBadSequence(Vcb, reserve_s);
-                if(OS_SUCCESS(RC2)) {
-                    RC2 = UDFProcessSequence(DeviceObject, Vcb, reserve_s, reserve_e, fileset, &reserveVolDesc);
+                if (NT_SUCCESS(RC2)) {
+                    RC2 = UDFProcessSequence(IrpContext, DeviceObject, Vcb, reserve_s, reserve_e, fileset, &reserveVolDesc);
                 }
 
-                if(OS_SUCCESS(RC2)) {
+                if (NT_SUCCESS(RC2)) {
                     UDFPrint(("-----------------------------------\n"));
                     Vcb->VDS2_Len = reserve_e - reserve_s;
                     Vcb->VDS2 = reserve_s;
@@ -2694,9 +2712,9 @@ UDFLoadPartition(
                 Vcb->VDS1_Len = main_e - main_s;
                 Vcb->VDS1 = main_s;
                 Vcb->PVolDescAddr = mainVolDesc;
-/*                if(Vcb->LVid) MyFreePool__(Vcb->LVid);
+/*                if (Vcb->LVid) MyFreePool__(Vcb->LVid);
                 Vcb->LVid = NULL;*/
-                if(OS_SUCCESS(UDFVerifySequence(DeviceObject, Vcb, reserve_s, reserve_e, fileset, &reserveVolDesc)))
+                if (NT_SUCCESS(UDFVerifySequence(IrpContext, DeviceObject, Vcb, reserve_s, reserve_e, fileset, &reserveVolDesc)))
                 {
                     UDFPrint(("-----------------------------------\n"));
                     Vcb->VDS2_Len = reserve_e - reserve_s;
@@ -2708,11 +2726,11 @@ UDFLoadPartition(
                     switch(Vcb->PartitialDamagedVolumeAction) {
                     case UDF_PART_DAMAGED_RO:
                         UDFPrint(("UDF: Switch to r/o mode.\n"));
-                        Vcb->VCBFlags |= VCB_STATE_VOLUME_READ_ONLY;
+                        Vcb->VcbState |= VCB_STATE_VOLUME_READ_ONLY;
                         break;
                     case UDF_PART_DAMAGED_NO:
                         UDFPrint(("UDF: Switch to raw mount mode, return UNRECOGNIZED_VOLUME.\n"));
-                        Vcb->VCBFlags |= UDF_VCB_FLAGS_RAW_DISK;
+                        Vcb->VcbState |= UDF_VCB_FLAGS_RAW_DISK;
                         RC = STATUS_WRONG_VOLUME;
                         break;
                     case UDF_PART_DAMAGED_RW:
@@ -2726,13 +2744,13 @@ UDFLoadPartition(
         }
     }
 
-    if(Vcb->SparingCount &&
+    if (Vcb->SparingCount &&
        (Vcb->NoFreeRelocationSpaceVolumeAction != UDF_PART_DAMAGED_RW)) {
         UDFPrint(("UDF: No free Sparing Entries -> Switch to r/o mode.\n"));
-        Vcb->VCBFlags |= VCB_STATE_VOLUME_READ_ONLY;
+        Vcb->VcbState |= VCB_STATE_VOLUME_READ_ONLY;
     }
 
-    if(i == sizeof(Vcb->Anchor)/sizeof(int)) {
+    if (i == sizeof(Vcb->Anchor)/sizeof(int)) {
         UDFPrint(("No Anchor block found\n"));
         RC = STATUS_UNRECOGNIZED_VOLUME;
 #ifdef UDF_DBG
@@ -2748,14 +2766,15 @@ UDFLoadPartition(
     This routine scans FileSet sequence & returns pointer to last valid
     FileSet
  */
-OSSTATUS
+NTSTATUS
 UDFFindLastFileSet(
+    IN PIRP_CONTEXT IrpContext,
     IN PVCB Vcb,
     IN lb_addr *Addr,  // Addr for the 1st FileSet
     IN OUT PFILE_SET_DESC FileSetDesc
     )
 {
-    OSSTATUS status;
+    NTSTATUS status;
     uint32 relLocExt = Addr->logicalBlockNum;
     uint32 locExt = UDFPartLbaToPhys(Vcb, Addr);
     uint16 Ident;
@@ -2766,19 +2785,17 @@ UDFFindLastFileSet(
     // walk through FileSet chain
     // we've just pre-init'd extent length to read 1st FileSet
     while(FileSetDesc->nextExt.extLength) {
-        status = UDFReadTagged(Vcb, (int8*)FileSetDesc, locExt, relLocExt, &Ident);
-        if(!OS_SUCCESS(status)) {
+        status = UDFReadTagged(IrpContext, Vcb, (int8*)FileSetDesc, locExt, relLocExt, &Ident);
+        if (!NT_SUCCESS(status)) {
             FileSetDesc->nextExt.extLength = 0;
             return status;
         }
-        UDFRegisterFsStructure(Vcb, locExt, Vcb->BlockSize);
-        if((locExt == LBA_OUT_OF_EXTENT) || (Ident != TID_FILE_SET_DESC)) {
+
+        if ((locExt == LBA_OUT_OF_EXTENT) || (Ident != TID_FILE_SET_DESC)) {
             // try to read previous FileSet
-            if(!prevExt) return STATUS_UNRECOGNIZED_VOLUME;
-            status = UDFReadTagged(Vcb, (int8*)FileSetDesc, prevExt, relLocExt, &Ident);
-            if(OS_SUCCESS(status)) {
-                UDFRegisterFsStructure(Vcb, prevExt, Vcb->BlockSize);
-            }
+            if (!prevExt) return STATUS_UNRECOGNIZED_VOLUME;
+            status = UDFReadTagged(IrpContext, Vcb, (int8*)FileSetDesc, prevExt, relLocExt, &Ident);
+
             return status;
         }
         prevExt = locExt;
@@ -2792,23 +2809,21 @@ UDFFindLastFileSet(
     This routine reads all sparing tables & stores them in contiguos memory
     space
  */
-OSSTATUS
+NTSTATUS
 UDFLoadSparingTable(
+    IN PIRP_CONTEXT IrpContext,
     IN PVCB Vcb,
     IN PSPARABLE_PARTITION_MAP PartMap
     )
 {
     PSPARING_MAP RelocMap;
     PSPARING_MAP NewRelocMap;
-    OSSTATUS status;
+    NTSTATUS status;
     uint32 i=0, BC, BC2;
     PSPARING_TABLE SparTable;
     uint32 TabSize, NewSize;
     SIZE_T ReadBytes;
     uint32 SparTableLoc;
-#ifdef UDF_TRACK_FS_STRUCTURES
-    uint32 j;
-#endif //UDF_TRACK_FS_STRUCTURES
     uint32 n,m;
     BOOLEAN merged;
 
@@ -2825,8 +2840,8 @@ UDFLoadSparingTable(
     UDFPrint((" numSparingTables   = %x\n", PartMap->numSparingTables));
     UDFPrint((" sizeSparingTable   = %x\n", PartMap->sizeSparingTable));
     SparTable = (PSPARING_TABLE)MyAllocatePool__(NonPagedPool, BC*Vcb->BlockSize);
-    if(!SparTable) return STATUS_INSUFFICIENT_RESOURCES;
-    if(Vcb->SparingTable) {
+    if (!SparTable) return STATUS_INSUFFICIENT_RESOURCES;
+    if (Vcb->SparingTable) {
         // if a part of Sparing Table is already loaded,
         // update it with data from another one
         RelocMap = Vcb->SparingTable;
@@ -2834,7 +2849,7 @@ UDFLoadSparingTable(
     } else {
         // do some init to load first part of Sparing Table
         RelocMap = (PSPARING_MAP)MyAllocatePool__(NonPagedPool, RELOC_MAP_GRAN);
-        if(!RelocMap) {
+        if (!RelocMap) {
             MyFreePool__(SparTable);
             return STATUS_INSUFFICIENT_RESOURCES;
         }
@@ -2846,33 +2861,31 @@ UDFLoadSparingTable(
         // read (next) table
         SparTableLoc = ((uint32*)(PartMap+1))[i];
         for(n=0; n<Vcb->SparingTableCount; n++) {
-            if(Vcb->SparingTableLoc[i] == SparTableLoc) {
+            if (Vcb->SparingTableLoc[i] == SparTableLoc) {
                 UDFPrint((" already processed @%x\n",
                     SparTableLoc
                     ));
                 continue;
             }
         }
-        status = UDFReadSectors(Vcb, FALSE, SparTableLoc, 1, FALSE, (int8*)SparTable, &ReadBytes);
+        status = UDFReadSectors(IrpContext, Vcb, FALSE, SparTableLoc, 1, FALSE, (int8*)SparTable, &ReadBytes);
         // tag should be set to TID_UNUSED_DESC
-        if(OS_SUCCESS(status) && (SparTable->descTag.tagIdent == TID_UNUSED_DESC)) {
+        if (NT_SUCCESS(status) && (SparTable->descTag.tagIdent == TID_UNUSED_DESC)) {
 
-            UDFRegisterFsStructure(Vcb,  SparTableLoc, Vcb->BlockSize);
             BC2 = ((sizeof(SPARING_TABLE) +
                     SparTable->reallocationTableLen*sizeof(SparingEntry) +
                     Vcb->BlockSize-1)
                                       >> Vcb->BlockSizeBits);
-            if(BC2 > BC) {
+            if (BC2 > BC) {
                 UDFPrint((" sizeSparingTable @%x too long: %x > %x\n",
                     SparTableLoc, BC2, BC
                     ));
                 continue;
             }
-            status = UDFReadSectors(Vcb, FALSE, SparTableLoc,
+            status = UDFReadSectors(IrpContext, Vcb, FALSE, SparTableLoc,
                 BC2, FALSE, (int8*)SparTable, &ReadBytes);
-            UDFRegisterFsStructure(Vcb,  SparTableLoc, BC2<<Vcb->BlockSizeBits);
 
-            if(!OS_SUCCESS(status)) {
+            if (!NT_SUCCESS(status)) {
                 UDFPrint((" Error reading sizeSparingTable @%x (%x)\n",
                     SparTableLoc, BC2
                     ));
@@ -2881,16 +2894,10 @@ UDFLoadSparingTable(
             // process sparing table
             NewSize = sizeof(SparingEntry)*SparTable->reallocationTableLen;
             TabSize = MyReallocPool__((int8*)RelocMap, TabSize, (int8**)&RelocMap, TabSize+NewSize);
-            if(!TabSize) {
+            if (!TabSize) {
                 MyFreePool__(SparTable);
                 return STATUS_INSUFFICIENT_RESOURCES;
             }
-
-#ifdef UDF_TRACK_FS_STRUCTURES
-            for(j=0; j<SparTable->reallocationTableLen; j++) {
-                UDFRegisterFsStructure(Vcb,  ((SparingEntry*)(SparTable+1))[j].mappedLocation, Vcb->WriteBlockSize);
-            }
-#endif //UDF_TRACK_FS_STRUCTURES
 
             Vcb->SparingTableLoc[Vcb->SparingTableCount] = SparTableLoc;
             Vcb->SparingTableCount++;
@@ -2899,13 +2906,13 @@ UDFLoadSparingTable(
             for(n=0; n<SparTable->reallocationTableLen; n++) {
                 merged = TRUE;
                 for(m=0; m<Vcb->SparingCount; m++) {
-                    if(RelocMap[m].mappedLocation == NewRelocMap[n].mappedLocation) {
+                    if (RelocMap[m].mappedLocation == NewRelocMap[n].mappedLocation) {
                         UDFPrint(("  dup @%x (%x) vs @%x (%x)\n",
                             RelocMap[m].origLocation, RelocMap[m].mappedLocation,
                             NewRelocMap[m].origLocation, NewRelocMap[m].mappedLocation));
                         merged = FALSE;
                     }
-                    if((RelocMap[m].origLocation   == NewRelocMap[n].origLocation) &&
+                    if ((RelocMap[m].origLocation   == NewRelocMap[n].origLocation) &&
                        (RelocMap[m].mappedLocation != NewRelocMap[n].mappedLocation) &&
                        (RelocMap[m].origLocation != SPARING_LOC_AVAILABLE) &&
                        (RelocMap[m].origLocation != SPARING_LOC_CORRUPTED)) {
@@ -2915,12 +2922,12 @@ UDFLoadSparingTable(
                         merged = FALSE;
                     }
                 }
-                if(merged) {
+                if (merged) {
                     RelocMap[Vcb->SparingCount] = NewRelocMap[n];
                     UDFPrint(("  reloc %x -> %x\n",
                         RelocMap[Vcb->SparingCount].origLocation, RelocMap[Vcb->SparingCount].mappedLocation));
                     Vcb->SparingCount++;
-                    if(RelocMap[Vcb->SparingCount].origLocation == SPARING_LOC_AVAILABLE) {
+                    if (RelocMap[Vcb->SparingCount].origLocation == SPARING_LOC_AVAILABLE) {
                         Vcb->NoFreeRelocationSpaceVolumeAction = UDF_PART_DAMAGED_RW;
                     }
                 }
@@ -2931,7 +2938,7 @@ UDFLoadSparingTable(
                           (int8*)(SparTable+1), NewSize);
             Vcb->SparingCount += NewSize/sizeof(SPARING_ENTRY);
 */
-            if(Vcb->SparingTableCount >= MAX_SPARING_TABLE_LOCATIONS) {
+            if (Vcb->SparingTableCount >= MAX_SPARING_TABLE_LOCATIONS) {
                 UDFPrint(("    too many Sparing Tables\n"));
                 break;
             }
@@ -2956,7 +2963,7 @@ UDFCheckZeroBuf(
     uint32 i;
 
     for(i=0; i<Length/4; i++) {
-        if(tmp[i]) return FALSE;
+        if (tmp[i]) return FALSE;
     }
     return TRUE;
 } // end UDFCheckZeroBuf()
@@ -2964,13 +2971,14 @@ UDFCheckZeroBuf(
 /*
     check if this is an UDF-formatted disk
 */
-OSSTATUS
+NTSTATUS
 UDFGetDiskInfoAndVerify(
+    IN PIRP_CONTEXT IrpContext,
     IN PDEVICE_OBJECT DeviceObject,      // the target device object
     IN PVCB           Vcb                // Volume control block from this DevObj
     )
 {
-    OSSTATUS        RC = STATUS_UNRECOGNIZED_VOLUME;
+    NTSTATUS        RC = STATUS_UNRECOGNIZED_VOLUME;
     uint32          NSRDesc;
     lb_addr         fileset;
     PFILE_SET_DESC  FileSetDesc = NULL;
@@ -2981,33 +2989,33 @@ UDFGetDiskInfoAndVerify(
     UDFPrint(("UDFGetDiskInfoAndVerify\n"));
     _SEH2_TRY {
 
-        if(!UDFFindAnchor(Vcb)) {
-            if(Vcb->FsDeviceType == FILE_DEVICE_CD_ROM_FILE_SYSTEM) {
+        if (!UDFFindAnchor(IrpContext, Vcb)) {
+            if (Vcb->FsDeviceType == FILE_DEVICE_CD_ROM_FILE_SYSTEM) {
                 // check if this disc is mountable for CDFS
                 UDFPrint(("   FILE_DEVICE_CD_ROM_FILE_SYSTEM\n"));
 check_NSR:
-                NSRDesc = UDFFindVRS(Vcb);
-                if(!(NSRDesc & VRS_ISO9660_FOUND)) {
+                NSRDesc = UDFFindVRS(IrpContext, Vcb);
+                if (!(NSRDesc & VRS_ISO9660_FOUND)) {
                     // no CDFS VRS found
                     UDFPrint(("UDFGetDiskInfoAndVerify: no CDFS VRS found\n"));
-                    if(!Vcb->TrackMap[Vcb->LastTrackNum].LastLba &&
+                    if (!Vcb->TrackMap[Vcb->LastTrackNum].LastLba &&
                        !Vcb->TrackMap[Vcb->FirstTrackNum].LastLba) {
                         // such a stupid method of Audio-CD detection...
                         UDFPrint(("UDFGetDiskInfoAndVerify: set UDF_VCB_FLAGS_RAW_DISK\n"));
-                        Vcb->VCBFlags |= UDF_VCB_FLAGS_RAW_DISK;
+                        Vcb->VcbState |= UDF_VCB_FLAGS_RAW_DISK;
                     }
                 }
                 Vcb->NSRDesc = NSRDesc;
 
                 Buf = (int8*)MyAllocatePool__(NonPagedPool, 0x10000);
-                if(!Buf) try_return(RC = STATUS_INSUFFICIENT_RESOURCES);
-                RC = UDFReadData(Vcb, FALSE, 0, 0x10000, FALSE, Buf, &ReadBytes);
-                if(!OS_SUCCESS(RC))
+                if (!Buf) try_return(RC = STATUS_INSUFFICIENT_RESOURCES);
+                RC = UDFReadData(IrpContext, Vcb, FALSE, 0, 0x10000, FALSE, Buf, &ReadBytes);
+                if (!NT_SUCCESS(RC))
                     try_return(RC = STATUS_UNRECOGNIZED_VOLUME);
                 RC = STATUS_UNRECOGNIZED_VOLUME;
-                if(!UDFCheckZeroBuf(Buf,0x10000)) {
+                if (!UDFCheckZeroBuf(Buf,0x10000)) {
                     UDFPrint(("UDFGetDiskInfoAndVerify: possible FS detected, remove UDF_VCB_FLAGS_RAW_DISK\n"));
-                    Vcb->VCBFlags &= ~UDF_VCB_FLAGS_RAW_DISK;
+                    Vcb->VcbState &= ~UDF_VCB_FLAGS_RAW_DISK;
                 }
                 MyFreePool__(Buf);
                 Buf = NULL;
@@ -3020,9 +3028,9 @@ check_NSR:
             Vcb->NSRDesc = NSRDesc;
         }
 
-        RC = UDFLoadPartition(DeviceObject,Vcb,&fileset);
-        if(!OS_SUCCESS(RC)) {
-            if(RC == STATUS_UNRECOGNIZED_VOLUME) {
+        RC = UDFLoadPartition(IrpContext, DeviceObject, Vcb, &fileset);
+        if (!NT_SUCCESS(RC)) {
+            if (RC == STATUS_UNRECOGNIZED_VOLUME) {
                 UDFPrint(("UDFGetDiskInfoAndVerify: check NSR presence\n"));
                 goto check_NSR;
             }
@@ -3030,21 +3038,21 @@ check_NSR:
         }
 
         FileSetDesc = (PFILE_SET_DESC)MyAllocatePool__(NonPagedPool,Vcb->BlockSize);
-        if(!FileSetDesc) try_return(RC = STATUS_INSUFFICIENT_RESOURCES);
+        if (!FileSetDesc) try_return(RC = STATUS_INSUFFICIENT_RESOURCES);
 
-        RC = UDFFindLastFileSet(Vcb,&fileset,FileSetDesc);
-        if(!OS_SUCCESS(RC)) try_return(RC);
+        RC = UDFFindLastFileSet(IrpContext, Vcb, &fileset, FileSetDesc);
+        if (!NT_SUCCESS(RC)) try_return(RC);
 
         UDFLoadFileset(Vcb,FileSetDesc, &(Vcb->RootLbAddr), &(Vcb->SysStreamLbAddr));
 
         Vcb->FSBM_OldBitmap = (int8*)DbgAllocatePool(NonPagedPool, Vcb->FSBM_ByteCount);
-        if(!(Vcb->FSBM_OldBitmap)) try_return(RC = STATUS_INSUFFICIENT_RESOURCES);
+        if (!(Vcb->FSBM_OldBitmap)) try_return(RC = STATUS_INSUFFICIENT_RESOURCES);
         RtlCopyMemory(Vcb->FSBM_OldBitmap, Vcb->FSBM_Bitmap, Vcb->FSBM_ByteCount);
 
 try_exit:   NOTHING;
     } _SEH2_FINALLY {
-        if(FileSetDesc)   MyFreePool__(FileSetDesc);
-        if(Buf)           MyFreePool__(Buf);
+        if (FileSetDesc)   MyFreePool__(FileSetDesc);
+        if (Buf)           MyFreePool__(Buf);
     } _SEH2_END;
 
     return(RC);

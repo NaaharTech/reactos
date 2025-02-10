@@ -35,10 +35,16 @@ ULONG    UDFAttributesToNT(IN PDIR_INDEX_ITEM FileDirNdx,
 VOID     UDFAttributesToUDF(IN PDIR_INDEX_ITEM FileDirNdx,
                             IN tag* FileEntry,
                             IN ULONG NTAttr);
+
 // translate all file information to NT
-NTSTATUS UDFFileDirInfoToNT(IN PVCB Vcb,
-                            IN PDIR_INDEX_ITEM FileDirNdx,
-                            OUT PFILE_BOTH_DIR_INFORMATION NTFileInfo);
+NTSTATUS
+UDFFileDirInfoToNT(
+    IN PIRP_CONTEXT IrpContext,
+    IN PVCB Vcb,
+    IN PDIR_INDEX_ITEM FileDirNdx,
+    OUT PFILE_BOTH_DIR_INFORMATION NTFileInfo
+    );
+
 // convert NT time to UDF timestamp
 VOID     UDFTimeToUDF(IN LONGLONG NtTime,
                       OUT PUDF_TIME_STAMP UdfTime);
@@ -56,14 +62,14 @@ VOID     UDFGetFileXTime(IN PUDF_FILE_INFO FileInfo,
                          OUT LONGLONG* ChgTime);
 //
 #define UDFUpdateAccessTime(Vcb, FileInfo)             \
-if(Vcb->CompatFlags & UDF_VCB_IC_UPDATE_ACCESS_TIME) {       \
+if (Vcb->CompatFlags & UDF_VCB_IC_UPDATE_ACCESS_TIME) {       \
     LONGLONG NtTime;                                   \
     KeQuerySystemTime((PLARGE_INTEGER)&NtTime);            \
     UDFSetFileXTime(FileInfo, NULL, &NtTime, NULL, NULL);  \
 }
 //
 #define UDFUpdateModifyTime(Vcb, FileInfo)             \
-if(Vcb->CompatFlags & UDF_VCB_IC_UPDATE_MODIFY_TIME) {       \
+if (Vcb->CompatFlags & UDF_VCB_IC_UPDATE_MODIFY_TIME) {       \
     LONGLONG NtTime;                                   \
     ULONG Attr;                                        \
     PDIR_INDEX_ITEM DirNdx;                            \
@@ -71,12 +77,12 @@ if(Vcb->CompatFlags & UDF_VCB_IC_UPDATE_MODIFY_TIME) {       \
     UDFSetFileXTime(FileInfo, NULL, &NtTime, NULL, &NtTime);  \
     DirNdx = UDFDirIndex(UDFGetDirIndexByFileInfo(FileInfo), (FileInfo)->Index); \
     Attr = UDFAttributesToNT(DirNdx, (FileInfo)->Dloc->FileEntry); \
-    if(!(Attr & FILE_ATTRIBUTE_ARCHIVE))                            \
+    if (!(Attr & FILE_ATTRIBUTE_ARCHIVE))                            \
         UDFAttributesToUDF(DirNdx, (FileInfo)->Dloc->FileEntry, Attr); \
 }
 //
 #define UDFUpdateAttrTime(Vcb, FileInfo)               \
-if(Vcb->CompatFlags & UDF_VCB_IC_UPDATE_ATTR_TIME) {         \
+if (Vcb->CompatFlags & UDF_VCB_IC_UPDATE_ATTR_TIME) {         \
     LONGLONG NtTime;                                   \
     KeQuerySystemTime((PLARGE_INTEGER)&NtTime);               \
     UDFSetFileXTime(FileInfo, NULL, &NtTime, &NtTime, NULL);  \
@@ -88,14 +94,6 @@ if(Vcb->CompatFlags & UDF_VCB_IC_UPDATE_ATTR_TIME) {         \
     KeQuerySystemTime((PLARGE_INTEGER)&NtTime);               \
     UDFSetFileXTime(FileInfo, &NtTime, &NtTime, &NtTime, &NtTime);  \
 }
-
-void
-__fastcall
-UDFDOSNameOsNative(
-    IN OUT PUNICODE_STRING DosName,
-    IN PUNICODE_STRING UdfName,
-    IN BOOLEAN KeepIntact
-    );
 
 VOID     UDFNormalizeFileName(IN PUNICODE_STRING FName,
                               IN USHORT valueCRC);
@@ -149,9 +147,15 @@ NTSTATUS MyCloneUnicodeString(IN PUNICODE_STRING Str1,
 BOOLEAN  UDFIsDirInfoCached(IN PVCB Vcb,
                             IN PUDF_FILE_INFO DirInfo);
 
-#define UDFGetNTFileId(Vcb, fi, fn) (((fi)->Dloc->FELoc.Mapping[0].extLocation - UDFPartStart(Vcb, -2)) + \
-                                     ((ULONG)(UDFUnicodeCksum((fn)->Buffer, (fn)->Length/sizeof(WCHAR))) << 16) + \
-                                     ((LONGLONG)Vcb<<32) )
+__inline LARGE_INTEGER UDFMakeLargeInteger(LONGLONG value) {
+    LARGE_INTEGER result;
+    result.QuadPart = value;
+    return result;
+}
+
+#define UDFGetNTFileId(Vcb, fi) \
+    UDFMakeLargeInteger((((fi)->Dloc->FELoc.Mapping[0].extLocation - UDFPartStart(Vcb, -2)) + \
+                      ((LONGLONG)Vcb<<32)))
 
 #define UnicodeIsPrint(a) RtlIsValidOemCharacter(&(a))
 
@@ -164,14 +168,6 @@ NTSTATUS UDFDoesOSAllowFileToBeUnlinked__(IN PUDF_FILE_INFO FileInfo);
 NTSTATUS UDFDoesOSAllowFilePretendDeleted__(IN PUDF_FILE_INFO FileInfo);
 BOOLEAN UDFRemoveOSReferences__(IN PUDF_FILE_INFO FileInfo);
 
-#define UDFIsFSDevObj(DeviceObject) \
-    (DeviceObject->DeviceExtension && \
-      ( (((PVCB)(DeviceObject->DeviceExtension))->NodeIdentifier.NodeTypeCode == \
-              UDF_NODE_TYPE_UDFFS_DEVOBJ) || \
-        (((PVCB)(DeviceObject->DeviceExtension))->NodeIdentifier.NodeTypeCode == \
-              UDF_NODE_TYPE_UDFFS_DRVOBJ) \
-      ) \
-    )
 /*
 extern ULONG  MajorVersion;
 extern ULONG  MinorVersion;

@@ -99,14 +99,14 @@ MyAllocDumpFrame(
     ULONG k=0;
     BOOLEAN Used;
 #ifdef DUMP_MEM_FRAMES
-    if(!MyDumpMem)
+    if (!MyDumpMem)
 #endif //DUMP_MEM_FRAMES
         return;
 
     UDFPrint(("Dumping frame %x\n",Frame));
     UDFPrint(("FirstFree %x   LastUsed %x  ", FrameList[Frame].FirstFree, FrameList[Frame].LastUsed));
     UDFPrint(("Type %x\n", FrameList[Frame].Type));
-    if(Allocs) {
+    if (Allocs) {
         for(i=0;i< (MY_HEAP_MAX_BLOCKS/*-1*/);i++) {
             Used = (Allocs[i].Len & MY_HEAP_FLAG_USED) ? TRUE : FALSE;
             UDFPrint(("block %x \t%s addr %x len %x  \t", i, Used ? "used" : "free", Allocs[i].Addr, (Allocs[i].Len) & MY_HEAP_FLAG_LEN_MASK));
@@ -117,10 +117,10 @@ MyAllocDumpFrame(
             UDFPrint(("%s%s", Used ? " " : "-", Allocs[i].Tag ? Allocs[i].Tag : ""));
 #endif
             UDFPrint(("\n"));
-            if(!(Allocs[i].Len) && !(Allocs[i].Addr)) {
+            if (!(Allocs[i].Len) && !(Allocs[i].Addr)) {
                 break;
             }
-            if(Allocs[i].Len & MY_HEAP_FLAG_USED)
+            if (Allocs[i].Len & MY_HEAP_FLAG_USED)
                 k += ((Allocs[i].Len) & MY_HEAP_FLAG_LEN_MASK);
         }
     }
@@ -135,7 +135,7 @@ MyAllocDumpFrames(
     ULONG i;
 
     for(i=0;i<MY_HEAP_MAX_FRAMES; i++) {
-        if(FrameList[i].Frame) {
+        if (FrameList[i].Frame) {
             MyAllocDumpFrame(i);
         }
     }
@@ -143,7 +143,7 @@ MyAllocDumpFrames(
     UDFPrint(("\n"));
 
     for(i=0;i<MY_HEAP_MAX_FRAMES; i++) {
-        if(FrameList[i].Frame) {
+        if (FrameList[i].Frame) {
             UDFPrint(("Addr %x   ", FrameList[i].Frame));
             UDFPrint(("Type %x\n" , FrameList[i].Type));
         }
@@ -164,8 +164,8 @@ MyAllocCheck(
     for(i=0;i< (MY_HEAP_MAX_BLOCKS-1);i++) {
         len = (Allocs[i].Len & MY_HEAP_FLAG_LEN_MASK);
         addr = Allocs[i].Addr;
-        if( len != (Allocs[i+1].Addr - addr) ) {
-            if(Allocs[i+1].Addr) {
+        if ( len != (Allocs[i+1].Addr - addr) ) {
+            if (Allocs[i+1].Addr) {
                 UDFPrint(("ERROR! Memory block aliasing\n"));
                 UDFPrint(("block %x, frame %x\n", i, Frame));
                 UDFPrint(("block descriptor %x\n", &(Allocs[i]) ));
@@ -174,7 +174,7 @@ MyAllocCheck(
             }
         }
 #ifdef MY_HEAP_CHECK_BOUNDS
-        if(*((PULONG)(addr+len+(j*sizeof(ULONG))-MY_HEAP_CHECK_BOUNDS_BSZ)) != 0xBAADF00D) {
+        if (*((PULONG)(addr+len+(j*sizeof(ULONG))-MY_HEAP_CHECK_BOUNDS_BSZ)) != 0xBAADF00D) {
             MyAllocDumpDescr(Allocs, i);
         }
 #endif //MY_HEAP_CHECK_BOUNDS
@@ -219,54 +219,54 @@ MyAllocatePoolInFrame(
     MyAllocCheck(Frame);
 #endif
 
-    if(!size) return NULL;
+    if (!size) return NULL;
 #ifdef MY_HEAP_CHECK_BOUNDS
     size+=MY_HEAP_CHECK_BOUNDS_BSZ;
 #endif
 
-/*    if(size == 0x70) {
+/*    if (size == 0x70) {
         BrutePoint();
     }*/
     // lock frame
     Allocs0 = FrameList[Frame].Frame;
-    if(!Allocs0) return NULL;
+    if (!Allocs0) return NULL;
     best_i = MY_HEAP_MAX_BLOCKS;
     min_len = 0;
     LastUsed = FrameList[Frame].LastUsed;
     FirstFree = FrameList[Frame].FirstFree;
 
-    if(LastUsed >= (MY_HEAP_MAX_BLOCKS-1))
+    if (LastUsed >= (MY_HEAP_MAX_BLOCKS-1))
         return NULL;
 
     for(i=FirstFree, Allocs = &(Allocs0[i]);i<=LastUsed;i++, Allocs++) {
-        if( !((l = Allocs->Len) & MY_HEAP_FLAG_USED) &&
+        if ( !((l = Allocs->Len) & MY_HEAP_FLAG_USED) &&
              ((l &= MY_HEAP_FLAG_LEN_MASK) >= size) ) {
             // check if minimal
             // check for first occurence
-            if(l < min_len || !min_len) {
+            if (l < min_len || !min_len) {
                 min_len = l;
                 best_i = i;
             }
-            if(l == size)
+            if (l == size)
                 break;
         }
     }
     // not enough resources
-    if(best_i >= MY_HEAP_MAX_BLOCKS) return NULL;
+    if (best_i >= MY_HEAP_MAX_BLOCKS) return NULL;
     // mark as used
     Allocs = Allocs0+best_i;
     addr = Allocs->Addr;
     // create entry for unallocated tail
-    if(Allocs->Len != size) {     // this element is always FREE
-        if(Allocs[1].Len) {
-            if(Allocs0[MY_HEAP_MAX_BLOCKS-1].Len) return NULL;
+    if (Allocs->Len != size) {     // this element is always FREE
+        if (Allocs[1].Len) {
+            if (Allocs0[MY_HEAP_MAX_BLOCKS-1].Len) return NULL;
 /*            for(i=MY_HEAP_MAX_BLOCKS-1;i>best_i;i--) {
                 Allocs[i] = Allocs[i-1];
             }*/
             RtlMoveMemory(&(Allocs[1]), &(Allocs[0]), (LastUsed-best_i+1)*sizeof(MEM_ALLOC_DESC));
         }
         Allocs[1].Addr = Allocs->Addr + size;
-        if(Allocs[1].Len) {
+        if (Allocs[1].Len) {
             Allocs[1].Len -= size;
         } else {
             Allocs[1].Len = MY_HEAP_FRAME_SIZE - (addr - Allocs0[0].Addr) - size;
@@ -275,7 +275,7 @@ MyAllocatePoolInFrame(
         FrameList[Frame].LastUsed++;
     }
     // update FirstFree pointer
-    if(FirstFree == best_i) {
+    if (FirstFree == best_i) {
         for(i=best_i+1, Allocs++; (i<=LastUsed) && (Allocs->Len & MY_HEAP_FLAG_USED);i++, Allocs++) {
             // do nothing but scan
         }
@@ -324,22 +324,22 @@ MyFindMemDescByAddr(
 //    for(i=0;i<MY_HEAP_MAX_BLOCKS;i++) {
     left = 0;
     right = FrameList[Frame].LastUsed;
-    if(!right && FrameList[Frame].FirstFree)
+    if (!right && FrameList[Frame].FirstFree)
         right = 1;
     while(left != right) {
         i = (right + left) >> 1;
-        if( (Allocs[i].Len & MY_HEAP_FLAG_USED) && (Allocs[i].Addr == (ULONG)addr) ) {
+        if ( (Allocs[i].Len & MY_HEAP_FLAG_USED) && (Allocs[i].Addr == (ULONG)addr) ) {
 FIF_Found:
             return i;
         }
-        if(right - left == 1) {
-            if( (Allocs[i+1].Len & MY_HEAP_FLAG_USED) && (Allocs[i+1].Addr == (ULONG)addr) ) {
+        if (right - left == 1) {
+            if ( (Allocs[i+1].Len & MY_HEAP_FLAG_USED) && (Allocs[i+1].Addr == (ULONG)addr) ) {
                 i++;
                 goto FIF_Found;
             }
             break;
         }
-        if(Allocs[i].Addr && (Allocs[i].Addr < (ULONG)addr)) {
+        if (Allocs[i].Addr && (Allocs[i].Addr < (ULONG)addr)) {
             left = i;
         } else {
             right = i;
@@ -363,7 +363,7 @@ MyFreePoolInFrame(
     Allocs = FrameList[Frame].Frame;
     pc = 0;
     i = MyFindMemDescByAddr(Frame, addr);
-    if(i < 0) {
+    if (i < 0) {
         UDFPrint(("Mem: <<<*** WARNING ***>>> Double deallocation at %x !!!   ;( \n", addr));
         MyAllocDumpFrame(Frame);
         BrutePoint();
@@ -375,7 +375,7 @@ MyFreePoolInFrame(
 #ifdef MY_HEAP_CHECK_BOUNDS
     for(j=0; j<MY_HEAP_CHECK_BOUNDS_SZ; j++) {
         ASSERT(*((PULONG)(addr+len+(j*sizeof(ULONG))-MY_HEAP_CHECK_BOUNDS_BSZ)) == 0xBAADF00D);
-        if(*((PULONG)(addr+len+(j*sizeof(ULONG))-MY_HEAP_CHECK_BOUNDS_BSZ)) != 0xBAADF00D) {
+        if (*((PULONG)(addr+len+(j*sizeof(ULONG))-MY_HEAP_CHECK_BOUNDS_BSZ)) != 0xBAADF00D) {
             MyAllocDumpDescr(Allocs, i);
         }
     }
@@ -389,22 +389,22 @@ MyFreePoolInFrame(
     *((PULONG)addr) = 0xDEADDA7A;
     MemTotalAllocated -= len;
 #endif
-    if((i<MY_HEAP_MAX_BLOCKS-1) && !((len2 = Allocs[i+1].Len) & MY_HEAP_FLAG_USED)) {
+    if ((i<MY_HEAP_MAX_BLOCKS-1) && !((len2 = Allocs[i+1].Len) & MY_HEAP_FLAG_USED)) {
         // pack up
-        if((len2 &= MY_HEAP_FLAG_LEN_MASK)) {
+        if ((len2 &= MY_HEAP_FLAG_LEN_MASK)) {
             len += len2;
         } else {
             len = MY_HEAP_FRAME_SIZE - (Allocs[i].Addr - Allocs[0].Addr);
         }
         pc++;
     }
-    if((i>0) && !((len2 = Allocs[i-1].Len) & MY_HEAP_FLAG_USED)) {
+    if ((i>0) && !((len2 = Allocs[i-1].Len) & MY_HEAP_FLAG_USED)) {
         // pack down
         len += (len2 & MY_HEAP_FLAG_LEN_MASK);
         pc++;
         i--;
     }
-    if(pc) {
+    if (pc) {
         // pack
 
         Allocs[i+pc].Addr = Allocs[i].Addr;
@@ -420,10 +420,10 @@ MyFreePoolInFrame(
         }*/
         RtlZeroMemory(&(Allocs[MY_HEAP_MAX_BLOCKS-pc]), pc*sizeof(MEM_ALLOC_DESC));
     }
-    if(FrameList[Frame].FirstFree > (ULONG)i)
+    if (FrameList[Frame].FirstFree > (ULONG)i)
         FrameList[Frame].FirstFree = (ULONG)i;
     //ASSERT(FrameList[Frame].LastUsed >= pc);
-    if(FrameList[Frame].LastUsed < pc) {
+    if (FrameList[Frame].LastUsed < pc) {
         FrameList[Frame].LastUsed = 0;
     } else {
         FrameList[Frame].LastUsed -= pc;
@@ -446,17 +446,17 @@ MyResizePoolInFrame(
     ULONG len, len2;
     PMEM_ALLOC_DESC Allocs;
 
-    if(FrameList[Frame].LastUsed >= (MY_HEAP_MAX_BLOCKS-1))
+    if (FrameList[Frame].LastUsed >= (MY_HEAP_MAX_BLOCKS-1))
         return FALSE;
     Allocs = FrameList[Frame].Frame;
     i = MyFindMemDescByAddr(Frame, addr);
-    if(i < 0) {
+    if (i < 0) {
         UDFPrint(("Mem: <<<*** WARNING ***>>> Double deallocation at %x !!!   ;( \n", addr));
         MyAllocDumpFrame(Frame);
         BrutePoint();
         return FALSE;
     }
-    if(i>=(MY_HEAP_MAX_BLOCKS-2))
+    if (i>=(MY_HEAP_MAX_BLOCKS-2))
         return FALSE;
 
 #ifdef MY_HEAP_TRACK_REF
@@ -469,16 +469,16 @@ MyResizePoolInFrame(
     new_len += MY_HEAP_CHECK_BOUNDS_BSZ;
     for(j=0; j<MY_HEAP_CHECK_BOUNDS_SZ; j++) {
         ASSERT(*((PULONG)(addr+len+(j*sizeof(ULONG))-MY_HEAP_CHECK_BOUNDS_BSZ)) == 0xBAADF00D);
-        if(*((PULONG)(addr+len+(j*sizeof(ULONG))-MY_HEAP_CHECK_BOUNDS_BSZ)) != 0xBAADF00D) {
+        if (*((PULONG)(addr+len+(j*sizeof(ULONG))-MY_HEAP_CHECK_BOUNDS_BSZ)) != 0xBAADF00D) {
             MyAllocDumpDescr(Allocs, i);
         }
     }
 #endif //MY_HEAP_CHECK_BOUNDS
 
-    if(new_len > len ) {
-        if(Allocs[i+1].Len & MY_HEAP_FLAG_USED)
+    if (new_len > len ) {
+        if (Allocs[i+1].Len & MY_HEAP_FLAG_USED)
             return FALSE;
-        if(len + (Allocs[i+1].Len & MY_HEAP_FLAG_LEN_MASK) < new_len)
+        if (len + (Allocs[i+1].Len & MY_HEAP_FLAG_LEN_MASK) < new_len)
             return FALSE;
         Allocs[i].Len += (len2 = (new_len - len));
         Allocs[i+1].Len -= len2;
@@ -490,15 +490,15 @@ MyResizePoolInFrame(
         }
 #endif //MY_HEAP_CHECK_BOUNDS
 
-        if(!Allocs[i+1].Len) {
+        if (!Allocs[i+1].Len) {
             i++;
             RtlMoveMemory(&(Allocs[i]), &(Allocs[i+1]), (MY_HEAP_MAX_BLOCKS-1-i)*sizeof(MEM_ALLOC_DESC) );
             RtlZeroMemory(&(Allocs[MY_HEAP_MAX_BLOCKS-1]), sizeof(MEM_ALLOC_DESC));
-            if((ULONG)i<FrameList[Frame].LastUsed)
+            if ((ULONG)i<FrameList[Frame].LastUsed)
                 FrameList[Frame].LastUsed--;
-            if(FrameList[Frame].FirstFree == (ULONG)i) {
+            if (FrameList[Frame].FirstFree == (ULONG)i) {
                 for(;i<MY_HEAP_MAX_BLOCKS;i++) {
-                    if(!(Allocs[i].Len & MY_HEAP_FLAG_USED))
+                    if (!(Allocs[i].Len & MY_HEAP_FLAG_USED))
                         break;
                 }
                 FrameList[Frame].FirstFree = i;
@@ -510,7 +510,7 @@ MyResizePoolInFrame(
     } else {
 
         len2 = len - new_len;
-        if(!len2) return TRUE;
+        if (!len2) return TRUE;
 
 #ifdef MY_HEAP_CHECK_BOUNDS
         for(j=0; j<MY_HEAP_CHECK_BOUNDS_SZ; j++) {
@@ -519,14 +519,14 @@ MyResizePoolInFrame(
 #endif //MY_HEAP_CHECK_BOUNDS
 
         Allocs[i].Len -= len2;
-        if(Allocs[i+1].Len & MY_HEAP_FLAG_USED) {
+        if (Allocs[i+1].Len & MY_HEAP_FLAG_USED) {
             i++;
             RtlMoveMemory(&(Allocs[i+1]), &(Allocs[i]), (MY_HEAP_MAX_BLOCKS-i-1)*sizeof(MEM_ALLOC_DESC) );
 
             Allocs[i].Len = len2;
             Allocs[i].Addr = Allocs[i-1].Addr + new_len;
 
-            if(FrameList[Frame].FirstFree > (ULONG)i)
+            if (FrameList[Frame].FirstFree > (ULONG)i)
                 FrameList[Frame].FirstFree = i;
             FrameList[Frame].LastUsed++;
 
@@ -552,7 +552,7 @@ MyAllocInitFrame(
     PMEM_ALLOC_DESC Allocs;
 
     Allocs = (PMEM_ALLOC_DESC)DbgAllocatePool(NonPagedPool, sizeof(MEM_ALLOC_DESC)*(MY_HEAP_MAX_BLOCKS+1));
-    if(!Allocs) {
+    if (!Allocs) {
         UDFPrint(("Insufficient resources to allocate frame descriptor\n"));
         FrameList[Frame].Frame = NULL;
         MyAllocDumpFrames();
@@ -562,7 +562,7 @@ MyAllocInitFrame(
     RtlZeroMemory(Allocs, sizeof(MEM_ALLOC_DESC)*(MY_HEAP_MAX_BLOCKS+1));
     // alloc heap
     Allocs[0].Addr = (ULONG)DbgAllocatePool((POOL_TYPE)Type, MY_HEAP_FRAME_SIZE);
-    if(!Allocs[0].Addr) {
+    if (!Allocs[0].Addr) {
         UDFPrint(("Insufficient resources to allocate frame\n"));
         DbgFreePool(Allocs);
         FrameList[Frame].Frame = NULL;
@@ -577,7 +577,7 @@ MyAllocInitFrame(
     FrameList[Frame].FirstFree = 0;
     FrameList[Frame].Type = Type;
     FrameCount++;
-    if(LastFrame < Frame)
+    if (LastFrame < Frame)
         LastFrame = Frame;
 } // end MyAllocInitFrame()
 
@@ -588,7 +588,7 @@ MyAllocFreeFrame(
     )
 {
     // check if already deinitialized
-    if(!FrameList[Frame].Frame) {
+    if (!FrameList[Frame].Frame) {
         BrutePoint();
         return;
     }
@@ -596,10 +596,10 @@ MyAllocFreeFrame(
     DbgFreePool((PVOID)(FrameList[Frame].Frame));
     FrameList[Frame].Frame = NULL;
     FrameCount--;
-    if(LastFrame == Frame) {
+    if (LastFrame == Frame) {
         LONG i;
         for(i=LastFrame; i>0; i--) {
-            if(FrameList[i].Frame)
+            if (FrameList[i].Frame)
                 break;
         }
         LastFrame = i;
@@ -627,16 +627,16 @@ MyAllocatePool(
 
 //    UDFPrint(("MemFrames: %x\n",FrameCount));
 
-    if(!size || (size > MY_HEAP_FRAME_SIZE)) return NULL;
+    if (!size || (size > MY_HEAP_FRAME_SIZE)) return NULL;
 
 #ifdef DUMP_MEM_FRAMES2
-    if(MyDumpMem)
+    if (MyDumpMem)
         MyAllocDumpFrames();
 #endif
 
     LockMemoryManager();
     for(i=0;i<MY_HEAP_MAX_FRAMES; i++) {
-        if( FrameList[i].Frame &&
+        if ( FrameList[i].Frame &&
            (FrameList[i].Type == type) &&
            (addr = (ULONG)MyAllocatePoolInFrame(i,size
 #ifdef MY_HEAP_TRACK_OWNERS
@@ -648,8 +648,8 @@ MyAllocatePool(
                                                                 )) ) {
 
 #ifdef UDF_DBG
-//            if(addr >= (ULONG)BreakAddr && addr < sizeof(UDF_FILE_INFO) + (ULONG)BreakAddr) {
-//            if(addr<=(ULONG)BreakAddr && addr+sizeof(UDF_FILE_INFO) > (ULONG)BreakAddr) {
+//            if (addr >= (ULONG)BreakAddr && addr < sizeof(UDF_FILE_INFO) + (ULONG)BreakAddr) {
+//            if (addr<=(ULONG)BreakAddr && addr+sizeof(UDF_FILE_INFO) > (ULONG)BreakAddr) {
 //                UDFPrint(("ERROR !!! Allocating in examined block\n"));
 //                UDFPrint(("addr %x\n", addr));
 //                MyAllocDumpFrame(i);
@@ -668,9 +668,9 @@ MyAllocatePool(
     addr = 0;
     for(i=0;i<MY_HEAP_MAX_FRAMES; i++) {
 //        MyAllocDumpFrame(i);
-        if(!(FrameList[i].Frame)) {
+        if (!(FrameList[i].Frame)) {
             MyAllocInitFrame(type, i);
-            if(FrameList[i].Frame &&
+            if (FrameList[i].Frame &&
                (addr = (ULONG)MyAllocatePoolInFrame(i,size
 #ifdef MY_HEAP_TRACK_OWNERS
                                                            ,Src,Line
@@ -681,8 +681,8 @@ MyAllocatePool(
                                                                      )) ) {
 
 #ifdef UDF_DBG
-//                if(addr >= (ULONG)BreakAddr && addr < sizeof(UDF_FILE_INFO) + (ULONG)BreakAddr) {
-//                if(addr<=(ULONG)BreakAddr && addr+sizeof(UDF_FILE_INFO) > (ULONG)BreakAddr) {
+//                if (addr >= (ULONG)BreakAddr && addr < sizeof(UDF_FILE_INFO) + (ULONG)BreakAddr) {
+//                if (addr<=(ULONG)BreakAddr && addr+sizeof(UDF_FILE_INFO) > (ULONG)BreakAddr) {
 //                    UDFPrint(("ERROR !!! Allocating in examined block\n"));
 //                    UDFPrint(("addr %x\n", addr));
 //                    MyAllocDumpFrame(i);
@@ -713,7 +713,7 @@ MyFindFrameByAddr(
     PMEM_ALLOC_DESC Allocs;
 
     for(i=0;i<=LastFrame; i++) {
-        if( (Allocs = FrameList[i].Frame) &&
+        if ( (Allocs = FrameList[i].Frame) &&
             (Allocs[0].Addr <= (ULONG)addr) &&
             (Allocs[0].Addr + MY_HEAP_FRAME_SIZE > (ULONG)addr) ) {
             return i;
@@ -734,7 +734,7 @@ MyFreePool(
 
     LockMemoryManager();
     i = MyFindFrameByAddr(addr);
-    if(i < 0) {
+    if (i < 0) {
         UnlockMemoryManager();
         UDFPrint(("Mem: <<<*** WARNING ***>>> Double deallocation at %x !!!   ;( \n", addr));
         BrutePoint();
@@ -743,7 +743,7 @@ MyFreePool(
 
 #ifdef UDF_DBG
             // BreakAddr <= addr < BreakAddr + sizeof(UDF_FILE_INFO)
-//            if((ULONG)addr >= (ULONG)BreakAddr && (ULONG)addr < sizeof(UDF_FILE_INFO) + (ULONG)BreakAddr) {
+//            if ((ULONG)addr >= (ULONG)BreakAddr && (ULONG)addr < sizeof(UDF_FILE_INFO) + (ULONG)BreakAddr) {
 //                UDFPrint(("Deallocating in examined block\n"));
 //                UDFPrint(("addr %x\n", addr));
 //                MyAllocDumpFrame(i);
@@ -754,11 +754,11 @@ MyFreePool(
 
     MyFreePoolInFrame(i,addr);
 /*            for(j=0;j<MY_HEAP_MAX_BLOCKS; j++) {
-        if((Allocs[j].Len & MY_HEAP_FLAG_USED) || (FrameCount<=1)) {
+        if ((Allocs[j].Len & MY_HEAP_FLAG_USED) || (FrameCount<=1)) {
             return;
         }
     }*/
-    if(MyAllocIsFrameFree(FrameList, i)) {
+    if (MyAllocIsFrameFree(FrameList, i)) {
         MyAllocFreeFrame(i);
     }
     UnlockMemoryManager();
@@ -788,23 +788,23 @@ MyReallocPool(
 
 //    UDFPrint(("MemFrames: %x\n",FrameCount));
     (*NewBuff) = addr;
-    if(OldLength == NewLength) return OldLength;
+    if (OldLength == NewLength) return OldLength;
 
-    if(!NewLength) {
+    if (!NewLength) {
         BrutePoint();
         return 0;
     }
 
     LockMemoryManager();
     i = MyFindFrameByAddr(addr);
-    if(i < 0) {
+    if (i < 0) {
         UnlockMemoryManager();
         UDFPrint(("Mem: <<<*** WARNING ***>>> Double deallocation at %x !!!   ;( \n", addr));
         BrutePoint();
         return 0;
     }
 
-    if(MyResizePoolInFrame(i,addr,NewLength
+    if (MyResizePoolInFrame(i,addr,NewLength
 #ifdef MY_HEAP_TRACK_REF
                                            , &Tag
 #endif
@@ -827,17 +827,17 @@ MyAllocCheck(i);
                                                                                   ,Tag
 #endif //MY_HEAP_TRACK_REF
                                                                                    );
-    if(!new_buff) {
+    if (!new_buff) {
         UnlockMemoryManager();
         return 0;
     }
 
-    if(OldLength > NewLength) OldLength = NewLength;
+    if (OldLength > NewLength) OldLength = NewLength;
     RtlCopyMemory(new_buff, addr, OldLength);
 
     MyFreePoolInFrame(i,addr);
 
-    if(MyAllocIsFrameFree(FrameList, i)) {
+    if (MyAllocIsFrameFree(FrameList, i)) {
         MyAllocFreeFrame(i);
     }
     UnlockMemoryManager();
@@ -868,26 +868,26 @@ MyFindMemDescByRangeInFrame(
 //    for(i=0;i<MY_HEAP_MAX_BLOCKS;i++) {
     left = 0;
     right = FrameList[Frame].LastUsed;
-    if(!right && FrameList[Frame].FirstFree)
+    if (!right && FrameList[Frame].FirstFree)
         right = 1;
     while(left != right) {
         i = (right + left) >> 1;
         curaddr = Allocs[i].Addr;
         curlen = Allocs[i].Len;
-        if( (curlen & MY_HEAP_FLAG_USED) &&
+        if ( (curlen & MY_HEAP_FLAG_USED) &&
             (curaddr <= (ULONG)addr) &&
             ((curaddr+(curlen & MY_HEAP_FLAG_LEN_MASK)) > (ULONG)addr) ) {
 FIF_Found:
             return i;
         }
-        if(right - left == 1) {
-            if( (Allocs[i+1].Len & MY_HEAP_FLAG_USED) && (Allocs[i+1].Addr == (ULONG)addr) ) {
+        if (right - left == 1) {
+            if ( (Allocs[i+1].Len & MY_HEAP_FLAG_USED) && (Allocs[i+1].Addr == (ULONG)addr) ) {
                 i++;
                 goto FIF_Found;
             }
             break;
         }
-        if(Allocs[i].Addr && (Allocs[i].Addr < (ULONG)addr)) {
+        if (Allocs[i].Addr && (Allocs[i].Addr < (ULONG)addr)) {
             left = i;
         } else {
             right = i;
@@ -905,7 +905,7 @@ MyFindMemBaseByAddr(
 
     LockMemoryManager();
     Frame = MyFindFrameByAddr(addr);
-    if(Frame < 0) {
+    if (Frame < 0) {
         UnlockMemoryManager();
         UDFPrint(("Mem: <<<*** WARNING ***>>> Unknown base for %x !!!   ;( \n", addr));
         BrutePoint();
@@ -922,7 +922,7 @@ BOOLEAN
 MyAllocInit(VOID)
 {
     RtlZeroMemory(&FrameList, sizeof(FrameList));
-    if(!OS_SUCCESS(InitLockMemoryManager())) {
+    if (!NT_SUCCESS(InitLockMemoryManager())) {
        return FALSE;
     }
     MyAllocInitFrame(NonPagedPool, 0);
@@ -936,11 +936,11 @@ MyAllocRelease(VOID)
     ULONG i;
     PMEM_ALLOC_DESC Allocs;
 
-    if(!MyMemInitialized)
+    if (!MyMemInitialized)
         return;
     LockMemoryManager();
     for(i=0;i<MY_HEAP_MAX_FRAMES; i++) {
-        if(Allocs = FrameList[i].Frame) {
+        if (Allocs = FrameList[i].Frame) {
             MyAllocFreeFrame(i);
         }
     }

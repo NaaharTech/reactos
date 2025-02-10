@@ -55,20 +55,17 @@ UDFFlushBuffers(
 
     // set the top level context
     AreWeTopLevel = UDFIsIrpTopLevel(Irp);
-    ASSERT(!UDFIsFSDevObj(DeviceObject));
 
     _SEH2_TRY {
 
         // get an IRP context structure and issue the request
         IrpContext = UDFCreateIrpContext(Irp, DeviceObject);
-        if(IrpContext) {
+        if (IrpContext) {
             RC = UDFCommonFlush(IrpContext, Irp);
         } else {
+
+            UDFCompleteRequest(IrpContext, Irp, STATUS_INSUFFICIENT_RESOURCES);
             RC = STATUS_INSUFFICIENT_RESOURCES;
-            Irp->IoStatus.Status = RC;
-            Irp->IoStatus.Information = 0;
-            // complete the IRP
-            IoCompleteRequest(Irp, IO_DISK_INCREMENT);
         }
 
     } _SEH2_EXCEPT(UDFExceptionFilter(IrpContext, _SEH2_GetExceptionInformation())) {
@@ -112,58 +109,82 @@ UDFCommonFlush(
     PIRP             Irp
     )
 {
-    NTSTATUS            RC = STATUS_SUCCESS;
+    NTSTATUS            Status = STATUS_SUCCESS;
     PIO_STACK_LOCATION  IrpSp = NULL;
-    PFILE_OBJECT        FileObject = NULL;
+    TYPE_OF_OPEN        TypeOfOpen;
     PFCB                Fcb = NULL;
     PCCB                Ccb = NULL;
     PVCB                Vcb = NULL;
     BOOLEAN             AcquiredVCB = FALSE;
     BOOLEAN             AcquiredFCB = FALSE;
-    BOOLEAN             PostRequest = FALSE;
-    BOOLEAN             CanWait = TRUE;
 
-    UDFPrint(("UDFCommonFlush: \n"));
+    PAGED_CODE();
+
+    IrpSp = IoGetCurrentIrpStackLocation(Irp);
+
+    // Decode the file object
+
+    TypeOfOpen = UDFDecodeFileObject(IrpSp->FileObject, &Fcb, &Ccb);
+
+    Vcb = IrpContext->Vcb;
+
+    ASSERT_CCB(Ccb);
+    ASSERT_FCB(Fcb);
+    ASSERT_VCB(Vcb);
+
+    if (Vcb->VcbState & VCB_STATE_VOLUME_READ_ONLY) {
+
+        if (Vcb->VcbState & VCB_STATE_MEDIA_WRITE_PROTECT) {
+
+            Status = STATUS_MEDIA_WRITE_PROTECTED;
+        }
+        else if (Vcb->VcbState & VCB_STATE_MOUNTED_DIRTY) {
+
+            Status = STATUS_VOLUME_DIRTY;
+        }
+        else {
+
+            Status = STATUS_ACCESS_DENIED;
+        }
+
+        UDFCompleteRequest(IrpContext, Irp, Status);
+        return Status;
+    }
+
+    // Check for invalid call from user mode
+
+    if (IrpSp->MinorFunction == IRP_MN_MOUNT_VOLUME && Irp->RequestorMode == UserMode) {
+
+        Status = STATUS_INVALID_PARAMETER;
+        UDFCompleteRequest(IrpContext, Irp, Status);
+        return Status;
+    }
+
+    //  CcFlushCache is always synchronous, so if we can't wait enqueue
+    //  the irp to the Fsp.
+
+    if (!FlagOn(IrpContext->Flags, IRP_CONTEXT_FLAG_WAIT)) {
+
+        Status = UDFPostRequest(IrpContext, Irp);
+
+        return Status;
+    }
+
+    Status = STATUS_SUCCESS;
 
     _SEH2_TRY {
 
-        // Get some of the parameters supplied to us
-        CanWait = ((IrpContext->Flags & IRP_CONTEXT_FLAG_WAIT) ? TRUE : FALSE);
-        // If we cannot wait, post the request immediately since a flush is inherently blocking/synchronous.
-        if (!CanWait) {
-            PostRequest = TRUE;
-            try_return(RC);
-        }
-
-        // First, get a pointer to the current I/O stack location
-        IrpSp = IoGetCurrentIrpStackLocation(Irp);
-        ASSERT(IrpSp);
-
-        FileObject = IrpSp->FileObject;
-        ASSERT(FileObject);
-
-        // Get the FCB and CCB pointers
-        Ccb = (PCCB)FileObject->FsContext2;
-        ASSERT(Ccb);
-        Fcb = Ccb->Fcb;
-        ASSERT(Fcb);
-
         // Check the type of object passed-in. That will determine the course of
         // action we take.
-        if ((Fcb->NodeIdentifier.NodeTypeCode == UDF_NODE_TYPE_VCB) || (Fcb->FCBFlags & UDF_FCB_ROOT_DIRECTORY)) {
+        if ((Fcb == Fcb->Vcb->VolumeDasdFcb) || (Fcb->FcbState & UDF_FCB_ROOT_DIRECTORY)) {
 
-            if (Fcb->NodeIdentifier.NodeTypeCode == UDF_NODE_TYPE_VCB) {
-                Vcb = (PVCB)(Fcb);
-            } else {
-                Vcb = Fcb->Vcb;
-            }
-            Vcb->VCBFlags |= UDF_VCB_SKIP_EJECT_CHECK;
+            Vcb->VcbState |= UDF_VCB_SKIP_EJECT_CHECK;
 
 #ifdef UDF_DELAYED_CLOSE
-            UDFCloseAllDelayed(Vcb);
+            UDFFspClose(Vcb);
 #endif //UDF_DELAYED_CLOSE
 
-            UDFAcquireResourceExclusive(&(Vcb->VCBResource), TRUE);
+            UDFAcquireResourceExclusive(&(Vcb->VcbResource), TRUE);
             AcquiredVCB = TRUE;
             // The caller wishes to flush all files for the mounted
             // logical volume. The flush volume routine below should simply
@@ -172,31 +193,31 @@ UDFCommonFlush(
             // Manager. Basically, the sequence of operations listed below
             // for a single file should be executed on all open files.
 
-            UDFFlushLogicalVolume(IrpContext, Irp, Vcb, 0);
+            UDFFlushVolume(IrpContext, Vcb);
 
-            UDFReleaseResource(&(Vcb->VCBResource));
+            UDFReleaseResource(&(Vcb->VcbResource));
             AcquiredVCB = FALSE;
 
-            try_return(RC);
+            try_return(Status);
         } else
-        if (!(Fcb->FCBFlags & UDF_FCB_DIRECTORY)) {
+        if (!(Fcb->FcbState & UDF_FCB_DIRECTORY)) {
             // This is a regular file.
             Vcb = Fcb->Vcb;
             ASSERT(Vcb);
-            if(!ExIsResourceAcquiredExclusiveLite(&Vcb->VCBResource) &&
-               !ExIsResourceAcquiredSharedLite(&Vcb->VCBResource)) {
-                UDFAcquireResourceShared(&Vcb->VCBResource, TRUE);
+            if (!ExIsResourceAcquiredExclusiveLite(&Vcb->VcbResource) &&
+               !ExIsResourceAcquiredSharedLite(&Vcb->VcbResource)) {
+                UDFAcquireResourceShared(&Vcb->VcbResource, TRUE);
                 AcquiredVCB = TRUE;
             }
             UDF_CHECK_PAGING_IO_RESOURCE(Fcb);
-            UDFAcquireResourceExclusive(&Fcb->MainResource, TRUE);
+            UDFAcquireResourceExclusive(&Fcb->FcbNonpaged->FcbResource, TRUE);
             AcquiredFCB = TRUE;
 
             // Request the Cache Manager to perform a flush operation.
             // Further, instruct the Cache Manager that we wish to flush the
             // entire file stream.
-            UDFFlushAFile(Fcb, Ccb, &(Irp->IoStatus), 0);
-            RC = Irp->IoStatus.Status;
+            UDFFlushAFile(IrpContext, Fcb, Ccb, &(Irp->IoStatus), 0);
+            Status = Irp->IoStatus.Status;
 
             // Some log-based FSD implementations may wish to flush their
             // log files at this time. Finally, we should update the time-stamp
@@ -213,58 +234,48 @@ try_exit:   NOTHING;
 
         if (AcquiredFCB) {
             UDF_CHECK_PAGING_IO_RESOURCE(Fcb);
-            UDFReleaseResource(&Fcb->MainResource);
+            UDFReleaseResource(&Fcb->FcbNonpaged->FcbResource);
             AcquiredFCB = FALSE;
         }
         if (AcquiredVCB) {
-            UDFReleaseResource(&Vcb->VCBResource);
+            UDFReleaseResource(&Vcb->VcbResource);
             AcquiredVCB = FALSE;
         }
 
-        if(!_SEH2_AbnormalTermination()) {
-            if (PostRequest) {
-                // Nothing to lock now.
-                BrutePoint();
-                RC = UDFPostRequest(IrpContext, Irp);
-            } else {
-                // Some applications like this request very much
-                // (ex. WinWord). But it's not a good idea for CD-R/RW media
-                if(Vcb->FlushMedia) {
-                    PIO_STACK_LOCATION      PtrNextIoStackLocation = NULL;
-                    NTSTATUS                RC1 = STATUS_SUCCESS;
+        if (!_SEH2_AbnormalTermination()) {
 
-                    // Send the request down at this point.
-                    // To do this, we must set the next IRP stack location, and
-                    // maybe set a completion routine.
-                    // Be careful about marking the IRP pending if the lower level
-                    // driver returned pending and we do have a completion routine!
-                    PtrNextIoStackLocation = IoGetNextIrpStackLocation(Irp);
-                    *PtrNextIoStackLocation = *IrpSp;
+            NTSTATUS DriverStatus;
 
-                    // Set the completion routine to "eat-up" any
-                    // STATUS_INVALID_DEVICE_REQUEST error code returned by the lower
-                    // level driver.
-                    IoSetCompletionRoutine(Irp, UDFFlushCompletion, NULL, TRUE, TRUE, TRUE);
+            // Get the next stack location, and copy over the stack location
 
-                    RC1 = IoCallDriver(Vcb->TargetDeviceObject, Irp);
+            IoCopyCurrentIrpStackLocationToNext(Irp);
 
-                    RC = ((RC1 == STATUS_INVALID_DEVICE_REQUEST) ? RC : RC1);
+            // Set up the completion routine
 
-                    // Release the IRP context at this time.
-                    UDFCleanupIrpContext(IrpContext);
-                } else {
-                    Irp->IoStatus.Status = RC;
-                    Irp->IoStatus.Information = 0;
-                    // Free up the Irp Context
-                    UDFCleanupIrpContext(IrpContext);
-                    // complete the IRP
-                    IoCompleteRequest(Irp, IO_DISK_INCREMENT);
-                }
+            IoSetCompletionRoutine(Irp,
+                                   UDFFlushCompletion,
+                                   ULongToPtr(Status),
+                                   TRUE,
+                                   TRUE,
+                                   TRUE);
+
+            // Send the request.
+
+            DriverStatus = IoCallDriver(Vcb->TargetDeviceObject, Irp);
+
+            if ((DriverStatus == STATUS_PENDING) || 
+                (!NT_SUCCESS(DriverStatus) &&
+                (DriverStatus != STATUS_INVALID_DEVICE_REQUEST))) {
+
+                Status = DriverStatus;
             }
+
+            // Release the IRP context at this time.
+            UDFCompleteRequest(IrpContext, NULL, STATUS_SUCCESS);
         }
     } _SEH2_END;
 
-    return(RC);
+    return Status;
 } // end UDFCommonFlush()
 
 
@@ -284,6 +295,7 @@ try_exit:   NOTHING;
 *************************************************************************/
 ULONG
 UDFFlushAFile(
+    IN PIRP_CONTEXT IrpContext,
     IN PFCB                Fcb,
     IN PCCB                Ccb,
     OUT PIO_STATUS_BLOCK   PtrIoStatus,
@@ -295,47 +307,40 @@ UDFFlushAFile(
     ULONG ret_val = 0;
 
     UDFPrint(("UDFFlushAFile: \n"));
-    if(!Fcb)
+    if (!Fcb)
         return 0;
-
-    _SEH2_TRY {
-        if(Fcb->Vcb->VCBFlags & UDF_VCB_FLAGS_RAW_DISK)
-            return 0;
-    } _SEH2_EXCEPT(EXCEPTION_EXECUTE_HANDLER) {
-        BrutePoint();
-    } _SEH2_END;
 
     // Flush SDir if any
     _SEH2_TRY {
-        if(UDFHasAStreamDir(Fcb->FileInfo) &&
+        if (UDFHasAStreamDir(Fcb->FileInfo) &&
            Fcb->FileInfo->Dloc->SDirInfo &&
            !UDFIsSDirDeleted(Fcb->FileInfo->Dloc->SDirInfo) ) {
             ret_val |=
-                UDFFlushADirectory(Fcb->Vcb, Fcb->FileInfo->Dloc->SDirInfo, PtrIoStatus, FlushFlags);
+                UDFFlushADirectory(IrpContext, Fcb->Vcb, Fcb->FileInfo->Dloc->SDirInfo, PtrIoStatus, FlushFlags);
         }
     } _SEH2_EXCEPT(EXCEPTION_EXECUTE_HANDLER) {
         BrutePoint();
     } _SEH2_END;
     // Flush File
     _SEH2_TRY {
-        if ((Fcb->CachedOpenHandleCount || !Fcb->OpenHandleCount) &&
-            Fcb->SectionObject.DataSectionObject) {
+        if ((Fcb->CachedOpenHandleCount || !Fcb->FcbCleanup) &&
+            Fcb->FcbNonpaged->SegmentObject.DataSectionObject) {
             if (!(Fcb->NtReqFCBFlags & UDF_NTREQ_FCB_DELETED)
                                          &&
                 ((Fcb->NtReqFCBFlags & UDF_NTREQ_FCB_MODIFIED) ||
-                 (Ccb && !(Ccb->CCBFlags & UDF_CCB_FLUSHED)) )) {
+                 (Ccb && !(Ccb->Flags & UDF_CCB_FLUSHED)) )) {
                 MmPrint(("    CcFlushCache()\n"));
-                CcFlushCache(&Fcb->SectionObject, NULL, 0, PtrIoStatus);
+                CcFlushCache(&Fcb->FcbNonpaged->SegmentObject, NULL, 0, PtrIoStatus);
             }
             // notice, that we should purge cache
             // we can't do it now, because it may cause last Close
             // request & thus, structure deallocation
 //            PurgeCache = TRUE;
 
-            if(Ccb) {
-                if( (Ccb->FileObject->Flags & FO_FILE_MODIFIED) &&
-                   !(Ccb->CCBFlags & UDF_CCB_WRITE_TIME_SET)) {
-                    if(Fcb->Vcb->CompatFlags & UDF_VCB_IC_UPDATE_MODIFY_TIME) {
+            if (Ccb) {
+                if ( (Ccb->FileObject->Flags & FO_FILE_MODIFIED) &&
+                   !(Ccb->Flags & UDF_CCB_WRITE_TIME_SET)) {
+                    if (Fcb->Vcb->CompatFlags & UDF_VCB_IC_UPDATE_MODIFY_TIME) {
                         LONGLONG NtTime;
                         KeQuerySystemTime((PLARGE_INTEGER)&NtTime);
                         UDFSetFileXTime(Fcb->FileInfo, NULL, NULL, NULL, &NtTime);
@@ -344,7 +349,7 @@ UDFFlushAFile(
                     SetArchive = TRUE;
                     Ccb->FileObject->Flags &= ~FO_FILE_MODIFIED;
                 }
-                if(Ccb->FileObject->Flags & FO_FILE_SIZE_CHANGED) {
+                if (Ccb->FileObject->Flags & FO_FILE_SIZE_CHANGED) {
                     LONGLONG ASize = UDFGetFileAllocationSize(Fcb->Vcb, Fcb->FileInfo);
                     UDFSetFileSizeInDirNdx(Fcb->Vcb, Fcb->FileInfo, &ASize);
                     Ccb->FileObject->Flags &= ~FO_FILE_SIZE_CHANGED;
@@ -356,23 +361,23 @@ UDFFlushAFile(
     } _SEH2_END;
 
     _SEH2_TRY {
-        if(SetArchive &&
+        if (SetArchive &&
            (Fcb->Vcb->CompatFlags & UDF_VCB_IC_UPDATE_ARCH_BIT)) {
             ULONG Attr;
             PDIR_INDEX_ITEM DirNdx;
             DirNdx = UDFDirIndex(UDFGetDirIndexByFileInfo(Fcb->FileInfo), Fcb->FileInfo->Index);
             // Archive bit
             Attr = UDFAttributesToNT(DirNdx, Fcb->FileInfo->Dloc->FileEntry);
-            if(!(Attr & FILE_ATTRIBUTE_ARCHIVE))
+            if (!(Attr & FILE_ATTRIBUTE_ARCHIVE))
                 UDFAttributesToUDF(DirNdx, Fcb->FileInfo->Dloc->FileEntry, Attr | FILE_ATTRIBUTE_ARCHIVE);
         }
 
-        UDFFlushFile__( Fcb->Vcb, Fcb->FileInfo, FlushFlags);
+        UDFFlushFile__(IrpContext, Fcb->Vcb, Fcb->FileInfo, FlushFlags);
     } _SEH2_EXCEPT(EXCEPTION_EXECUTE_HANDLER) {
         BrutePoint();
     } _SEH2_END;
 
-/*    if(PurgeCache) {
+/*    if (PurgeCache) {
         _SEH2_TRY {
             MmPrint(("    CcPurgeCacheSection()\n"));
             CcPurgeCacheSection( &(Fcb->NTRequiredFCB->SectionObject), NULL, 0, FALSE );
@@ -401,6 +406,7 @@ UDFFlushAFile(
 *************************************************************************/
 ULONG
 UDFFlushADirectory(
+    IN PIRP_CONTEXT IrpContext,
     IN PVCB                Vcb,
     IN PUDF_FILE_INFO      FI,
     OUT PIO_STATUS_BLOCK   PtrIoStatus,
@@ -413,19 +419,16 @@ UDFFlushADirectory(
 //    BOOLEAN Referenced = FALSE;
     ULONG ret_val = 0;
 
-    if(Vcb->VCBFlags & UDF_VCB_FLAGS_RAW_DISK)
-        return 0;
-
-    if(!FI || !FI->Dloc || !FI->Dloc->DirIndex) goto SkipFlushDir;
+    if (!FI || !FI->Dloc || !FI->Dloc->DirIndex) goto SkipFlushDir;
 //    hDI = FI->Dloc->DirIndex;
 
     // Flush SDir if any
     _SEH2_TRY {
-        if(UDFHasAStreamDir(FI) &&
+        if (UDFHasAStreamDir(FI) &&
            FI->Dloc->SDirInfo &&
            !UDFIsSDirDeleted(FI->Dloc->SDirInfo) ) {
             ret_val |=
-                UDFFlushADirectory(Vcb, FI->Dloc->SDirInfo, PtrIoStatus, FlushFlags);
+                UDFFlushADirectory(IrpContext, Vcb, FI->Dloc->SDirInfo, PtrIoStatus, FlushFlags);
         }
     } _SEH2_EXCEPT(EXCEPTION_EXECUTE_HANDLER) {
         BrutePoint();
@@ -436,20 +439,20 @@ UDFFlushADirectory(
         UDF_DIR_SCAN_CONTEXT ScanContext;
         PUDF_FILE_INFO      tempFI;
 
-        if(UDFDirIndexInitScan(FI, &ScanContext, 2)) {
+        if (UDFDirIndexInitScan(FI, &ScanContext, 2)) {
             while((DI = UDFDirIndexScan(&ScanContext, &tempFI))) {
                 // Flush Dir entry
                 _SEH2_TRY {
-                    if(!tempFI) continue;
-                    if(UDFIsADirectory(tempFI)) {
-                        UDFFlushADirectory(Vcb, tempFI, PtrIoStatus, FlushFlags);
+                    if (!tempFI) continue;
+                    if (UDFIsADirectory(tempFI)) {
+                        UDFFlushADirectory(IrpContext, Vcb, tempFI, PtrIoStatus, FlushFlags);
                     } else {
-                        UDFFlushAFile(tempFI->Fcb, NULL, PtrIoStatus, FlushFlags);
+                        UDFFlushAFile(IrpContext, tempFI->Fcb, NULL, PtrIoStatus, FlushFlags);
                     }
                 } _SEH2_EXCEPT(EXCEPTION_EXECUTE_HANDLER) {
                     BrutePoint();
                 } _SEH2_END;
-                if(UDFFlushIsBreaking(Vcb, FlushFlags)) {
+                if (UDFFlushIsBreaking(Vcb, FlushFlags)) {
                     ret_val |= UDF_FLUSH_FLAGS_INTERRUPTED;
                     break;
                 }
@@ -461,7 +464,7 @@ UDFFlushADirectory(
 SkipFlushDir:
     // Flush Dir
     _SEH2_TRY {
-        UDFFlushFile__( Vcb, FI, FlushFlags );
+        UDFFlushFile__(IrpContext, Vcb, FI, FlushFlags );
     } _SEH2_EXCEPT(EXCEPTION_EXECUTE_HANDLER) {
         BrutePoint();
     } _SEH2_END;
@@ -484,50 +487,50 @@ SkipFlushDir:
 * Return Value: None
 *
 *************************************************************************/
-ULONG
-UDFFlushLogicalVolume(
+NTSTATUS
+UDFFlushVolume(
     IN PIRP_CONTEXT IrpContext,
-    IN PIRP             Irp,
-    IN PVCB             Vcb,
-    IN ULONG            FlushFlags
+    IN PVCB Vcb,
+    IN ULONG FlushFlags
     )
 {
     ULONG ret_val = 0;
     IO_STATUS_BLOCK IoStatus;
 
-    UDFPrint(("UDFFlushLogicalVolume: \n"));
+    UDFPrint(("UDFFlushVolume: \n"));
+
+    ASSERT_EXCLUSIVE_VCB(Vcb);
+
+    UDFFspClose(Vcb);
 
     _SEH2_TRY {
-        if(Vcb->VCBFlags & (UDF_VCB_FLAGS_RAW_DISK/* |
-                            UDF_VCB_FLAGS_MEDIA_READ_ONLY*/))
+        if (Vcb->VcbState & VCB_STATE_VOLUME_READ_ONLY)
             return 0;
-        if(Vcb->VCBFlags & VCB_STATE_VOLUME_READ_ONLY)
-            return 0;
-        if(Vcb->VcbCondition != VcbMounted)
+        if (Vcb->VcbCondition != VcbMounted)
             return 0;
 
         // NOTE: This function may also be invoked internally as part of
         // processing a shutdown request.
-        ASSERT(Vcb->RootDirFCB);
-        ret_val |= UDFFlushADirectory(Vcb, Vcb->RootDirFCB->FileInfo, &IoStatus, FlushFlags);
+        ASSERT(Vcb->RootIndexFcb);
+        ret_val |= UDFFlushADirectory(IrpContext, Vcb, Vcb->RootIndexFcb->FileInfo, &IoStatus, FlushFlags);
 
-//        if(UDFFlushIsBreaking(Vcb, FlushFlags))
+//        if (UDFFlushIsBreaking(Vcb, FlushFlags))
 //            return;
         // flush internal cache
-        if(FlushFlags & UDF_FLUSH_FLAGS_LITE) {
+        if (FlushFlags & UDF_FLUSH_FLAGS_LITE) {
             UDFPrint(("  Lite flush, keep Modified=%d.\n", Vcb->Modified));
         } else {
-            if(Vcb->VerifyOnWrite) {
+            if (Vcb->VerifyOnWrite) {
                 UDFPrint(("UDF: Flushing cache for verify\n"));
                 //WCacheFlushAll__(&(Vcb->FastCache), Vcb);
-                WCacheFlushBlocks__(&(Vcb->FastCache), Vcb, 0, Vcb->LastLBA);
+                WCacheFlushBlocks__(IrpContext, &Vcb->FastCache, Vcb, 0, Vcb->LastLBA);
                 UDFVFlush(Vcb);
             }
             // umount (this is internal operation, NT will "dismount" volume later)
-            UDFUmount__(Vcb);
+            UDFUmount__(IrpContext, Vcb);
 
             UDFPreClrModified(Vcb);
-            WCacheFlushAll__(&(Vcb->FastCache), Vcb);
+            WCacheFlushAll__(IrpContext, &Vcb->FastCache, Vcb);
             UDFClrModified(Vcb);
         }
 
@@ -561,20 +564,25 @@ UDFFlushCompletion(
     PVOID           Context
     )
 {
-//    NTSTATUS        RC = STATUS_SUCCESS;
+    NTSTATUS Status = (NTSTATUS)(ULONG_PTR)Context;
 
-    UDFPrint(("UDFFlushCompletion: \n"));
+    // Add the hack-o-ramma to fix formats.
 
     if (Irp->PendingReturned) {
+
         IoMarkIrpPending(Irp);
     }
 
-    if (Irp->IoStatus.Status == STATUS_INVALID_DEVICE_REQUEST) {
-        // cannot do much here, can we?
-        Irp->IoStatus.Status = STATUS_SUCCESS;
+    //  If the Irp got STATUS_INVALID_DEVICE_REQUEST or a warning status,
+    //  normalize it to the original status value.
+
+    if (NT_WARNING(Irp->IoStatus.Status) || 
+        Irp->IoStatus.Status == STATUS_INVALID_DEVICE_REQUEST) {
+
+        Irp->IoStatus.Status = Status;
     }
 
-    return(STATUS_SUCCESS);
+    return STATUS_SUCCESS;
 } // end UDFFlushCompletion()
 
 
@@ -588,11 +596,11 @@ UDFFlushIsBreaking(
     )
 {
     BOOLEAN ret_val = FALSE;
-//    if(!(FlushFlags & UDF_FLUSH_FLAGS_BREAKABLE))
+//    if (!(FlushFlags & UDF_FLUSH_FLAGS_BREAKABLE))
         return FALSE;
     UDFAcquireResourceExclusive(&(Vcb->FlushResource),TRUE);
-    ret_val = (Vcb->VCBFlags & UDF_VCB_FLAGS_FLUSH_BREAK_REQ) ? TRUE : FALSE;
-    Vcb->VCBFlags &= ~UDF_VCB_FLAGS_FLUSH_BREAK_REQ;
+    ret_val = (Vcb->VcbState & UDF_VCB_FLAGS_FLUSH_BREAK_REQ) ? TRUE : FALSE;
+    Vcb->VcbState &= ~UDF_VCB_FLAGS_FLUSH_BREAK_REQ;
     UDFReleaseResource(&(Vcb->FlushResource));
     return ret_val;
 } // end UDFFlushIsBreaking()
@@ -607,6 +615,130 @@ UDFFlushTryBreak(
     )
 {
     UDFAcquireResourceExclusive(&(Vcb->FlushResource),TRUE);
-    Vcb->VCBFlags |= UDF_VCB_FLAGS_FLUSH_BREAK_REQ;
+    Vcb->VcbState |= UDF_VCB_FLAGS_FLUSH_BREAK_REQ;
     UDFReleaseResource(&(Vcb->FlushResource));
 } // end UDFFlushTryBreak()
+
+//  Tell prefast this is a completion routine.
+IO_COMPLETION_ROUTINE UDFHijackCompletionRoutine;
+
+NTSTATUS
+NTAPI
+UDFHijackCompletionRoutine (
+    PDEVICE_OBJECT DeviceObject,
+    PIRP Irp,
+    PVOID Contxt
+    )
+
+/*++
+
+Routine Description:
+
+    Completion routine for synchronizing back to dispatch.
+
+Arguments:
+
+    Contxt - pointer to KEVENT.
+
+Return Value:
+
+    STATUS_MORE_PROCESSING_REQUIRED
+
+--*/
+
+{
+    PKEVENT Event = (PKEVENT)Contxt;
+    _Analysis_assume_(Contxt != NULL);
+
+    UNREFERENCED_PARAMETER( Irp );
+    UNREFERENCED_PARAMETER( DeviceObject );
+
+    KeSetEvent( Event, 0, FALSE );
+
+    //  We don't want IO to get our IRP and free it.
+    
+    return STATUS_MORE_PROCESSING_REQUIRED;
+}
+
+NTSTATUS
+UDFHijackIrpAndFlushDevice (
+    _In_ PIRP_CONTEXT IrpContext,
+    _Inout_ PIRP Irp,
+    _In_ PDEVICE_OBJECT TargetDeviceObject
+    )
+
+/*++
+
+Routine Description:
+
+    This routine is called when we need to send a flush to a device but
+    we don't have a flush Irp.  What this routine does is make a copy
+    of its current Irp stack location, but changes the Irp Major code
+    to a IRP_MJ_FLUSH_BUFFERS amd then send it down, but cut it off at
+    the knees in the completion routine, fix it up and return to the
+    user as if nothing had happened.
+
+Arguments:
+
+    Irp - The Irp to hijack
+
+    TargetDeviceObject - The device to send the request to.
+
+Return Value:
+
+    NTSTATUS - The Status from the flush in case anybody cares.
+
+--*/
+
+{
+    KEVENT Event;
+    NTSTATUS Status;
+    PIO_STACK_LOCATION NextIrpSp;
+
+    PAGED_CODE();
+
+    UNREFERENCED_PARAMETER(IrpContext);
+    
+    // Get the next stack location, and copy over the stack location
+
+    NextIrpSp = IoGetNextIrpStackLocation( Irp );
+
+    *NextIrpSp = *IoGetCurrentIrpStackLocation( Irp );
+
+    NextIrpSp->MajorFunction = IRP_MJ_FLUSH_BUFFERS;
+    NextIrpSp->MinorFunction = 0;
+
+    //  Set up the completion routine
+
+    KeInitializeEvent( &Event, NotificationEvent, FALSE );
+
+    IoSetCompletionRoutine(Irp,
+                           &UDFHijackCompletionRoutine,
+                           &Event,
+                           TRUE,
+                           TRUE,
+                           TRUE);
+
+    //  Send the request.
+
+    Status = IoCallDriver(TargetDeviceObject, Irp);
+
+    if (Status == STATUS_PENDING) {
+
+        (VOID)KeWaitForSingleObject(&Event, Executive, KernelMode, FALSE, NULL);
+
+        Status = Irp->IoStatus.Status;
+    }
+
+    // If the driver doesn't support flushes, return SUCCESS.
+
+    if (Status == STATUS_INVALID_DEVICE_REQUEST) {
+
+        Status = STATUS_SUCCESS;
+    }
+
+    Irp->IoStatus.Status = 0;
+    Irp->IoStatus.Information = 0;
+
+    return Status;
+}

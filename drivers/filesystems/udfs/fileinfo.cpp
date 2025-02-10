@@ -60,20 +60,17 @@ UDFQueryInfo(
 
     // set the top level context
     AreWeTopLevel = UDFIsIrpTopLevel(Irp);
-    ASSERT(!UDFIsFSDevObj(DeviceObject));
 
     _SEH2_TRY {
 
         // get an IRP context structure and issue the request
         IrpContext = UDFCreateIrpContext(Irp, DeviceObject);
-        if(IrpContext) {
+        if (IrpContext) {
             RC = UDFCommonQueryInfo(IrpContext, Irp);
         } else {
+
+            UDFCompleteRequest(IrpContext, Irp, STATUS_INSUFFICIENT_RESOURCES);
             RC = STATUS_INSUFFICIENT_RESOURCES;
-            Irp->IoStatus.Status = RC;
-            Irp->IoStatus.Information = 0;
-            // complete the IRP
-            IoCompleteRequest(Irp, IO_DISK_INCREMENT);
         }
 
     } _SEH2_EXCEPT(UDFExceptionFilter(IrpContext, _SEH2_GetExceptionInformation())) {
@@ -83,7 +80,7 @@ UDFQueryInfo(
         UDFLogEvent(UDF_ERROR_INTERNAL_ERROR, RC);
     } _SEH2_END;
 
-    if(AreWeTopLevel) {
+    if (AreWeTopLevel) {
         IoSetTopLevelIrp(NULL);
     }
 
@@ -127,20 +124,17 @@ UDFSetInfo(
 
     // set the top level context
     AreWeTopLevel = UDFIsIrpTopLevel(Irp);
-    ASSERT(!UDFIsFSDevObj(DeviceObject));
 
     _SEH2_TRY {
 
         // get an IRP context structure and issue the request
         IrpContext = UDFCreateIrpContext(Irp, DeviceObject);
-        if(IrpContext) {
+        if (IrpContext) {
             RC = UDFCommonSetInfo(IrpContext, Irp);
         } else {
+
+            UDFCompleteRequest(IrpContext, Irp, STATUS_INSUFFICIENT_RESOURCES);
             RC = STATUS_INSUFFICIENT_RESOURCES;
-            Irp->IoStatus.Status = RC;
-            Irp->IoStatus.Information = 0;
-            // complete the IRP
-            IoCompleteRequest(Irp, IO_DISK_INCREMENT);
         }
 
     } _SEH2_EXCEPT(UDFExceptionFilter(IrpContext, _SEH2_GetExceptionInformation())) {
@@ -150,7 +144,7 @@ UDFSetInfo(
         UDFLogEvent(UDF_ERROR_INTERNAL_ERROR, RC);
     } _SEH2_END;
 
-    if(AreWeTopLevel) {
+    if (AreWeTopLevel) {
         IoSetTopLevelIrp(NULL);
     }
 
@@ -185,6 +179,7 @@ UDFCommonQueryInfo(
     NTSTATUS                RC = STATUS_SUCCESS;
     PIO_STACK_LOCATION      IrpSp = NULL;
     PFILE_OBJECT            FileObject = NULL;
+    TYPE_OF_OPEN TypeOfOpen;
     PFCB                    Fcb = NULL;
     PCCB                    Ccb = NULL;
     PVCB                    Vcb = NULL;
@@ -200,31 +195,24 @@ UDFCommonQueryInfo(
 
     TmPrint(("UDFCommonQueryInfo: irp %x\n", Irp));
 
+    // Decode the file object
+
+    IrpSp = IoGetCurrentIrpStackLocation(Irp);
+
+    FileObject = IrpSp->FileObject;
+
+    TypeOfOpen = UDFDecodeFileObject(FileObject, &Fcb, &Ccb);
+
+    ASSERT_CCB(Ccb);
+    ASSERT_FCB(Fcb);
+
     _SEH2_TRY {
-        // First, get a pointer to the current I/O stack location.
-        IrpSp = IoGetCurrentIrpStackLocation(Irp);
-        ASSERT(IrpSp);
-
-        FileObject = IrpSp->FileObject;
-        ASSERT(FileObject);
-
-        // Get the FCB and CCB pointers.
-        Ccb = (PCCB)FileObject->FsContext2;
-        ASSERT(Ccb);
-        if(!Ccb) {
-            // some applications sends us FO without Ccb
-            // This is not allowed...
-            RC = STATUS_INVALID_PARAMETER;
-            try_return(RC);
-        }
-        Fcb = Ccb->Fcb;
-        ASSERT(Fcb);
 
         CanWait = (IrpContext->Flags & IRP_CONTEXT_FLAG_WAIT) ? TRUE : FALSE;
 
         // If the caller has opened a logical volume and is attempting to
         // query information for it as a file stream, return an error.
-        if(Fcb->NodeIdentifier.NodeTypeCode == UDF_NODE_TYPE_VCB) {
+        if (Fcb == Fcb->Vcb->VolumeDasdFcb) {
             // This is not allowed. Caller must use get/set volume information instead.
             RC = STATUS_INVALID_PARAMETER;
             try_return(RC);
@@ -232,8 +220,8 @@ UDFCommonQueryInfo(
 
         Vcb = (PVCB)(IrpSp->DeviceObject->DeviceExtension);
         ASSERT(Vcb);
-        ASSERT(Fcb->NodeIdentifier.NodeTypeCode == UDF_NODE_TYPE_FCB);
-        //Vcb->VCBFlags |= UDF_VCB_SKIP_EJECT_CHECK;
+        ASSERT_FCB(Fcb);
+        //Vcb->VcbState |= UDF_VCB_SKIP_EJECT_CHECK;
 
         // The NT I/O Manager always allocates and supplies a system
         // buffer for query and set file information calls.
@@ -247,7 +235,7 @@ UDFCommonQueryInfo(
         BufferLength = IrpSp->Parameters.QueryFile.Length;
         FunctionalityRequested = IrpSp->Parameters.QueryFile.FileInformationClass;
 
-        if (!UDFAcquireResourceShared(&Vcb->VCBResource, CanWait)) {
+        if (!UDFAcquireResourceShared(&Vcb->VcbResource, CanWait)) {
             PostRequest = TRUE;
             try_return(RC = STATUS_PENDING);
         }
@@ -257,10 +245,10 @@ UDFCommonQueryInfo(
         // page file, we should avoid acquiring any resources and simply
         // trust the VMM to do the right thing, else we could possibly
         // run into deadlocks).
-        if(!(Fcb->FCBFlags & UDF_FCB_PAGE_FILE)) {
+        if (!(Fcb->FcbState & UDF_FCB_PAGE_FILE)) {
             // Acquire the MainResource shared.
             UDF_CHECK_PAGING_IO_RESOURCE(Fcb);
-            UDFAcquireResourceShared(&Fcb->MainResource, TRUE);
+            UDFAcquireResourceShared(&Fcb->FcbNonpaged->FcbResource, TRUE);
             MainResourceAcquired = TRUE;
         }
 
@@ -276,7 +264,7 @@ UDFCommonQueryInfo(
             RC = UDFGetNetworkInformation(Fcb, (PFILE_NETWORK_OPEN_INFORMATION)PtrSystemBuffer, &BufferLength);
             break;
         case FileInternalInformation:
-            RC = UDFGetInternalInformation(IrpContext, Fcb, Ccb, (PFILE_INTERNAL_INFORMATION) PtrSystemBuffer, &BufferLength);
+            RC = UDFGetInternalInformation(IrpContext, Fcb, (PFILE_INTERNAL_INFORMATION)PtrSystemBuffer, &BufferLength);
             break;
         case FileEaInformation:
             RC = UDFGetEaInformation(IrpContext, Fcb, (PFILE_EA_INFORMATION) PtrSystemBuffer, &BufferLength);
@@ -295,7 +283,7 @@ UDFCommonQueryInfo(
             RC = UDFGetPositionInformation(FileObject, (PFILE_POSITION_INFORMATION)PtrSystemBuffer, &BufferLength);
             break;
         case FileStreamInformation:
-            RC = UDFGetFileStreamInformation(Fcb, (PFILE_STREAM_INFORMATION) PtrSystemBuffer, (PULONG)&BufferLength);
+            RC = UDFGetFileStreamInformation(IrpContext, Fcb, (PFILE_STREAM_INFORMATION)PtrSystemBuffer, (PULONG)&BufferLength);
             break;
         case FileAllInformation:
             // The I/O Manager supplies the Mode, Access, and Alignment
@@ -311,9 +299,9 @@ UDFCommonQueryInfo(
                                     sizeof(FILE_ALIGNMENT_INFORMATION));
 
                 // Get the remaining stuff.
-                if(!NT_SUCCESS(RC = UDFGetBasicInformation(FileObject, Fcb, &(PtrAllInfo->BasicInformation), &BufferLength)) ||
+                if (!NT_SUCCESS(RC = UDFGetBasicInformation(FileObject, Fcb, &(PtrAllInfo->BasicInformation), &BufferLength)) ||
                     !NT_SUCCESS(RC = UDFGetStandardInformation(Fcb, &(PtrAllInfo->StandardInformation), &BufferLength)) ||
-                    !NT_SUCCESS(RC = UDFGetInternalInformation(IrpContext, Fcb, Ccb, &(PtrAllInfo->InternalInformation), &BufferLength)) ||
+                    !NT_SUCCESS(RC = UDFGetInternalInformation(IrpContext, Fcb, &(PtrAllInfo->InternalInformation), &BufferLength)) ||
                     !NT_SUCCESS(RC = UDFGetEaInformation(IrpContext, Fcb, &(PtrAllInfo->EaInformation), &BufferLength)) ||
                     !NT_SUCCESS(RC = UDFGetPositionInformation(FileObject, &(PtrAllInfo->PositionInformation), &BufferLength)) ||
                     !NT_SUCCESS(RC = UDFGetFullNameInformation(FileObject, &(PtrAllInfo->NameInformation), &BufferLength))
@@ -330,29 +318,29 @@ try_exit:   NOTHING;
 
     } _SEH2_FINALLY {
 
-        if(PagingIoResourceAcquired) {
-            UDFReleaseResource(&Fcb->PagingIoResource);
+        if (PagingIoResourceAcquired) {
+            UDFReleaseResource(&Fcb->FcbNonpaged->FcbPagingIoResource);
             PagingIoResourceAcquired = FALSE;
         }
 
-        if(MainResourceAcquired) {
-            UDFReleaseResource(&Fcb->MainResource);
+        if (MainResourceAcquired) {
+            UDFReleaseResource(&Fcb->FcbNonpaged->FcbResource);
             MainResourceAcquired = FALSE;
         }
 
-        if(ParentResourceAcquired) {
+        if (ParentResourceAcquired) {
             UDF_CHECK_PAGING_IO_RESOURCE(Fcb->ParentFcb);
-            UDFReleaseResource(&(Fcb->ParentFcb->MainResource));
+            UDFReleaseResource(&Fcb->ParentFcb->FcbNonpaged->FcbResource);
             ParentResourceAcquired = FALSE;
         }
 
-        if(AcquiredVcb) {
+        if (AcquiredVcb) {
             AcquiredVcb = FALSE;
-            UDFReleaseResource(&(Vcb->VCBResource));
+            UDFReleaseResource(&(Vcb->VcbResource));
         }
 
         // Post IRP if required
-        if(PostRequest) {
+        if (PostRequest) {
 
             // Since, the I/O Manager gave us a system buffer, we do not
             // need to "lock" anything.
@@ -364,23 +352,11 @@ try_exit:   NOTHING;
         } else {
 
             if (!_SEH2_AbnormalTermination()) {
-                Irp->IoStatus.Status = RC;
-                // Set status for "query" requests
-                if(IrpSp->MajorFunction == IRP_MJ_QUERY_INFORMATION) {
-                    // Return the amount of information transferred.
-                    Irp->IoStatus.Information = IrpSp->Parameters.QueryFile.Length - BufferLength;
-#ifdef UDF_DELAYED_CLOSE
-                } else if (NT_SUCCESS(RC)) {
-                    if (FunctionalityRequested == FileDispositionInformation) {
-                        UDFRemoveFromDelayedQueue(Fcb);
-                    }
-#endif //UDF_DELAYED_CLOSE
-                }
-                // complete the IRP
-                IoCompleteRequest(Irp, IO_DISK_INCREMENT);
-                // Free up the Irp Context
-                UDFCleanupIrpContext(IrpContext);
-            } // can we complete the IRP ?
+
+                Irp->IoStatus.Information = IrpSp->Parameters.QueryFile.Length - BufferLength;
+
+                UDFCompleteRequest(IrpContext, Irp, RC);
+            }
 
         }
     } _SEH2_END;// end of "__finally" processing
@@ -414,6 +390,7 @@ UDFCommonSetInfo(
     NTSTATUS                RC = STATUS_SUCCESS;
     PIO_STACK_LOCATION      IrpSp = NULL;
     PFILE_OBJECT            FileObject = NULL;
+    TYPE_OF_OPEN TypeOfOpen;
     PFCB                    Fcb = NULL;
     PCCB                    Ccb = NULL;
     PVCB                    Vcb = NULL;
@@ -421,7 +398,6 @@ UDFCommonSetInfo(
     BOOLEAN                 ParentResourceAcquired = FALSE;
     BOOLEAN                 PagingIoResourceAcquired = FALSE;
     PVOID                   PtrSystemBuffer = NULL;
-    LONG                    BufferLength = 0;
     FILE_INFORMATION_CLASS  FunctionalityRequested;
     BOOLEAN                 CanWait = FALSE;
     BOOLEAN                 PostRequest = FALSE;
@@ -429,31 +405,24 @@ UDFCommonSetInfo(
 
     TmPrint(("UDFCommonSetInfo: irp %x\n", Irp));
 
+    IrpSp = IoGetCurrentIrpStackLocation(Irp);
+
+    FileObject = IrpSp->FileObject;
+
+    // Decode the file object
+
+    TypeOfOpen = UDFDecodeFileObject(FileObject, &Fcb, &Ccb);
+
+    ASSERT_CCB(Ccb);
+    ASSERT_FCB(Fcb);
+
     _SEH2_TRY {
-        // First, get a pointer to the current I/O stack location.
-        IrpSp = IoGetCurrentIrpStackLocation(Irp);
-        ASSERT(IrpSp);
-
-        FileObject = IrpSp->FileObject;
-        ASSERT(FileObject);
-
-        // Get the FCB and CCB pointers.
-        Ccb = (PCCB)FileObject->FsContext2;
-        ASSERT(Ccb);
-        if(!Ccb) {
-            // some applications sends us FO without Ccb
-            // This is not allowed...
-            RC = STATUS_INVALID_PARAMETER;
-            try_return(RC);
-        }
-        Fcb = Ccb->Fcb;
-        ASSERT(Fcb);
 
         CanWait = (IrpContext->Flags & IRP_CONTEXT_FLAG_WAIT) ? TRUE : FALSE;
 
         // If the caller has opened a logical volume and is attempting to
         // query information for it as a file stream, return an error.
-        if(Fcb->NodeIdentifier.NodeTypeCode == UDF_NODE_TYPE_VCB) {
+        if (Fcb == Fcb->Vcb->VolumeDasdFcb) {
             // This is not allowed. Caller must use get/set volume information instead.
             RC = STATUS_INVALID_PARAMETER;
             try_return(RC);
@@ -461,8 +430,8 @@ UDFCommonSetInfo(
 
         Vcb = (PVCB)(IrpSp->DeviceObject->DeviceExtension);
         ASSERT(Vcb);
-        ASSERT(Fcb->NodeIdentifier.NodeTypeCode == UDF_NODE_TYPE_FCB);
-        //Vcb->VCBFlags |= UDF_VCB_SKIP_EJECT_CHECK;
+        ASSERT_FCB(Fcb);
+        //Vcb->VcbState |= UDF_VCB_SKIP_EJECT_CHECK;
 
         // The NT I/O Manager always allocates and supplies a system
         // buffer for query and set file information calls.
@@ -472,11 +441,11 @@ UDFCommonSetInfo(
 
         UDFFlushTryBreak(Vcb);
 
-        Vcb->VCBFlags |= UDF_VCB_SKIP_EJECT_CHECK;
+        Vcb->VcbState |= UDF_VCB_SKIP_EJECT_CHECK;
 
         // Now, obtain some parameters.
         FunctionalityRequested = IrpSp->Parameters.SetFile.FileInformationClass;
-        if((Vcb->VCBFlags & VCB_STATE_VOLUME_READ_ONLY) &&
+        if ((Vcb->VcbState & VCB_STATE_VOLUME_READ_ONLY) &&
             (FunctionalityRequested != FilePositionInformation)) {
             try_return(RC = STATUS_ACCESS_DENIED);
         }
@@ -492,7 +461,7 @@ UDFCommonSetInfo(
         if (FunctionalityRequested != FileEndOfFileInformation ||
             FunctionalityRequested != FileAllocationInformation) {
 
-            if (!UDFAcquireResourceShared(&Vcb->VCBResource, CanWait)) {
+            if (!UDFAcquireResourceShared(&Vcb->VcbResource, CanWait)) {
                 PostRequest = TRUE;
                 try_return(RC = STATUS_PENDING);
             }
@@ -505,27 +474,27 @@ UDFCommonSetInfo(
         // Unless this is an operation on a page file, we should go ahead and
         // acquire the FCB exclusively at this time. Note that we will pretty
         // much block out anything being done to the FCB from this point on.
-        if(!(Fcb->FCBFlags & UDF_FCB_PAGE_FILE) &&
+        if (!(Fcb->FcbState & UDF_FCB_PAGE_FILE) &&
             (FunctionalityRequested != FilePositionInformation) &&
             (FunctionalityRequested != FileRenameInformation) &&
             (FunctionalityRequested != FileLinkInformation)) {
             // Acquire the Parent & Main Resources exclusive.
-            if(Fcb->FileInfo->ParentFile) {
+            if (Fcb->FileInfo->ParentFile) {
                 UDF_CHECK_PAGING_IO_RESOURCE(Fcb->ParentFcb);
-                if(!UDFAcquireResourceExclusive(&Fcb->ParentFcb->MainResource, CanWait)) {
+                if (!UDFAcquireResourceExclusive(&Fcb->ParentFcb->FcbNonpaged->FcbResource, CanWait)) {
                     PostRequest = TRUE;
                     try_return(RC = STATUS_PENDING);
                 }
                 ParentResourceAcquired = TRUE;
             }
 
-            if (!UDFAcquireResourceExclusive(&Fcb->MainResource, CanWait)) {
+            if (!UDFAcquireResourceExclusive(&Fcb->FcbNonpaged->FcbResource, CanWait)) {
                 PostRequest = TRUE;
                 try_return(RC = STATUS_PENDING);
             }
             MainResourceAcquired = TRUE;
 
-            if (!UDFAcquireResourceExclusive(&Fcb->PagingIoResource, CanWait)) {
+            if (!UDFAcquireResourceExclusive(&Fcb->FcbNonpaged->FcbPagingIoResource, CanWait)) {
                 PostRequest = TRUE;
                 try_return(RC = STATUS_PENDING);
             }
@@ -535,39 +504,33 @@ UDFCommonSetInfo(
         // on are paging-IO read/write operations. For delete, link (rename),
         // set allocation size, and set EOF, should also acquire the paging-IO
         // resource, thereby synchronizing with paging-IO requests.
-        if((Fcb->FCBFlags & UDF_FCB_PAGE_FILE) &&
+        if ((Fcb->FcbState & UDF_FCB_PAGE_FILE) &&
             ((FunctionalityRequested == FileDispositionInformation) ||
             (FunctionalityRequested == FileAllocationInformation) ||
             (FunctionalityRequested == FileEndOfFileInformation)) ) {
 
             // Acquire the MainResource shared.
             UDF_CHECK_PAGING_IO_RESOURCE(Fcb);
-            if (!UDFAcquireResourceShared(&Fcb->MainResource, CanWait)) {
+            if (!UDFAcquireResourceShared(&Fcb->FcbNonpaged->FcbResource, CanWait)) {
                 PostRequest = TRUE;
                 try_return(RC = STATUS_PENDING);
             }
             MainResourceAcquired = TRUE;
             // Acquire the PagingResource exclusive.
-            if (!UDFAcquireResourceExclusive(&Fcb->PagingIoResource, CanWait)) {
+            if (!UDFAcquireResourceExclusive(&Fcb->FcbNonpaged->FcbPagingIoResource, CanWait)) {
                 PostRequest = TRUE;
                 try_return(RC = STATUS_PENDING);
             }
             PagingIoResourceAcquired = TRUE;
-        } else if((FunctionalityRequested != FileRenameInformation) &&
+        } else if ((FunctionalityRequested != FileRenameInformation) &&
                     (FunctionalityRequested != FileLinkInformation)) {
             // Acquire the MainResource shared.
             UDF_CHECK_PAGING_IO_RESOURCE(Fcb);
-            if(!UDFAcquireResourceShared(&Fcb->MainResource, CanWait)) {
+            if (!UDFAcquireResourceShared(&Fcb->FcbNonpaged->FcbResource, CanWait)) {
                 PostRequest = TRUE;
                 try_return(RC = STATUS_PENDING);
             }
             MainResourceAcquired = TRUE;
-        }
-
-        if((Vcb->VCBFlags & UDF_VCB_FLAGS_RAW_DISK) &&
-            (FunctionalityRequested != FilePositionInformation)) {
-            AdPrint(("    Can't change File Information on blank volume ;)\n"));
-            try_return(RC = STATUS_ACCESS_DENIED);
         }
 
         // Do whatever the caller asked us to do
@@ -583,8 +546,8 @@ UDFCommonSetInfo(
 
             PtrFileInfoBuffer = (PFILE_POSITION_INFORMATION)PtrSystemBuffer;
 
-            if(FileObject->Flags & FO_NO_INTERMEDIATE_BUFFERING) {
-                if(PtrFileInfoBuffer->CurrentByteOffset.LowPart & IrpSp->DeviceObject->AlignmentRequirement) {
+            if (FileObject->Flags & FO_NO_INTERMEDIATE_BUFFERING) {
+                if (PtrFileInfoBuffer->CurrentByteOffset.LowPart & IrpSp->DeviceObject->AlignmentRequirement) {
                     // Invalid alignment.
                     try_return(RC = STATUS_INVALID_PARAMETER);
                 }
@@ -594,27 +557,27 @@ UDFCommonSetInfo(
             break;
         }
         case FileDispositionInformation:
-            RC = UDFSetDispositionInformation(Fcb, Ccb, Vcb, FileObject,
+            RC = UDFSetDispositionInformation(IrpContext, Fcb, Ccb, Vcb, FileObject,
                         ((PFILE_DISPOSITION_INFORMATION)PtrSystemBuffer)->DeleteFile ? TRUE : FALSE);
             break;
         case FileRenameInformation:
-            if(!CanWait) {
+            if (!CanWait) {
                 PostRequest = TRUE;
                 try_return(RC = STATUS_PENDING);
             }
-            RC = UDFSetRenameInfo(IrpSp, Fcb, Ccb, FileObject, (PFILE_RENAME_INFORMATION)PtrSystemBuffer);
-            if(RC == STATUS_PENDING) {
+            RC = UDFSetRenameInfo(IrpContext, IrpSp, Fcb, Ccb, FileObject, (PFILE_RENAME_INFORMATION)PtrSystemBuffer);
+            if (RC == STATUS_PENDING) {
                 PostRequest = TRUE;
                 try_return(RC);
             }
             break;
 #ifdef UDF_ALLOW_HARD_LINKS
         case FileLinkInformation:
-            if(!CanWait) {
+            if (!CanWait) {
                 PostRequest = TRUE;
                 try_return(RC = STATUS_PENDING);
             }
-            RC = UDFHardLink(IrpSp, Fcb, Ccb, FileObject, (PFILE_LINK_INFORMATION)PtrSystemBuffer);
+            RC = UDFHardLink(IrpContext, IrpSp, Fcb, Ccb, FileObject, (PFILE_LINK_INFORMATION)PtrSystemBuffer);
             break;
 #endif //UDF_ALLOW_HARD_LINKS
         case FileAllocationInformation:
@@ -623,7 +586,7 @@ UDFCommonSetInfo(
                                                 (PFILE_ALLOCATION_INFORMATION)PtrSystemBuffer);
             break;
         case FileEndOfFileInformation:
-            RC = UDFSetEOF(IrpSp, Fcb, Ccb, Vcb, FileObject, Irp, (PFILE_END_OF_FILE_INFORMATION)PtrSystemBuffer);
+            RC = UDFSetEOF(IrpContext, IrpSp, Fcb, Ccb, Vcb, FileObject, Irp, (PFILE_END_OF_FILE_INFORMATION)PtrSystemBuffer);
             break;
         default:
             RC = STATUS_INVALID_PARAMETER;
@@ -634,29 +597,29 @@ try_exit:   NOTHING;
 
     } _SEH2_FINALLY {
 
-        if(PagingIoResourceAcquired) {
-            UDFReleaseResource(&Fcb->PagingIoResource);
+        if (PagingIoResourceAcquired) {
+            UDFReleaseResource(&Fcb->FcbNonpaged->FcbPagingIoResource);
             PagingIoResourceAcquired = FALSE;
         }
 
-        if(MainResourceAcquired) {
-            UDFReleaseResource(&Fcb->MainResource);
+        if (MainResourceAcquired) {
+            UDFReleaseResource(&Fcb->FcbNonpaged->FcbResource);
             MainResourceAcquired = FALSE;
         }
 
-        if(ParentResourceAcquired) {
+        if (ParentResourceAcquired) {
             UDF_CHECK_PAGING_IO_RESOURCE(Fcb->ParentFcb);
-            UDFReleaseResource(&(Fcb->ParentFcb->MainResource));
+            UDFReleaseResource(&(Fcb->ParentFcb->FcbNonpaged->FcbResource));
             ParentResourceAcquired = FALSE;
         }
 
-        if(AcquiredVcb) {
+        if (AcquiredVcb) {
             AcquiredVcb = FALSE;
-            UDFReleaseResource(&(Vcb->VCBResource));
+            UDFReleaseResource(&(Vcb->VcbResource));
         }
 
         // Post IRP if required
-        if(PostRequest) {
+        if (PostRequest) {
 
             // Since, the I/O Manager gave us a system buffer, we do not
             // need to "lock" anything.
@@ -668,24 +631,18 @@ try_exit:   NOTHING;
         } else {
 
             if (!_SEH2_AbnormalTermination()) {
-                Irp->IoStatus.Status = RC;
-                // Set status for "query" requests
-                if(IrpSp->MajorFunction == IRP_MJ_QUERY_INFORMATION) {
-                    // Return the amount of information transferred.
-                    Irp->IoStatus.Information = IrpSp->Parameters.QueryFile.Length - BufferLength;
+
 #ifdef UDF_DELAYED_CLOSE
-                } else if (NT_SUCCESS(RC)) {
+                if (NT_SUCCESS(RC)) {
+
                     if (FunctionalityRequested == FileDispositionInformation) {
                         UDFRemoveFromDelayedQueue(Fcb);
                     }
-#endif //UDF_DELAYED_CLOSE
                 }
-                // complete the IRP
-                IoCompleteRequest(Irp, IO_DISK_INCREMENT);
-                // Free up the Irp Context
-                UDFCleanupIrpContext(IrpContext);
-            } // can we complete the IRP ?
+#endif //UDF_DELAYED_CLOSE
 
+                UDFCompleteRequest(IrpContext, Irp, RC);
+            }
         }
     } _SEH2_END;// end of "__finally" processing
 
@@ -711,7 +668,7 @@ UDFGetBasicInformation(
 
     _SEH2_TRY {
 
-        if(*PtrReturnedLength < (LONG)sizeof(FILE_BASIC_INFORMATION)) {
+        if (*PtrReturnedLength < (LONG)sizeof(FILE_BASIC_INFORMATION)) {
             try_return(RC = STATUS_BUFFER_OVERFLOW);
         }
 
@@ -721,7 +678,7 @@ UDFGetBasicInformation(
         // Get information from the FCB and update TimesCache in DirIndex
         FileInfo = Fcb->FileInfo;
 
-        if(!FileInfo) {
+        if (!FileInfo) {
             AdPrint(("!!!!!!!! Bu-u-u-u-u-g !!!!!!!!!!!\n"));
             AdPrint(("!!!! GetBasicInfo to unopened file !!!!\n"));
             try_return(RC = STATUS_INVALID_PARAMETER);
@@ -742,22 +699,22 @@ UDFGetBasicInformation(
         DirNdx->ChangeTime = PtrBuffer->ChangeTime.QuadPart;
 
         // Now fill in the attributes.
-        if(Fcb->FCBFlags & UDF_FCB_DIRECTORY) {
+        if (Fcb->FcbState & UDF_FCB_DIRECTORY) {
             PtrBuffer->FileAttributes = FILE_ATTRIBUTE_DIRECTORY;
 #ifdef UDF_DBG
-            if(!FileInfo->Dloc->DirIndex) AdPrint(("*****!!!!! Directory has no DirIndex !!!!!*****\n"));
+            if (!FileInfo->Dloc->DirIndex) AdPrint(("*****!!!!! Directory has no DirIndex !!!!!*****\n"));
 #endif
         }
         // Similarly, fill in attributes indicating a hidden file, system
         // file, compressed file, temporary file, etc. if the FSD supports
         // such file attribute values.
         PtrBuffer->FileAttributes |= UDFAttributesToNT(DirNdx,NULL);
-        if(FileObject->Flags & FO_TEMPORARY_FILE) {
+        if (FileObject->Flags & FO_TEMPORARY_FILE) {
             PtrBuffer->FileAttributes |= FILE_ATTRIBUTE_TEMPORARY;
         } else {
             PtrBuffer->FileAttributes &= ~FILE_ATTRIBUTE_TEMPORARY;
         }
-        if(!PtrBuffer->FileAttributes) {
+        if (!PtrBuffer->FileAttributes) {
             PtrBuffer->FileAttributes = FILE_ATTRIBUTE_NORMAL;
         }
 
@@ -765,7 +722,7 @@ try_exit: NOTHING;
 
     } _SEH2_FINALLY {
 
-        if(NT_SUCCESS(RC)) {
+        if (NT_SUCCESS(RC)) {
             // Return the amount of information filled in.
             (*PtrReturnedLength) -= sizeof(FILE_BASIC_INFORMATION);
         }
@@ -792,7 +749,7 @@ UDFGetStandardInformation(
 
     _SEH2_TRY {
 
-        if(*PtrReturnedLength < (LONG)sizeof(FILE_STANDARD_INFORMATION)) {
+        if (*PtrReturnedLength < (LONG)sizeof(FILE_STANDARD_INFORMATION)) {
             try_return(RC = STATUS_BUFFER_OVERFLOW);
         }
 
@@ -801,22 +758,22 @@ UDFGetStandardInformation(
 
         FileInfo = Fcb->FileInfo;
 
-        if(!FileInfo) {
+        if (!FileInfo) {
             AdPrint(("!!!!!!!! Bu-u-u-u-u-g !!!!!!!!!!!\n"));
             AdPrint(("!!!! GetStandardInfo to unopened file !!!!\n"));
             try_return(RC = STATUS_INVALID_PARAMETER);
         }
 //        Vcb = Fcb->Vcb;
         PtrBuffer->NumberOfLinks = UDFGetFileLinkCount(FileInfo);
-        PtrBuffer->DeletePending = (Fcb->FCBFlags & UDF_FCB_DELETE_ON_CLOSE) ? TRUE : FALSE;
+        PtrBuffer->DeletePending = (Fcb->FcbState & UDF_FCB_DELETE_ON_CLOSE) ? TRUE : FALSE;
 
         //  Case on whether this is a file or a directory, and extract
         //  the information and fill in the fcb/dcb specific parts
         //  of the output buffer
-        if(UDFIsADirectory(Fcb->FileInfo)) {
+        if (UDFIsADirectory(Fcb->FileInfo)) {
             PtrBuffer->Directory = TRUE;
         } else {
-            if(Fcb->Header.AllocationSize.LowPart == 0xffffffff) {
+            if (Fcb->Header.AllocationSize.LowPart == 0xffffffff) {
                 Fcb->Header.AllocationSize.QuadPart =
                     UDFSysGetAllocSize(Fcb->Vcb, UDFGetFileSize(FileInfo));
             }
@@ -828,7 +785,7 @@ UDFGetStandardInformation(
 
         try_exit: NOTHING;
     } _SEH2_FINALLY {
-        if(NT_SUCCESS(RC)) {
+        if (NT_SUCCESS(RC)) {
             // Return the amount of information filled in.
             *PtrReturnedLength -= sizeof(FILE_STANDARD_INFORMATION);
         }
@@ -853,7 +810,7 @@ UDFGetNetworkInformation(
 
     _SEH2_TRY {
 
-        if(*PtrReturnedLength < (LONG)sizeof(FILE_NETWORK_OPEN_INFORMATION)) {
+        if (*PtrReturnedLength < (LONG)sizeof(FILE_NETWORK_OPEN_INFORMATION)) {
             try_return(RC = STATUS_BUFFER_OVERFLOW);
         }
 
@@ -868,19 +825,19 @@ UDFGetNetworkInformation(
 
         FileInfo = Fcb->FileInfo;
 
-        if(!FileInfo) {
+        if (!FileInfo) {
             AdPrint(("!!!!!!!! Bu-u-u-u-u-g !!!!!!!!!!!\n"));
             AdPrint(("!!!! UDFGetNetworkInformation to unopened file !!!!\n"));
             try_return(RC = STATUS_INVALID_PARAMETER);
         }
         // Now fill in the attributes.
-        if(Fcb->FCBFlags & UDF_FCB_DIRECTORY) {
+        if (Fcb->FcbState & UDF_FCB_DIRECTORY) {
             PtrBuffer->FileAttributes = FILE_ATTRIBUTE_DIRECTORY;
 #ifdef UDF_DBG
-            if(!FileInfo->Dloc->DirIndex) AdPrint(("*****!!!!! Directory has no DirIndex !!!!!*****\n"));
+            if (!FileInfo->Dloc->DirIndex) AdPrint(("*****!!!!! Directory has no DirIndex !!!!!*****\n"));
 #endif
         } else {
-            if(Fcb->Header.AllocationSize.LowPart == 0xffffffff) {
+            if (Fcb->Header.AllocationSize.LowPart == 0xffffffff) {
                 Fcb->Header.AllocationSize.QuadPart =
                     UDFSysGetAllocSize(Fcb->Vcb, UDFGetFileSize(FileInfo));
             }
@@ -891,14 +848,14 @@ UDFGetNetworkInformation(
         // file, compressed file, temporary file, etc. if the FSD supports
         // such file attribute values.
         PtrBuffer->FileAttributes |= UDFAttributesToNT(UDFDirIndex(UDFGetDirIndexByFileInfo(FileInfo), FileInfo->Index),NULL);
-        if(!PtrBuffer->FileAttributes) {
+        if (!PtrBuffer->FileAttributes) {
             PtrBuffer->FileAttributes = FILE_ATTRIBUTE_NORMAL;
         }
 
 try_exit: NOTHING;
 
     } _SEH2_FINALLY {
-        if(NT_SUCCESS(RC)) {
+        if (NT_SUCCESS(RC)) {
             // Return the amount of information filled in.
             (*PtrReturnedLength) -= sizeof(FILE_NETWORK_OPEN_INFORMATION);
         }
@@ -912,53 +869,32 @@ try_exit: NOTHING;
  */
 NTSTATUS
 UDFGetInternalInformation(
-    PIRP_CONTEXT IrpContext,
-    IN PFCB                       Fcb,
-    IN PCCB                       Ccb,
-    IN PFILE_INTERNAL_INFORMATION PtrBuffer,
- IN OUT PLONG                     PtrReturnedLength
+    _In_ PIRP_CONTEXT IrpContext,
+    _In_ PFCB Fcb,
+    _Out_ PFILE_INTERNAL_INFORMATION Buffer,
+    _Inout_ PLONG Length
     )
 {
-    NTSTATUS            RC = STATUS_SUCCESS;
-    PUDF_FILE_INFO      FileInfo;
-    PVCB Vcb;
+    NTSTATUS Status = STATUS_SUCCESS;
+
+    PAGED_CODE();
+
+    UNREFERENCED_PARAMETER(IrpContext);
 
     AdPrint(("UDFGetInternalInformation\n"));
 
-    _SEH2_TRY {
+    if (*Length < (LONG)sizeof(FILE_INTERNAL_INFORMATION)) {
 
-        if(*PtrReturnedLength < (LONG)sizeof(FILE_INTERNAL_INFORMATION)) {
-            try_return(RC = STATUS_BUFFER_OVERFLOW);
-        }
+        return STATUS_BUFFER_OVERFLOW;
+    }
 
-        // Zero out the supplied buffer.
-        RtlZeroMemory(PtrBuffer, sizeof(FILE_INTERNAL_INFORMATION));
+    // Index number is the file Id number in the Fcb.
 
-        FileInfo = Fcb->FileInfo;
+    Buffer->IndexNumber = Fcb->FileId;
 
-        if(!FileInfo) {
-            AdPrint(("!!!!!!!! Bu-u-u-u-u-g !!!!!!!!!!!\n"));
-            AdPrint(("!!!! UDFGetInternalInformation to unopened file !!!!\n"));
-            try_return(RC = STATUS_INVALID_PARAMETER);
-        }
+    *Length -= sizeof(FILE_INTERNAL_INFORMATION);
 
-        Vcb = Fcb->Vcb;
-        PtrBuffer->IndexNumber.QuadPart = UDFGetNTFileId(Vcb, FileInfo, &(Fcb->FCBName->ObjectName));
-
-        UDFAcquireResourceExclusive(&(Fcb->Vcb->FileIdResource), TRUE);
-        // remember File Id & full path
-        UDFStoreFileId(Fcb->Vcb, Ccb, FileInfo, PtrBuffer->IndexNumber.QuadPart);
-        UDFReleaseResource(&(Fcb->Vcb->FileIdResource));
-
-try_exit: NOTHING;
-
-    } _SEH2_FINALLY {
-        if(NT_SUCCESS(RC)) {
-            // Return the amount of information filled in.
-            *PtrReturnedLength -= sizeof(FILE_INTERNAL_INFORMATION);
-        }
-    } _SEH2_END;
-    return(RC);
+    return Status;
 } // end UDFGetInternalInformation()
 
 /*
@@ -978,7 +914,7 @@ UDFGetEaInformation(
 
     _SEH2_TRY {
 
-        if(*PtrReturnedLength < (LONG)sizeof(FILE_EA_INFORMATION)) {
+        if (*PtrReturnedLength < (LONG)sizeof(FILE_EA_INFORMATION)) {
             try_return(RC = STATUS_BUFFER_OVERFLOW);
         }
 
@@ -988,7 +924,7 @@ UDFGetEaInformation(
 try_exit: NOTHING;
 
     } _SEH2_FINALLY {
-        if(NT_SUCCESS(RC)) {
+        if (NT_SUCCESS(RC)) {
             // Return the amount of information filled in.
             *PtrReturnedLength -= sizeof(FILE_EA_INFORMATION);
         }
@@ -1063,7 +999,7 @@ UDFGetAltNameInformation(
 
     UDFDOSName__(Fcb->Vcb, &ShortName, &(DirNdx->FName), Fcb->FileInfo);
 
-    if(*PtrReturnedLength < ShortName.Length) {
+    if (*PtrReturnedLength < ShortName.Length) {
         return(STATUS_BUFFER_OVERFLOW);
     } else {
         BytesToCopy = ShortName.Length;
@@ -1089,7 +1025,7 @@ UDFGetPositionInformation(
  IN OUT PLONG                     PtrReturnedLength
     )
 {
-    if(*PtrReturnedLength < (LONG)sizeof(FILE_POSITION_INFORMATION)) {
+    if (*PtrReturnedLength < (LONG)sizeof(FILE_POSITION_INFORMATION)) {
         return(STATUS_BUFFER_OVERFLOW);
     }
     PtrBuffer->CurrentByteOffset = FileObject->CurrentByteOffset;
@@ -1104,9 +1040,10 @@ UDFGetPositionInformation(
  */
 NTSTATUS
 UDFGetFileStreamInformation(
-    IN PFCB                       Fcb,
-    IN PFILE_STREAM_INFORMATION   PtrBuffer,
- IN OUT PULONG                    PtrReturnedLength
+    IN PIRP_CONTEXT IrpContext,
+    IN PFCB Fcb,
+    IN PFILE_STREAM_INFORMATION PtrBuffer,
+    IN OUT PULONG PtrReturnedLength
     )
 {
     NTSTATUS        RC = STATUS_SUCCESS;
@@ -1135,7 +1072,7 @@ UDFGetFileStreamInformation(
         FcbAcquired = TRUE;
 
         FileInfo = Fcb->FileInfo;
-        if(!FileInfo) {
+        if (!FileInfo) {
             AdPrint(("!!!!!!!! Bu-u-u-u-u-g !!!!!!!!!!!\n"));
             AdPrint(("!!!! UDFGetFileStreamInformation to unopened file !!!!\n"));
             try_return(RC = STATUS_INVALID_PARAMETER);
@@ -1146,11 +1083,11 @@ UDFGetFileStreamInformation(
         ASSERT(DirNdx);
 
         NTFileInfo = (PFILE_BOTH_DIR_INFORMATION)MyAllocatePool__(NonPagedPool, sizeof(FILE_BOTH_DIR_INFORMATION)+UDF_NAME_LEN*sizeof(WCHAR));
-        if(!NTFileInfo) try_return(RC = STATUS_INSUFFICIENT_RESOURCES);
+        if (!NTFileInfo) try_return(RC = STATUS_INSUFFICIENT_RESOURCES);
 
-        RC = UDFFileDirInfoToNT(Vcb, DirNdx, NTFileInfo);
+        RC = UDFFileDirInfoToNT(IrpContext, Vcb, DirNdx, NTFileInfo);
 
-        if(!NT_SUCCESS(RC)) {
+        if (!NT_SUCCESS(RC)) {
             try_return(RC);
         }
 
@@ -1173,7 +1110,7 @@ UDFGetFileStreamInformation(
 
         (*PtrReturnedLength) -= CurrentSize;
 
-        if(!(SDirInfo = FileInfo->Dloc->SDirInfo) ||
+        if (!(SDirInfo = FileInfo->Dloc->SDirInfo) ||
              UDFIsSDirDeleted(SDirInfo) ) {
 
             try_return(RC = STATUS_SUCCESS);
@@ -1182,7 +1119,7 @@ UDFGetFileStreamInformation(
         hSDirIndex = SDirInfo->Dloc->DirIndex;
 
         for(i=2; (SDirIndex = UDFDirIndex(hSDirIndex,i)); i++) {
-            if((SDirIndex->FI_Flags & UDF_FI_FLAG_FI_INTERNAL) ||
+            if ((SDirIndex->FI_Flags & UDF_FI_FLAG_FI_INTERNAL) ||
                 UDFIsDeleted(SDirIndex) ||
                 !SDirIndex->FName.Buffer )
                 continue;
@@ -1195,9 +1132,9 @@ UDFGetFileStreamInformation(
                 break;
             }
 
-            RC = UDFFileDirInfoToNT(Vcb, SDirIndex, NTFileInfo);
+            RC = UDFFileDirInfoToNT(IrpContext, Vcb, SDirIndex, NTFileInfo);
 
-            if(!NT_SUCCESS(RC)) {
+            if (!NT_SUCCESS(RC)) {
                 try_return(RC);
             }
 
@@ -1211,7 +1148,7 @@ UDFGetFileStreamInformation(
             RtlCopyMemory(&CurrentInfo->StreamName[1 + SDirIndex->FName.Length / sizeof(WCHAR)], StreamSuffix.Buffer, StreamSuffix.Length);
 
             if (Previous != NULL) {
-                Previous->NextEntryOffset = (ULONG_PTR)CurrentInfo - (ULONG_PTR)Previous;
+                Previous->NextEntryOffset = (ULONG)((ULONG_PTR)CurrentInfo - (ULONG_PTR)Previous);
             }
 
             Previous = CurrentInfo;
@@ -1222,9 +1159,9 @@ UDFGetFileStreamInformation(
 try_exit: NOTHING;
 
     } _SEH2_FINALLY {
-        if(FcbAcquired)
+        if (FcbAcquired)
             UDFReleaseResource(&(Fcb->Vcb->FileIdResource));
-        if(NTFileInfo)
+        if (NTFileInfo)
            MyFreePool__(NTFileInfo);
     } _SEH2_END;
     return(RC);
@@ -1260,19 +1197,19 @@ UDFSetBasicInformation(
 
         if (PtrBuffer->LastWriteTime.QuadPart == -1) {
 
-            SetFlag(Ccb->CCBFlags, UDF_CCB_WRITE_TIME_SET);
+            SetFlag(Ccb->Flags, UDF_CCB_WRITE_TIME_SET);
             PtrBuffer->LastWriteTime.QuadPart = 0;
         }
 
         if (PtrBuffer->LastAccessTime.QuadPart == -1) {
 
-            SetFlag(Ccb->CCBFlags, UDF_CCB_ACCESS_TIME_SET);
+            SetFlag(Ccb->Flags, UDF_CCB_ACCESS_TIME_SET);
             PtrBuffer->LastAccessTime.QuadPart = 0;
         }
 
         if (PtrBuffer->CreationTime.QuadPart == -1) {
 
-            SetFlag(Ccb->CCBFlags, UDF_CCB_CREATE_TIME_SET);
+            SetFlag(Ccb->Flags, UDF_CCB_CREATE_TIME_SET);
             PtrBuffer->CreationTime.QuadPart = 0;
         }
 
@@ -1280,10 +1217,10 @@ UDFSetBasicInformation(
         // the FCB being modifed. The directory entry is obviously
         // part of the data associated with the parent directory that
         // contains this particular file stream.
-        if(PtrBuffer->FileAttributes) {
+        if (PtrBuffer->FileAttributes) {
             UDFUpdateAttrTime(Fcb->Vcb, Fcb->FileInfo);
         } else
-        if( UDFIsADirectory(Fcb->FileInfo) &&
+        if ( UDFIsADirectory(Fcb->FileInfo) &&
             !(Fcb->Vcb->CompatFlags & UDF_VCB_IC_UPDATE_UCHG_DIR_ACCESS_TIME) &&
               ((Fcb->FileInfo->Dloc->DataLoc.Modified ||
                 Fcb->FileInfo->Dloc->AllocLoc.Modified ||
@@ -1291,7 +1228,7 @@ UDFSetBasicInformation(
                 Fcb->FileInfo->Dloc->FELoc.Modified))
              ) {
             // ignore Access Time Modification for unchanged Dir
-            if(!PtrBuffer->CreationTime.QuadPart &&
+            if (!PtrBuffer->CreationTime.QuadPart &&
                PtrBuffer->LastAccessTime.QuadPart &&
                !PtrBuffer->ChangeTime.QuadPart &&
                !PtrBuffer->LastWriteTime.QuadPart)
@@ -1304,7 +1241,7 @@ UDFSetBasicInformation(
             &(PtrBuffer->ChangeTime.QuadPart),
             &(PtrBuffer->LastWriteTime.QuadPart) );
 
-        if(PtrBuffer->CreationTime.QuadPart) {
+        if (PtrBuffer->CreationTime.QuadPart) {
             // The interesting thing here is that the user has set certain time
             // fields. However, before doing this, the user may have performed
             // I/O which in turn would have caused FSD to mark the fact that
@@ -1313,26 +1250,26 @@ UDFSetBasicInformation(
             // required since the user has explicitly specified the values he
             // wishes to see associated with the file stream.
             Fcb->CreationTime = PtrBuffer->CreationTime;
-            Ccb->CCBFlags |= UDF_CCB_CREATE_TIME_SET;
+            Ccb->Flags |= UDF_CCB_CREATE_TIME_SET;
             NotifyFilter |= FILE_NOTIFY_CHANGE_CREATION;
         }
-        if(PtrBuffer->LastAccessTime.QuadPart) {
+        if (PtrBuffer->LastAccessTime.QuadPart) {
             Fcb->LastAccessTime = PtrBuffer->LastAccessTime;
-            Ccb->CCBFlags |= UDF_CCB_ACCESS_TIME_SET;
+            Ccb->Flags |= UDF_CCB_ACCESS_TIME_SET;
             NotifyFilter |= FILE_NOTIFY_CHANGE_LAST_ACCESS;
         }
-        if(PtrBuffer->ChangeTime.QuadPart) {
+        if (PtrBuffer->ChangeTime.QuadPart) {
             Fcb->ChangeTime = PtrBuffer->ChangeTime;
-            Ccb->CCBFlags |= UDF_CCB_MODIFY_TIME_SET;
+            Ccb->Flags |= UDF_CCB_MODIFY_TIME_SET;
         }
-        if(PtrBuffer->LastWriteTime.QuadPart) {
+        if (PtrBuffer->LastWriteTime.QuadPart) {
             Fcb->LastWriteTime = PtrBuffer->LastWriteTime;
-            Ccb->CCBFlags |= UDF_CCB_WRITE_TIME_SET;
+            Ccb->Flags |= UDF_CCB_WRITE_TIME_SET;
             NotifyFilter |= FILE_NOTIFY_CHANGE_LAST_WRITE;
         }
 
         // Now come the attributes.
-        if(PtrBuffer->FileAttributes) {
+        if (PtrBuffer->FileAttributes) {
             // We have a non-zero attribute value.
             // The presence of a particular attribute indicates that the
             // user wishes to set the attribute value. The absence indicates
@@ -1342,22 +1279,22 @@ UDFSetBasicInformation(
             PtrBuffer->FileAttributes &= ~(FILE_ATTRIBUTE_NORMAL);
 
             // Similarly, we should pick out other invalid flag values.
-            if( (PtrBuffer->FileAttributes & FILE_ATTRIBUTE_DIRECTORY) &&
-               !(Fcb->FCBFlags & UDF_FCB_DIRECTORY))
+            if ( (PtrBuffer->FileAttributes & FILE_ATTRIBUTE_DIRECTORY) &&
+               !(Fcb->FcbState & UDF_FCB_DIRECTORY))
                 try_return(RC = STATUS_INVALID_PARAMETER);
 
-            if(PtrBuffer->FileAttributes & FILE_ATTRIBUTE_TEMPORARY) {
-                if(Fcb->FCBFlags & UDF_FCB_DIRECTORY)
+            if (PtrBuffer->FileAttributes & FILE_ATTRIBUTE_TEMPORARY) {
+                if (Fcb->FcbState & UDF_FCB_DIRECTORY)
                     try_return(RC = STATUS_INVALID_PARAMETER);
                 FileObject->Flags |= FO_TEMPORARY_FILE;
             } else {
                 FileObject->Flags &= ~FO_TEMPORARY_FILE;
             }
 
-            if(PtrBuffer->FileAttributes & FILE_ATTRIBUTE_READONLY) {
-                Fcb->FCBFlags |= UDF_FCB_READ_ONLY;
+            if (PtrBuffer->FileAttributes & FILE_ATTRIBUTE_READONLY) {
+                Fcb->FcbState |= UDF_FCB_READ_ONLY;
             } else {
-                Fcb->FCBFlags &= ~UDF_FCB_READ_ONLY;
+                Fcb->FcbState &= ~UDF_FCB_READ_ONLY;
             }
 
             UDFAttributesToUDF(UDFDirIndex(UDFGetDirIndexByFileInfo(Fcb->FileInfo), Fcb->FileInfo->Index),
@@ -1368,13 +1305,17 @@ UDFSetBasicInformation(
             // If the FSD supports file compression, we may wish to
             // note the user's preferences for compressing/not compressing
             // the file at this time.
-            Ccb->CCBFlags |= UDF_CCB_ATTRIBUTES_SET;
+            Ccb->Flags |= UDF_CCB_ATTRIBUTES_SET;
             NotifyFilter |= FILE_NOTIFY_CHANGE_ATTRIBUTES;
         }
 
-        if(NotifyFilter) {
-            UDFNotifyFullReportChange( Fcb->Vcb, Fcb->FileInfo,
-                                       NotifyFilter, FILE_ACTION_MODIFIED);
+        if (NotifyFilter) {
+
+            UDFNotifyFullReportChange(Fcb->Vcb,
+                                      Fcb,
+                                      NotifyFilter,
+                                      FILE_ACTION_MODIFIED);
+
             UDFSetFileSizeInDirNdx(Fcb->Vcb, Fcb->FileInfo, NULL);
             Fcb->FileInfo->Dloc->FE_Flags |= UDF_FE_FLAG_FE_MODIFIED;
         }
@@ -1388,6 +1329,7 @@ try_exit: NOTHING;
 
 NTSTATUS
 UDFMarkStreamsForDeletion(
+    IN PIRP_CONTEXT IrpContext,
     IN PVCB           Vcb,
     IN PFCB           Fcb,
     IN BOOLEAN        ForDel
@@ -1405,7 +1347,7 @@ UDFMarkStreamsForDeletion(
 
         // In some cases we needn't marking Streams for deleteion
         // (Not opened or Don't exist)
-        if(UDFIsAStream(Fcb->FileInfo) ||
+        if (UDFIsAStream(Fcb->FileInfo) ||
            UDFIsAStreamDir(Fcb->FileInfo) ||
            !UDFHasAStreamDir(Fcb->FileInfo) ||
            !Fcb->FileInfo->Dloc->SDirInfo ||
@@ -1416,39 +1358,39 @@ UDFMarkStreamsForDeletion(
         // We shall mark Streams for deletion if there is no
         // Links to the file. Otherwise we'll delete only the file.
         // If we are asked to unmark Streams, we'll precess the whole Tree
-        RC = UDFOpenStreamDir__(Vcb, Fcb->FileInfo, &SDirInfo);
-        if(!NT_SUCCESS(RC))
+        RC = UDFOpenStreamDir__(IrpContext, Vcb, Fcb->FileInfo, &SDirInfo);
+        if (!NT_SUCCESS(RC))
             try_return(RC);
 
-        if(SDirInfo->Fcb) {
+        if (SDirInfo->Fcb) {
             UDF_CHECK_PAGING_IO_RESOURCE(SDirInfo->Fcb);
-            UDFAcquireResourceExclusive(&SDirInfo->Fcb->MainResource,TRUE);
+            UDFAcquireResourceExclusive(&SDirInfo->Fcb->FcbNonpaged->FcbResource, TRUE);
             SDirAcq = TRUE;
         }
 
-        if(!ForDel || ((lc = UDFGetFileLinkCount(Fcb->FileInfo)) < 2)) {
+        if (!ForDel || ((lc = UDFGetFileLinkCount(Fcb->FileInfo)) < 2)) {
 
             UDF_DIR_SCAN_CONTEXT ScanContext;
             PDIR_INDEX_ITEM DirNdx;
 
             // It is not worth checking whether the Stream can be deleted if
             // Undelete requested
-            if(ForDel &&
+            if (ForDel &&
                 // scan DirIndex
                 UDFDirIndexInitScan(SDirInfo, &ScanContext, 2)) {
 
                 // Check if we can delete Streams
                 while((DirNdx = UDFDirIndexScan(&ScanContext, &FileInfo))) {
-                    if(!FileInfo)
+                    if (!FileInfo)
                         continue;
-                    if(FileInfo->Fcb) {
-                        FileInfo->Fcb->AcqFlushCount++;
+                    if (FileInfo->Fcb) {
+
                         MmPrint(("    MmFlushImageSection() for Stream\n"));
-                        if(!MmFlushImageSection(&(FileInfo->Fcb->SectionObject), MmFlushForDelete)) {
-                            FileInfo->Fcb->AcqFlushCount--;
+                        if (!MmFlushImageSection(&(FileInfo->Fcb->FcbNonpaged->SegmentObject), MmFlushForDelete)) {
+
                             try_return(RC = STATUS_CANNOT_DELETE);
                         }
-                        FileInfo->Fcb->AcqFlushCount--;
+
                     }
                 }
             }
@@ -1461,19 +1403,20 @@ UDFMarkStreamsForDeletion(
             // pointer.
             d = UDFDirIndexGetLastIndex(SDirInfo->Dloc->DirIndex);
             for(i=2; i<d; i++) {
-                RC = UDFOpenFile__(Vcb,
+                RC = UDFOpenFile__(IrpContext,
+                                   Vcb,
                                    FALSE,TRUE,NULL,
                                    SDirInfo,&FileInfo,&i);
                 ASSERT(NT_SUCCESS(RC) || (RC == STATUS_FILE_DELETED));
-                if(NT_SUCCESS(RC)) {
-                    if(FileInfo->Fcb) {
+                if (NT_SUCCESS(RC)) {
+                    if (FileInfo->Fcb) {
 
                         UDF_CHECK_PAGING_IO_RESOURCE(FileInfo->Fcb);
-                        UDFAcquireResourceExclusive(&FileInfo->Fcb->MainResource, TRUE);
+                        UDFAcquireResourceExclusive(&FileInfo->Fcb->FcbNonpaged->FcbResource, TRUE);
                         StrAcq = TRUE;
 
 #ifndef UDF_ALLOW_LINKS_TO_STREAMS
-                        if(UDFGetFileLinkCount(FileInfo) >= 2) {
+                        if (UDFGetFileLinkCount(FileInfo) >= 2) {
                             // Currently, UDF_INFO package doesn't
                             // support this case, so we'll inform developer
                             // about this to prevent on-disk space leaks...
@@ -1481,63 +1424,63 @@ UDFMarkStreamsForDeletion(
                             try_return(RC = STATUS_CANNOT_DELETE);
                         }
 #endif //UDF_ALLOW_LINKS_TO_STREAMS
-                        if(ForDel) {
+                        if (ForDel) {
                             AdPrint(("    SET stream DeleteOnClose\n"));
 #ifdef UDF_DBG
-                            ASSERT(!(FileInfo->Fcb->FCBFlags & UDF_FCB_ROOT_DIRECTORY));
-                            if(FileInfo->ParentFile &&
+                            ASSERT(!(FileInfo->Fcb->FcbState & UDF_FCB_ROOT_DIRECTORY));
+                            if (FileInfo->ParentFile &&
                                FileInfo->ParentFile->Fcb) {
-                                ASSERT(!(FileInfo->ParentFile->Fcb->FCBFlags & UDF_FCB_ROOT_DIRECTORY));
+                                ASSERT(!(FileInfo->ParentFile->Fcb->FcbState & UDF_FCB_ROOT_DIRECTORY));
                             }
 #endif // UDF_DBG
-                            FileInfo->Fcb->FCBFlags |= (UDF_FCB_DELETE_ON_CLOSE |
+                            FileInfo->Fcb->FcbState |= (UDF_FCB_DELETE_ON_CLOSE |
                                                         UDF_FCB_DELETE_PARENT);
                         } else {
                             AdPrint(("    CLEAR stream DeleteOnClose\n"));
-                            FileInfo->Fcb->FCBFlags &= ~(UDF_FCB_DELETE_ON_CLOSE |
+                            FileInfo->Fcb->FcbState &= ~(UDF_FCB_DELETE_ON_CLOSE |
                                                          UDF_FCB_DELETE_PARENT);
                         }
                     }
-                    UDFCloseFile__(Vcb, FileInfo);
+                    UDFCloseFile__(IrpContext, Vcb, FileInfo);
                 } else
-                if(RC == STATUS_FILE_DELETED) {
+                if (RC == STATUS_FILE_DELETED) {
                     // That's OK if STATUS_FILE_DELETED returned...
                     RC = STATUS_SUCCESS;
                 }
-                if(FileInfo) {
-                    if(UDFCleanUpFile__(Vcb, FileInfo)) {
+                if (FileInfo) {
+                    if (UDFCleanUpFile__(Vcb, FileInfo)) {
                         ASSERT(!StrAcq && !(FileInfo->Fcb));
                         MyFreePool__(FileInfo);
                     }
-                    if(StrAcq) {
+                    if (StrAcq) {
                         UDF_CHECK_PAGING_IO_RESOURCE(FileInfo->Fcb);
-                        UDFReleaseResource(&FileInfo->Fcb->MainResource);
+                        UDFReleaseResource(&FileInfo->Fcb->FcbNonpaged->FcbResource);
                         StrAcq = FALSE;
                     }
                 }
                 FileInfo = NULL;
             }
             // Mark SDir for deletion
-            if(SDirInfo->Fcb) {
-                if(ForDel) {
+            if (SDirInfo->Fcb) {
+                if (ForDel) {
 #ifdef UDF_DBG
-                    ASSERT(!(SDirInfo->Fcb->FCBFlags & UDF_FCB_ROOT_DIRECTORY));
-                    if(SDirInfo->ParentFile &&
+                    ASSERT(!(SDirInfo->Fcb->FcbState & UDF_FCB_ROOT_DIRECTORY));
+                    if (SDirInfo->ParentFile &&
                        SDirInfo->ParentFile->Fcb) {
-                        ASSERT(!(SDirInfo->ParentFile->Fcb->FCBFlags & UDF_FCB_ROOT_DIRECTORY));
+                        ASSERT(!(SDirInfo->ParentFile->Fcb->FcbState & UDF_FCB_ROOT_DIRECTORY));
                     }
 #endif // UDF_DBG
                     AdPrint(("    SET stream dir DeleteOnClose\n"));
-                    SDirInfo->Fcb->FCBFlags |= (UDF_FCB_DELETE_ON_CLOSE |
+                    SDirInfo->Fcb->FcbState |= (UDF_FCB_DELETE_ON_CLOSE |
                                                 UDF_FCB_DELETE_PARENT);
                 } else {
                     AdPrint(("    CLEAR stream dir DeleteOnClose\n"));
-                    SDirInfo->Fcb->FCBFlags &= ~(UDF_FCB_DELETE_ON_CLOSE |
+                    SDirInfo->Fcb->FcbState &= ~(UDF_FCB_DELETE_ON_CLOSE |
                                                  UDF_FCB_DELETE_PARENT);
                 }
             }
         } else
-        if(lc >= 2) {
+        if (lc >= 2) {
             // if caller wants us to perform DelTree for Streams, but
             // someone keeps Stream opened and there is a Link to this
             // file, we can't delete it immediately (on Cleanup) & should
@@ -1545,38 +1488,38 @@ UDFMarkStreamsForDeletion(
             // flag in SDir to kill this file later, when all the Handles
             // to Streams, opened via this file, would be closed
 #ifdef UDF_DBG
-            ASSERT(!(SDirInfo->Fcb->FCBFlags & UDF_FCB_ROOT_DIRECTORY));
-            if(SDirInfo->ParentFile &&
+            ASSERT(!(SDirInfo->Fcb->FcbState & UDF_FCB_ROOT_DIRECTORY));
+            if (SDirInfo->ParentFile &&
                SDirInfo->ParentFile->Fcb) {
-                ASSERT(!(SDirInfo->ParentFile->Fcb->FCBFlags & UDF_FCB_ROOT_DIRECTORY));
+                ASSERT(!(SDirInfo->ParentFile->Fcb->FcbState & UDF_FCB_ROOT_DIRECTORY));
             }
 #endif // UDF_DBG
-            if(SDirInfo->Fcb)
-                SDirInfo->Fcb->FCBFlags |= UDF_FCB_DELETE_PARENT;
+            if (SDirInfo->Fcb)
+                SDirInfo->Fcb->FcbState |= UDF_FCB_DELETE_PARENT;
         }
 
 try_exit: NOTHING;
 
     } _SEH2_FINALLY {
-        if(FileInfo) {
-            UDFCloseFile__(Vcb, FileInfo);
-            if(UDFCleanUpFile__(Vcb, FileInfo)) {
+        if (FileInfo) {
+            UDFCloseFile__(IrpContext, Vcb, FileInfo);
+            if (UDFCleanUpFile__(Vcb, FileInfo)) {
                 ASSERT(!StrAcq && !(FileInfo->Fcb));
                 MyFreePool__(FileInfo);
             }
-            if(StrAcq) {
+            if (StrAcq) {
                 UDF_CHECK_PAGING_IO_RESOURCE(FileInfo->Fcb);
-                UDFReleaseResource(&FileInfo->Fcb->MainResource);
+                UDFReleaseResource(&FileInfo->Fcb->FcbNonpaged->FcbResource);
             }
             SDirInfo = NULL;
         }
-        if(SDirInfo) {
-            UDFCloseFile__(Vcb, SDirInfo);
-            if(SDirAcq) {
+        if (SDirInfo) {
+            UDFCloseFile__(IrpContext, Vcb, SDirInfo);
+            if (SDirAcq) {
                 UDF_CHECK_PAGING_IO_RESOURCE(SDirInfo->Fcb);
-                UDFReleaseResource(&SDirInfo->Fcb->MainResource);
+                UDFReleaseResource(&SDirInfo->Fcb->FcbNonpaged->FcbResource);
             }
-            if(UDFCleanUpFile__(Vcb, SDirInfo)) {
+            if (UDFCleanUpFile__(Vcb, SDirInfo)) {
                 MyFreePool__(SDirInfo);
             }
             SDirInfo = NULL;
@@ -1590,6 +1533,7 @@ try_exit: NOTHING;
  */
 NTSTATUS
 UDFSetDispositionInformation(
+    IN PIRP_CONTEXT IrpContext,
     IN PFCB                            Fcb,
     IN PCCB                            Ccb,
     IN PVCB                            Vcb,
@@ -1606,13 +1550,13 @@ UDFSetDispositionInformation(
 
     _SEH2_TRY {
 
-        if(!Delete) {
+        if (!Delete) {
             AdPrint(("    CLEAR DeleteOnClose\n"));
             // "un-delete" the file.
-            Fcb->FCBFlags &= ~UDF_FCB_DELETE_ON_CLOSE;
-            if(FileObject)
+            Fcb->FcbState &= ~UDF_FCB_DELETE_ON_CLOSE;
+            if (FileObject)
                 FileObject->DeletePending = FALSE;
-            RC = UDFMarkStreamsForDeletion(Vcb, Fcb, FALSE); // Undelete
+            RC = UDFMarkStreamsForDeletion(IrpContext, Vcb, Fcb, FALSE); // Undelete
             try_return(RC);
         }
         AdPrint(("    SET DeleteOnClose\n"));
@@ -1624,33 +1568,33 @@ UDFSetDispositionInformation(
         // (only) link is deleted!)
 
         // Do some checking to see if the file can even be deleted.
-        if(Fcb->FCBFlags & UDF_FCB_DELETE_ON_CLOSE) {
+        if (Fcb->FcbState & UDF_FCB_DELETE_ON_CLOSE) {
             // All done!
             try_return(RC);
         }
 
-        if(Vcb->VCBFlags & VCB_STATE_VOLUME_READ_ONLY) {
+        if (Vcb->VcbState & VCB_STATE_VOLUME_READ_ONLY) {
             try_return(RC = STATUS_CANNOT_DELETE);
         }
 
-        if(Fcb->FCBFlags & UDF_FCB_READ_ONLY) {
+        if (Fcb->FcbState & UDF_FCB_READ_ONLY) {
             RC = UDFCheckAccessRights(NULL, NULL, Fcb->ParentFcb, NULL, FILE_DELETE_CHILD, 0);
-            if(!NT_SUCCESS(RC)) {
+            if (!NT_SUCCESS(RC)) {
                 try_return (RC = STATUS_CANNOT_DELETE);
             }
         }
 
         // It would not be prudent to allow deletion of either a root
         // directory or a directory that is not empty.
-        if(Fcb->FCBFlags & UDF_FCB_ROOT_DIRECTORY)
+        if (Fcb->FcbState & UDF_FCB_ROOT_DIRECTORY)
             try_return(RC = STATUS_CANNOT_DELETE);
 
         lc = UDFGetFileLinkCount(Fcb->FileInfo);
 
-        if(Fcb->FCBFlags & UDF_FCB_DIRECTORY) {
+        if (Fcb->FcbState & UDF_FCB_DIRECTORY) {
             // Perform check to determine whether the directory
             // is empty or not.
-            if(!UDFIsDirEmpty__(Fcb->FileInfo)) {
+            if (!UDFIsDirEmpty__(Fcb->FileInfo)) {
                  try_return(RC = STATUS_DIRECTORY_NOT_EMPTY);
             }
 
@@ -1659,32 +1603,31 @@ UDFSetDispositionInformation(
             // mapped by any process. The delete cannot be allowed to proceed
             // in this case.
             MmPrint(("    MmFlushImageSection()\n"));
-            Fcb->AcqFlushCount++;
-            if(!MmFlushImageSection(&Fcb->SectionObject,
+
+            if (!MmFlushImageSection(&Fcb->FcbNonpaged->SegmentObject,
                     (lc > 1) ? MmFlushForWrite : MmFlushForDelete)) {
-                Fcb->AcqFlushCount--;
+
                 try_return(RC = STATUS_CANNOT_DELETE);
             }
-            Fcb->AcqFlushCount--;
         }
         // We should also mark Streams for deletion if there are no
         // Links to the file. Otherwise we'll delete only the file
 
-        if(lc > 1) {
+        if (lc > 1) {
             RC = STATUS_SUCCESS;
         } else {
-            RC = UDFMarkStreamsForDeletion(Vcb, Fcb, TRUE); // Delete
-            if(!NT_SUCCESS(RC))
+            RC = UDFMarkStreamsForDeletion(IrpContext, Vcb, Fcb, TRUE); // Delete
+            if (!NT_SUCCESS(RC))
                 try_return(RC);
         }
 
         // Set a flag to indicate that this directory entry will become history
         // at cleanup.
-        Fcb->FCBFlags |= UDF_FCB_DELETE_ON_CLOSE;
-        if(FileObject)
+        Fcb->FcbState |= UDF_FCB_DELETE_ON_CLOSE;
+        if (FileObject)
             FileObject->DeletePending = TRUE;
 
-        if((Fcb->FCBFlags & UDF_FCB_DIRECTORY) && Ccb) {
+        if ((Fcb->FcbState & UDF_FCB_DIRECTORY) && Ccb) {
             FsRtlNotifyFullChangeDirectory( Vcb->NotifyIRPMutex, &(Vcb->NextNotifyIRP),
                                             (PVOID)Ccb, NULL, FALSE, FALSE,
                                             0, NULL, NULL, NULL );
@@ -1733,7 +1676,7 @@ UDFSetAllocationInformation(
 
         // First, do whatever error checking is appropriate here (e.g. whether
         // the caller is trying the change size for a directory, etc.).
-        if(Fcb->FCBFlags & UDF_FCB_DIRECTORY)
+        if (Fcb->FcbState & UDF_FCB_DIRECTORY)
             try_return(RC = STATUS_INVALID_PARAMETER);
 
         Fcb->Header.IsFastIoPossible = UDFIsFastIoPossible(Fcb);
@@ -1747,14 +1690,14 @@ UDFSetAllocationInformation(
             CcInitializeCacheMap(FileObject,
                                  (PCC_FILE_SIZES)&Fcb->Header.AllocationSize,
                                  FALSE,
-                                 &(UDFGlobalData.CacheMgrCallBacks),
+                                 &(UdfData.CacheMgrCallBacks),
                                  Fcb);
 
             CacheMapInitialized = TRUE;
         }
 
         // Are we increasing the allocation size?
-        if(Fcb->Header.AllocationSize.QuadPart <
+        if (Fcb->Header.AllocationSize.QuadPart <
             PtrBuffer->AllocationSize.QuadPart) {
 
             // Yes. Do the FSD specific stuff i.e. increase reserved
@@ -1773,7 +1716,7 @@ UDFSetAllocationInformation(
             //       is greater than the new size
             // Otherwise, the VMM should allow the request to proceed.
             MmPrint(("    MmCanFileBeTruncated()\n"));
-            if (!MmCanFileBeTruncated(&Fcb->SectionObject, &PtrBuffer->AllocationSize)) {
+            if (!MmCanFileBeTruncated(&Fcb->FcbNonpaged->SegmentObject, &PtrBuffer->AllocationSize)) {
                 // VMM said no way!
                 try_return(RC = STATUS_USER_MAPPED_FILE);
             }
@@ -1792,14 +1735,14 @@ UDFSetAllocationInformation(
         FileObject->Flags |= FO_FILE_MODIFIED;
 
         // Last, but not the lease, we must inform the Cache Manager of file size changes.
-        if(ModifiedAllocSize) {
+        if (ModifiedAllocSize) {
 
             // If we decreased the allocation size to less than the
             // current file size, modify the file size value.
             // Similarly, if we decreased the value to less than the
             // current valid data length, modify that value as well.
 
-            AcquiredPagingIo = UDFAcquireResourceExclusiveWithCheck(&Fcb->PagingIoResource);
+            AcquiredPagingIo = UDFAcquireResourceExclusiveWithCheck(&Fcb->FcbNonpaged->FcbPagingIoResource);
             // Update the FCB Header with the new allocation size.
             if (TruncatedFile) {
                 if (Fcb->Header.ValidDataLength.QuadPart > PtrBuffer->AllocationSize.QuadPart) {
@@ -1807,11 +1750,11 @@ UDFSetAllocationInformation(
                     Fcb->Header.ValidDataLength =
                         PtrBuffer->AllocationSize;
                 }
-                if(Fcb->Header.FileSize.QuadPart > PtrBuffer->AllocationSize.QuadPart) {
+                if (Fcb->Header.FileSize.QuadPart > PtrBuffer->AllocationSize.QuadPart) {
                     // Decrease the file size value.
                     Fcb->Header.FileSize =
                         PtrBuffer->AllocationSize;
-                    RC = UDFResizeFile__(Vcb, Fcb->FileInfo, PtrBuffer->AllocationSize.QuadPart);
+                    RC = UDFResizeFile__(IrpContext, Vcb, Fcb->FileInfo, PtrBuffer->AllocationSize.QuadPart);
 //                    UDFSetFileSizeInDirNdx(Vcb, Fcb->FileInfo, NULL);
                 }
             } else {
@@ -1819,8 +1762,8 @@ UDFSetAllocationInformation(
 //                UDFSetFileSizeInDirNdx(Vcb, Fcb->FileInfo,
 //                                       &(PtrBuffer->AllocationSize.QuadPart));
             }
-            if(AcquiredPagingIo) {
-                UDFReleaseResource(&Fcb->PagingIoResource);
+            if (AcquiredPagingIo) {
+                UDFReleaseResource(&Fcb->FcbNonpaged->FcbPagingIoResource);
                 AcquiredPagingIo = FALSE;
             }
             // If the FCB has not had caching initiated, it is still valid
@@ -1836,18 +1779,18 @@ UDFSetAllocationInformation(
             //  file stream, but the user has mapped the file into
             //  the process' virtual address space.
             MmPrint(("    CcSetFileSizes()\n"));
-            Fcb->AcqFlushCount++;
+
             CcSetFileSizes(FileObject, (PCC_FILE_SIZES)&(Fcb->Header.AllocationSize));
-            Fcb->AcqFlushCount--;
+
             Fcb->NtReqFCBFlags |= UDF_NTREQ_FCB_MODIFIED;
 
             // Inform any pending IRPs (notify change directory).
             if (UDFIsAStream(Fcb->FileInfo)) {
-                UDFNotifyFullReportChange(Vcb, Fcb->FileInfo,
+                UDFNotifyFullReportChange(Vcb, Fcb,
                                           FILE_NOTIFY_CHANGE_STREAM_SIZE,
                                           FILE_ACTION_MODIFIED_STREAM);
             } else {
-                UDFNotifyFullReportChange(Vcb, Fcb->FileInfo,
+                UDFNotifyFullReportChange(Vcb, Fcb,
                                           FILE_NOTIFY_CHANGE_SIZE,
                                           FILE_ACTION_MODIFIED);
             }
@@ -1856,8 +1799,8 @@ UDFSetAllocationInformation(
 try_exit: NOTHING;
 
     } _SEH2_FINALLY {
-        if(AcquiredPagingIo) {
-            UDFReleaseResource(&Fcb->PagingIoResource);
+        if (AcquiredPagingIo) {
+            UDFReleaseResource(&Fcb->FcbNonpaged->FcbPagingIoResource);
             AcquiredPagingIo = FALSE;
         }
         if (CacheMapInitialized) {
@@ -1874,7 +1817,8 @@ try_exit: NOTHING;
  */
 NTSTATUS
 UDFSetEOF(
-    IN PIO_STACK_LOCATION              PtrSp,
+    IN PIRP_CONTEXT IrpContext,
+    IN PIO_STACK_LOCATION              IrpSp,
     IN PFCB                            Fcb,
     IN PCCB                            Ccb,
     IN PVCB                            Vcb,
@@ -1907,13 +1851,13 @@ UDFSetEOF(
 
         // First, do whatever error checking is appropriate here (e.g. whether
         // the caller is trying the change size for a directory, etc.).
-        if(Fcb->FCBFlags & UDF_FCB_DIRECTORY)
+        if (Fcb->FcbState & UDF_FCB_DIRECTORY)
             try_return(RC = STATUS_INVALID_PARAMETER);
 
-        if((Fcb->FCBFlags & UDF_FCB_DELETED) ||
+        if ((Fcb->FcbState & UDF_FCB_DELETED) ||
            (Fcb->NtReqFCBFlags & UDF_NTREQ_FCB_DELETED)) {
 #ifdef UDF_DBG
-            if(UDFGetFileLinkCount(Fcb->FileInfo) < 1) {
+            if (UDFGetFileLinkCount(Fcb->FileInfo) < 1) {
                 BrutePoint();
                 try_return(RC = STATUS_SUCCESS);
             } else
@@ -1933,21 +1877,21 @@ UDFSetEOF(
             CcInitializeCacheMap(FileObject,
                                  (PCC_FILE_SIZES)&Fcb->Header.AllocationSize,
                                  FALSE,
-                                 &UDFGlobalData.CacheMgrCallBacks,
+                                 &UdfData.CacheMgrCallBacks,
                                  Fcb);
 
             CacheMapInitialized = TRUE;
         }
 
-        AcquiredPagingIo = UDFAcquireResourceExclusiveWithCheck(&Fcb->PagingIoResource);
+        AcquiredPagingIo = UDFAcquireResourceExclusiveWithCheck(&Fcb->FcbNonpaged->FcbPagingIoResource);
         //  Do a special case here for the lazy write of file sizes.
-        if(PtrSp->Parameters.SetFile.AdvanceOnly) {
+        if (IrpSp->Parameters.SetFile.AdvanceOnly) {
             //  Never have the dirent filesize larger than the fcb filesize
             PtrBuffer->EndOfFile.QuadPart =
                 min(PtrBuffer->EndOfFile.QuadPart, Fcb->Header.FileSize.QuadPart);
             //  Only advance the file size, never reduce it with this call
             RC = STATUS_SUCCESS;
-            if(UDFGetFileSizeFromDirNdx(Vcb, Fcb->FileInfo) >=
+            if (UDFGetFileSizeFromDirNdx(Vcb, Fcb->FileInfo) >=
                PtrBuffer->EndOfFile.QuadPart)
                 try_return(RC);
 
@@ -1964,7 +1908,7 @@ UDFSetEOF(
 
         // Are we increasing the allocation size?
         OldFileSize = Fcb->Header.FileSize.QuadPart;
-        if(OldFileSize < PtrBuffer->EndOfFile.QuadPart) {
+        if (OldFileSize < PtrBuffer->EndOfFile.QuadPart) {
 
             // Yes. Do the FSD specific stuff i.e. increase reserved
             // space on disk.
@@ -1975,14 +1919,12 @@ UDFSetEOF(
 
             // reference file to pretend that it is opened
             UDFReferenceFile__(Fcb->FileInfo);
-            UDFInterlockedIncrement((PLONG)&Fcb->ReferenceCount);
-            UDFInterlockedIncrement((PLONG)&Fcb->CommonRefCount);
+            UDFInterlockedIncrement((PLONG)&Fcb->FcbReference);
             // perform resize operation
-            RC = UDFResizeFile__(Vcb, Fcb->FileInfo, PtrBuffer->EndOfFile.QuadPart);
+            RC = UDFResizeFile__(IrpContext, Vcb, Fcb->FileInfo, PtrBuffer->EndOfFile.QuadPart);
             // dereference file
-            UDFCloseFile__(Vcb, Fcb->FileInfo);
-            UDFInterlockedDecrement((PLONG)&Fcb->ReferenceCount);
-            UDFInterlockedDecrement((PLONG)&Fcb->CommonRefCount);
+            UDFCloseFile__(IrpContext, Vcb, Fcb->FileInfo);
+            UDFInterlockedDecrement((PLONG)&Fcb->FcbReference);
             // update values in NtReqFcb
             Fcb->Header.FileSize.QuadPart =
 //            NtReqFcb->CommonFCBHeader.ValidDataLength.QuadPart =
@@ -1999,7 +1941,7 @@ UDFSetEOF(
             // Otherwise, the VMM should allow the request to proceed.
 
             MmPrint(("    MmCanFileBeTruncated()\n"));
-            if (!MmCanFileBeTruncated(&Fcb->SectionObject, &PtrBuffer->EndOfFile)) {
+            if (!MmCanFileBeTruncated(&Fcb->FcbNonpaged->SegmentObject, &PtrBuffer->EndOfFile)) {
                 // VMM said no way!
                 try_return(RC = STATUS_USER_MAPPED_FILE);
             }
@@ -2007,14 +1949,12 @@ UDFSetEOF(
             // Perform directory entry modifications. Release any on-disk
             // space we may need to in the process.
             UDFReferenceFile__(Fcb->FileInfo);
-            UDFInterlockedIncrement((PLONG)&Fcb->ReferenceCount);
-            UDFInterlockedIncrement((PLONG)&Fcb->CommonRefCount);
+            UDFInterlockedIncrement((PLONG)&Fcb->FcbReference);
             // perform resize operation
-            RC = UDFResizeFile__(Vcb, Fcb->FileInfo, PtrBuffer->EndOfFile.QuadPart);
+            RC = UDFResizeFile__(IrpContext, Vcb, Fcb->FileInfo, PtrBuffer->EndOfFile.QuadPart);
             // dereference file
-            UDFCloseFile__(Vcb, Fcb->FileInfo);
-            UDFInterlockedDecrement((PLONG)&Fcb->ReferenceCount);
-            UDFInterlockedDecrement((PLONG)&Fcb->CommonRefCount);
+            UDFCloseFile__(IrpContext, Vcb, Fcb->FileInfo);
+            UDFInterlockedDecrement((PLONG)&Fcb->FcbReference);
 
             ModifiedAllocSize = TRUE;
             TruncatedFile = TRUE;
@@ -2025,17 +1965,17 @@ UDFSetEOF(
         // or reduced file size), we should update file time stamps.
 
         // Last, but not the least, we must inform the Cache Manager of file size changes.
-        if(ModifiedAllocSize && NT_SUCCESS(RC)) {
+        if (ModifiedAllocSize && NT_SUCCESS(RC)) {
             // If we decreased the allocation size to less than the
             // current file size, modify the file size value.
             // Similarly, if we decreased the value to less than the
             // current valid data length, modify that value as well.
-            if(TruncatedFile) {
-                if(Fcb->Header.ValidDataLength.QuadPart > PtrBuffer->EndOfFile.QuadPart) {
+            if (TruncatedFile) {
+                if (Fcb->Header.ValidDataLength.QuadPart > PtrBuffer->EndOfFile.QuadPart) {
                     // Decrease the valid data length value.
                     Fcb->Header.ValidDataLength = PtrBuffer->EndOfFile;
                 }
-                if(Fcb->Header.FileSize.QuadPart > PtrBuffer->EndOfFile.QuadPart) {
+                if (Fcb->Header.FileSize.QuadPart > PtrBuffer->EndOfFile.QuadPart) {
                     // Decrease the file size value.
                     Fcb->Header.FileSize = PtrBuffer->EndOfFile;
                 }
@@ -2058,11 +1998,11 @@ UDFSetEOF(
             // mapped in the file)
 
             // Archive bit
-            if(Vcb->CompatFlags & UDF_VCB_IC_UPDATE_ARCH_BIT) {
+            if (Vcb->CompatFlags & UDF_VCB_IC_UPDATE_ARCH_BIT) {
                 DirNdx = UDFDirIndex(UDFGetDirIndexByFileInfo(Fcb->FileInfo), Fcb->FileInfo->Index);
-                Ccb->CCBFlags &= ~UDF_CCB_ATTRIBUTES_SET;
+                Ccb->Flags &= ~UDF_CCB_ATTRIBUTES_SET;
                 Attr = UDFAttributesToNT(DirNdx, Fcb->FileInfo->Dloc->FileEntry);
-                if(!(Attr & FILE_ATTRIBUTE_ARCHIVE))
+                if (!(Attr & FILE_ATTRIBUTE_ARCHIVE))
                     UDFAttributesToUDF(DirNdx, Fcb->FileInfo->Dloc->FileEntry, Attr | FILE_ATTRIBUTE_ARCHIVE);
             }
 
@@ -2074,10 +2014,10 @@ UDFSetEOF(
             //  file stream, but the user has mapped the file into
             //  the process' virtual address space.
             MmPrint(("    CcSetFileSizes(), thrd:%8.8x\n",PsGetCurrentThread()));
-            Fcb->AcqFlushCount++;
+
             CcSetFileSizes(FileObject, (PCC_FILE_SIZES)&Fcb->Header.AllocationSize);
-            Fcb->AcqFlushCount--;
-/*            if(ZeroBlock) {
+
+/*            if (ZeroBlock) {
                 UDFZeroDataEx(NtReqFcb,
                               OldFileSize,
                               PtrBuffer->EndOfFile.QuadPart - OldFileSize,
@@ -2086,18 +2026,18 @@ UDFSetEOF(
             Fcb->NtReqFCBFlags |= UDF_NTREQ_FCB_MODIFIED;
 
 notify_size_changes:
-            if(AcquiredPagingIo) {
-                UDFReleaseResource(&Fcb->PagingIoResource);
+            if (AcquiredPagingIo) {
+                UDFReleaseResource(&Fcb->FcbNonpaged->FcbPagingIoResource);
                 AcquiredPagingIo = FALSE;
             }
 
             // Inform any pending IRPs (notify change directory).
-            if(UDFIsAStream(Fcb->FileInfo)) {
-                UDFNotifyFullReportChange( Vcb, Fcb->FileInfo,
+            if (UDFIsAStream(Fcb->FileInfo)) {
+                UDFNotifyFullReportChange( Vcb, Fcb,
                                            FILE_NOTIFY_CHANGE_STREAM_SIZE,
                                            FILE_ACTION_MODIFIED_STREAM);
             } else {
-                UDFNotifyFullReportChange( Vcb, Fcb->FileInfo,
+                UDFNotifyFullReportChange( Vcb, Fcb,
                                            FILE_NOTIFY_CHANGE_SIZE,
                                            FILE_ACTION_MODIFIED);
             }
@@ -2106,8 +2046,8 @@ notify_size_changes:
 try_exit: NOTHING;
 
     } _SEH2_FINALLY {
-        if(AcquiredPagingIo) {
-            UDFReleaseResource(&Fcb->PagingIoResource);
+        if (AcquiredPagingIo) {
+            UDFReleaseResource(&Fcb->FcbNonpaged->FcbPagingIoResource);
             AcquiredPagingIo = FALSE;
         }
         if (CacheMapInitialized) {
@@ -2140,15 +2080,15 @@ UDFPrepareForRenameMoveLink(
     // one of them is a parent of another. Sequential resource
     // acquisition may lead to deadlock due to concurrent
     // CleanUpFcbChain() or UDFCloseFileInfoChain()
-    UDFInterlockedIncrement((PLONG)&(Vcb->VCBOpenCount));
-    UDFReleaseResource(&(Vcb->VCBResource));
+    UDFInterlockedIncrement((PLONG)&(Vcb->VcbReference));
+    UDFReleaseResource(&(Vcb->VcbResource));
     (*AcquiredVcb) = FALSE;
 
     // At first, make system to issue last Close request
     // for our Source & Target ...
     // we needn't flush/purge for Source on HLink
     UDFRemoveFromSystemDelayedQueue(Dir2->Fcb);
-    if(!HardLink && (Dir2 != Dir1))
+    if (!HardLink && (Dir2 != Dir1))
         UDFRemoveFromSystemDelayedQueue(File1->Fcb);
 
 #ifdef UDF_DELAYED_CLOSE
@@ -2156,9 +2096,9 @@ UDFPrepareForRenameMoveLink(
         // Do actual close for all "delayed close" calls
 
         // ... and now remove the rest from our queue
-        if(!HardLink) {
+        if (!HardLink) {
             UDFCloseAllDelayedInDir(Vcb, Dir1);
-            if(Dir2 != Dir1)
+            if (Dir2 != Dir1)
                 UDFCloseAllDelayedInDir(Vcb, Dir2);
         } else {
             UDFCloseAllDelayedInDir(Vcb, Dir2);
@@ -2166,30 +2106,30 @@ UDFPrepareForRenameMoveLink(
 
     } _SEH2_EXCEPT(EXCEPTION_EXECUTE_HANDLER) {
         BrutePoint();
-        UDFInterlockedDecrement((PLONG)&(Vcb->VCBOpenCount));
+        UDFInterlockedDecrement((PLONG)&Vcb->VcbReference);
         return (STATUS_DRIVER_INTERNAL_ERROR);
     } _SEH2_END;
 #endif //UDF_DELAYED_CLOSE
 
     (*SingleDir) = ((Dir1 == Dir2) && (Dir1->Fcb));
 
-    if(!(*SingleDir) ||
+    if (!(*SingleDir) ||
        (UDFGetFileLinkCount(File1) != 1)) {
-        UDFAcquireResourceExclusive(&(Vcb->VCBResource), TRUE);
+        UDFAcquireResourceExclusive(&(Vcb->VcbResource), TRUE);
         (*AcquiredVcb) = TRUE;
         (*AcquiredVcbEx) = TRUE;
-        UDFInterlockedDecrement((PLONG)&(Vcb->VCBOpenCount));
+        UDFInterlockedDecrement((PLONG)&(Vcb->VcbReference));
     } else {
-        UDFAcquireResourceShared(&(Vcb->VCBResource), TRUE);
+        UDFAcquireResourceShared(&(Vcb->VcbResource), TRUE);
         (*AcquiredVcb) = TRUE;
-        UDFInterlockedDecrement((PLONG)&(Vcb->VCBOpenCount));
+        UDFInterlockedDecrement((PLONG)&(Vcb->VcbReference));
 
         UDF_CHECK_PAGING_IO_RESOURCE(Dir1->Fcb);
-        UDFAcquireResourceExclusive(&Dir1->Fcb->MainResource, TRUE);
+        UDFAcquireResourceExclusive(&Dir1->Fcb->FcbNonpaged->FcbResource, TRUE);
         (*AcquiredDir1) = TRUE;
 
         UDF_CHECK_PAGING_IO_RESOURCE(File1->Fcb);
-        UDFAcquireResourceExclusive(&File1->Fcb->MainResource, TRUE);
+        UDFAcquireResourceExclusive(&File1->Fcb->FcbNonpaged->FcbResource, TRUE);
         (*AcquiredFcb1) = TRUE;
     }
     return STATUS_SUCCESS;
@@ -2200,6 +2140,7 @@ UDFPrepareForRenameMoveLink(
  */
 NTSTATUS
 UDFSetRenameInfo(
+    IN PIRP_CONTEXT IrpContext,
     IN PIO_STACK_LOCATION PtrSp,
     IN PFCB      Fcb,
     IN PCCB Ccb,
@@ -2243,29 +2184,38 @@ UDFSetRenameInfo(
 
     _SEH2_TRY {
         // do we try to rename Volume ?
-        if(!(FileInfo = Fcb->FileInfo))
+        if (!(FileInfo = Fcb->FileInfo))
              try_return (RC = STATUS_ACCESS_DENIED);
 
         // do we try to rename RootDir ?
-        if(!(DirInfo = FileInfo->ParentFile))
+        if (!(DirInfo = FileInfo->ParentFile))
             try_return (RC = STATUS_ACCESS_DENIED);
 
         // do we try to rename to RootDir or Volume ?
-        if(!TargetFileObject) {
+        if (!TargetFileObject) {
+
             TargetDirInfo = FileInfo->ParentFile;
-        } else
-        if(TargetFileObject->FsContext2 &&
-          (Fcb2 = ((PCCB)(TargetFileObject->FsContext2))->Fcb)) {
-            TargetDirInfo = ((PCCB)(TargetFileObject->FsContext2))->Fcb->FileInfo;
+
         } else {
-            try_return (RC = STATUS_INVALID_PARAMETER);
+
+            PCCB TargetCcb;
+            UDFDecodeFileObject(TargetFileObject, &Fcb2, &TargetCcb);
+
+            ASSERT_FCB(Fcb2);
+
+            if (!Fcb2) {
+                try_return (RC = STATUS_INVALID_PARAMETER);
+            }
+
+            TargetDirInfo = Fcb2->FileInfo;
         }
+
         // invalid destination ?
-        if(!TargetDirInfo) try_return (RC = STATUS_ACCESS_DENIED);
+        if (!TargetDirInfo) try_return (RC = STATUS_ACCESS_DENIED);
 
         // Stream can't be a Dir or have StreamDir
-        if(UDFIsAStreamDir(TargetDirInfo)) {
-            if(UDFIsADirectory(FileInfo) ||
+        if (UDFIsAStreamDir(TargetDirInfo)) {
+            if (UDFIsADirectory(FileInfo) ||
                UDFHasAStreamDir(FileInfo)) {
                 try_return (RC = STATUS_ACCESS_DENIED);
             }
@@ -2277,35 +2227,35 @@ UDFSetRenameInfo(
                                          Ccb, FileInfo,
                                          DirInfo, TargetDirInfo,
                                          FALSE);  // it is Rename operation
-        if(!NT_SUCCESS(RC))
+        if (!NT_SUCCESS(RC))
             try_return(RC);
 
         // check if the source file is in use
-        if(Fcb->OpenHandleCount > 1)
+        if (Fcb->FcbCleanup > 1)
             try_return (RC = STATUS_ACCESS_DENIED);
-        ASSERT(Fcb->OpenHandleCount);
+        ASSERT(Fcb->FcbCleanup);
         ASSERT(!Fcb->IrpContextLite);
-        if(Fcb->IrpContextLite) {
+        if (Fcb->IrpContextLite) {
             try_return (RC = STATUS_ACCESS_DENIED);
         }
         // Check if we have parallel/pending Close threads
-        if(Fcb->CcbCount && !SingleDir) {
+        if (Fcb->CcbCount && !SingleDir) {
             // if this is the 1st attempt, we'll try to
             // synchronize with Close requests
             // otherwise fail request
             RC = STATUS_ACCESS_DENIED;
 post_rename:
-            if(Fcb->FCBFlags & UDF_FCB_POSTED_RENAME) {
-                Fcb->FCBFlags &= ~UDF_FCB_POSTED_RENAME;
+            if (Fcb->FcbState & UDF_FCB_POSTED_RENAME) {
+                Fcb->FcbState &= ~UDF_FCB_POSTED_RENAME;
                 try_return (RC);
             }
-            Fcb->FCBFlags |= UDF_FCB_POSTED_RENAME;
+            Fcb->FcbState |= UDF_FCB_POSTED_RENAME;
             try_return (RC = STATUS_PENDING);
         }
 
-        if(!TargetFileObject) {
+        if (!TargetFileObject) {
             //  Make sure the name is of legal length.
-            if(PtrBuffer->FileNameLength > UDF_NAME_LEN*sizeof(WCHAR)) {
+            if (PtrBuffer->FileNameLength > UDF_NAME_LEN*sizeof(WCHAR)) {
                 try_return(RC = STATUS_OBJECT_NAME_INVALID);
             }
             NewName.Length = NewName.MaximumLength = (USHORT)(PtrBuffer->FileNameLength);
@@ -2315,73 +2265,73 @@ post_rename:
             NewName = *((PUNICODE_STRING)&TargetFileObject->FileName);
         }
 
-        ic = (Ccb->CCBFlags & UDF_CCB_CASE_SENSETIVE) ? FALSE : TRUE;
+        ic = (Ccb->Flags & UDF_CCB_CASE_SENSETIVE) ? FALSE : TRUE;
 
         AdPrint(("  %ws ->\n    %ws\n",
             Fcb->FCBName->ObjectName.Buffer,
             NewName.Buffer));
 
-        if(UDFIsDirOpened__(FileInfo)) {
+        if (UDFIsDirOpened__(FileInfo)) {
             // We can't rename file because of unclean references.
             // UDF_INFO package can safely do it, but NT side cannot.
             // In this case NT requires STATUS_OBJECT_NAME_COLLISION
             // rather than STATUS_ACCESS_DENIED
-            if(NT_SUCCESS(UDFFindFile__(Vcb, ic, &NewName, TargetDirInfo)))
+            if (NT_SUCCESS(UDFFindFile__(Vcb, ic, &NewName, TargetDirInfo)))
                 try_return(RC = STATUS_OBJECT_NAME_COLLISION);
             try_return (RC = STATUS_ACCESS_DENIED);
         } else {
             // Last check before Moving.
             // We can't move across Dir referenced (even internally) file
-            if(!SingleDir) {
+            if (!SingleDir) {
                 RC = UDFDoesOSAllowFileToBeMoved__(FileInfo);
-                if(!NT_SUCCESS(RC)) {
+                if (!NT_SUCCESS(RC)) {
 //                    try_return(RC);
                     goto post_rename;
                 }
             }
 
-            ASSERT_REF(Fcb1->ReferenceCount >= FileInfo->RefCount);
-            ASSERT_REF(DirInfo->Fcb->ReferenceCount >= DirInfo->RefCount);
-            ASSERT_REF(Dir2->Fcb->ReferenceCount >= Dir2->RefCount);
+            ASSERT(Fcb->FcbReference >= FileInfo->RefCount);
+            ASSERT(DirInfo->Fcb->FcbReference >= DirInfo->RefCount);
+            ASSERT(TargetDirInfo->Fcb->FcbReference >= TargetDirInfo->RefCount);
 
-            RC = UDFRenameMoveFile__(Vcb, ic, &Replace, &NewName, DirInfo, TargetDirInfo, FileInfo);
+            RC = UDFRenameMoveFile__(IrpContext, Vcb, ic, &Replace, &NewName, DirInfo, TargetDirInfo, FileInfo);
         }
-        if(!NT_SUCCESS(RC))
+        if (!NT_SUCCESS(RC))
             try_return (RC);
 
         ASSERT(UDFDirIndex(FileInfo->ParentFile->Dloc->DirIndex, FileInfo->Index)->FileInfo == FileInfo);
 
-        RC = MyCloneUnicodeString(&LocalPath, (TargetDirInfo->Fcb->FCBFlags & UDF_FCB_ROOT_DIRECTORY) ?
-                                                    &UDFGlobalData.UnicodeStrRoot :
+        RC = MyCloneUnicodeString(&LocalPath, (TargetDirInfo->Fcb->FcbState & UDF_FCB_ROOT_DIRECTORY) ?
+                                                    &UdfData.UnicodeStrRoot :
                                                     &TargetDirInfo->Fcb->FCBName->ObjectName);
-        if(!NT_SUCCESS(RC)) try_return (RC);
+        if (!NT_SUCCESS(RC)) try_return (RC);
 //        RC = MyAppendUnicodeStringToString(&LocalPath, (Dir2->Fcb->FCBFlags & UDF_FCB_ROOT_DIRECTORY) ? &(UDFGlobalData.UnicodeStrRoot) : &(Dir2->Fcb->FCBName->ObjectName));
-//        if(!NT_SUCCESS(RC)) try_return (RC);
-        if(TargetDirInfo->ParentFile) {
+//        if (!NT_SUCCESS(RC)) try_return (RC);
+        if (TargetDirInfo->ParentFile) {
             RC = MyAppendUnicodeToString(&LocalPath, L"\\");
-            if(!NT_SUCCESS(RC)) try_return (RC);
+            if (!NT_SUCCESS(RC)) try_return (RC);
         }
         RC = MyAppendUnicodeStringToStringTag(&LocalPath, &NewName, MEM_USREN_TAG);
-        if(!NT_SUCCESS(RC)) try_return (RC);
+        if (!NT_SUCCESS(RC)) try_return (RC);
 
         // Set Archive bit
         DirNdx = UDFDirIndex(FileInfo->ParentFile->Dloc->DirIndex, FileInfo->Index);
-        if(Vcb->CompatFlags & UDF_VCB_IC_UPDATE_ARCH_BIT) {
+        if (Vcb->CompatFlags & UDF_VCB_IC_UPDATE_ARCH_BIT) {
             Attr = UDFAttributesToNT(DirNdx, FileInfo->Dloc->FileEntry);
-            if(!(Attr & FILE_ATTRIBUTE_ARCHIVE))
+            if (!(Attr & FILE_ATTRIBUTE_ARCHIVE))
                 UDFAttributesToUDF(DirNdx, FileInfo->Dloc->FileEntry, Attr | FILE_ATTRIBUTE_ARCHIVE);
         }
         // Update Parent Objects (mark 'em as modified)
-        if(Vcb->CompatFlags & UDF_VCB_IC_UPDATE_DIR_WRITE) {
-            if(TargetFileObject) {
+        if (Vcb->CompatFlags & UDF_VCB_IC_UPDATE_DIR_WRITE) {
+            if (TargetFileObject) {
                 TargetFileObject->Flags |= FO_FILE_MODIFIED;
-                if(!Replace)
+                if (!Replace)
                     TargetFileObject->Flags |= FO_FILE_SIZE_CHANGED;
             }
         }
         // report changes
-        if(SingleDir && !Replace) {
-            UDFNotifyFullReportChange( Vcb, FileInfo,
+        if (SingleDir && !Replace) {
+            UDFNotifyFullReportChange( Vcb, FileInfo->Fcb,
                                        UDFIsADirectory(FileInfo) ? FILE_NOTIFY_CHANGE_DIR_NAME : FILE_NOTIFY_CHANGE_FILE_NAME,
                                        FILE_ACTION_RENAMED_OLD_NAME);
 /*          UDFNotifyFullReportChange( Vcb, File2,
@@ -2389,16 +2339,16 @@ post_rename:
                                        FILE_ACTION_RENAMED_NEW_NAME );*/
             FsRtlNotifyFullReportChange( Vcb->NotifyIRPMutex, &(Vcb->NextNotifyIRP),
                                          (PSTRING)&LocalPath,
-                                         ((TargetDirInfo->Fcb->FCBFlags & UDF_FCB_ROOT_DIRECTORY) ? 0 : TargetDirInfo->Fcb->FCBName->ObjectName.Length) + sizeof(WCHAR),
+                                         ((TargetDirInfo->Fcb->FcbState & UDF_FCB_ROOT_DIRECTORY) ? 0 : TargetDirInfo->Fcb->FCBName->ObjectName.Length) + sizeof(WCHAR),
                                          NULL,NULL,
                                          UDFIsADirectory(FileInfo) ? FILE_NOTIFY_CHANGE_DIR_NAME : FILE_NOTIFY_CHANGE_FILE_NAME,
                                          FILE_ACTION_RENAMED_NEW_NAME,
                                          NULL);
         } else {
-            UDFNotifyFullReportChange( Vcb, FileInfo,
+            UDFNotifyFullReportChange( Vcb, FileInfo->Fcb,
                                        UDFIsADirectory(FileInfo) ? FILE_NOTIFY_CHANGE_DIR_NAME : FILE_NOTIFY_CHANGE_FILE_NAME,
                                        FILE_ACTION_REMOVED);
-            if(Replace) {
+            if (Replace) {
 /*              UDFNotifyFullReportChange( Vcb, File2,
                                        FILE_NOTIFY_CHANGE_ATTRIBUTES |
                                        FILE_NOTIFY_CHANGE_SIZE |
@@ -2409,7 +2359,7 @@ post_rename:
                                        FILE_ACTION_MODIFIED );*/
                 FsRtlNotifyFullReportChange( Vcb->NotifyIRPMutex, &(Vcb->NextNotifyIRP),
                                              (PSTRING)&LocalPath,
-                                             ((TargetDirInfo->Fcb->FCBFlags & UDF_FCB_ROOT_DIRECTORY) ?
+                                             ((TargetDirInfo->Fcb->FcbState & UDF_FCB_ROOT_DIRECTORY) ?
                                                  0 : TargetDirInfo->Fcb->FCBName->ObjectName.Length) + sizeof(WCHAR),
                                              NULL,NULL,
                                              FILE_NOTIFY_CHANGE_ATTRIBUTES |
@@ -2426,7 +2376,7 @@ post_rename:
                                        FILE_ACTION_ADDED );*/
                 FsRtlNotifyFullReportChange( Vcb->NotifyIRPMutex, &(Vcb->NextNotifyIRP),
                                              (PSTRING)&LocalPath,
-                                             ((TargetDirInfo->Fcb->FCBFlags & UDF_FCB_ROOT_DIRECTORY) ?
+                                             ((TargetDirInfo->Fcb->FcbState & UDF_FCB_ROOT_DIRECTORY) ?
                                                  0 : TargetDirInfo->Fcb->FCBName->ObjectName.Length) + sizeof(WCHAR),
                                              NULL,NULL,
                                              UDFIsADirectory(FileInfo) ?
@@ -2439,13 +2389,12 @@ post_rename:
 
         // this will prevent structutre release before call to
         // UDFCleanUpFcbChain()
-        UDFInterlockedIncrement((PLONG)&DirInfo->Fcb->ReferenceCount);
-        UDFInterlockedIncrement((PLONG)&DirInfo->Fcb->CommonRefCount);
-        ASSERT_REF(DirInfo->Fcb->ReferenceCount >= DirInfo->RefCount);
+        UDFInterlockedIncrement((PLONG)&DirInfo->Fcb->FcbReference);
+        ASSERT(DirInfo->Fcb->FcbReference >= DirInfo->RefCount);
 
         // Look through Ccb list & decrement OpenHandleCounter(s)
         // acquire CcbList
-        if(!SingleDir) {
+        if (!SingleDir) {
             UDFAcquireResourceExclusive(&Fcb->CcbListResource, TRUE);
             Link = Fcb->NextCCB.Flink;
             DirRefCount = 0;
@@ -2457,7 +2406,7 @@ post_rename:
                 ASSERT(CurCcb->TreeLength);
                 i = (CurCcb->TreeLength) ? (CurCcb->TreeLength - 1) : 0;
                 Link = Link->Flink;
-                UseClose = (CurCcb->CCBFlags & UDF_CCB_CLEANED) ? FALSE : TRUE;
+                UseClose = (CurCcb->Flags & UDF_CCB_CLEANED) ? FALSE : TRUE;
 
                 AdPrint(("  Ccb:%x:%s:i:%x\n", CurCcb, UseClose ? "Close" : "",i));
                 // cleanup old parent chain
@@ -2466,22 +2415,20 @@ post_rename:
                     // it will prevent us from data losses
                     // due to eventual structure release
                     fi = NextFileInfo->ParentFile;
-                    if(UseClose) {
-                        ASSERT_REF(NextFileInfo->Fcb->ReferenceCount >= NextFileInfo->RefCount);
-                        UDFCloseFile__(Vcb, NextFileInfo);
+                    if (UseClose) {
+                        ASSERT(NextFileInfo->Fcb->FcbReference >= NextFileInfo->RefCount);
+                        UDFCloseFile__(IrpContext, Vcb, NextFileInfo);
                     }
-                    ASSERT_REF(NextFileInfo->Fcb->ReferenceCount > NextFileInfo->RefCount);
-                    ASSERT_REF(NextFileInfo->Fcb->ReferenceCount);
-                    ASSERT_REF(NextFileInfo->Fcb->CommonRefCount);
-                    UDFInterlockedDecrement((PLONG)&NextFileInfo->Fcb->ReferenceCount);
-                    UDFInterlockedDecrement((PLONG)&NextFileInfo->Fcb->CommonRefCount);
-                    ASSERT_REF(NextFileInfo->Fcb->ReferenceCount >= NextFileInfo->RefCount);
+                    ASSERT(NextFileInfo->Fcb->FcbReference > NextFileInfo->RefCount);
+                    ASSERT(NextFileInfo->Fcb->FcbReference);
+                    UDFInterlockedDecrement((PLONG)&NextFileInfo->Fcb->FcbReference);
+                    ASSERT(NextFileInfo->Fcb->FcbReference >= NextFileInfo->RefCount);
                     NextFileInfo = fi;
                 }
 
-                if(CurCcb->TreeLength > 1) {
+                if (CurCcb->TreeLength > 1) {
                     DirRefCount++;
-                    if(UseClose)
+                    if (UseClose)
                         FileInfoRefCount++;
                     CurCcb->TreeLength = 2;
 #ifdef UDF_DBG
@@ -2492,66 +2439,65 @@ post_rename:
             }
             UDFReleaseResource(&Fcb->CcbListResource);
 
-            ASSERT_REF(DirRefCount >= FileInfoRefCount);
+            ASSERT(DirRefCount >= FileInfoRefCount);
             // update counters & pointers
             Fcb->ParentFcb = TargetDirInfo->Fcb;
             // move references to TargetDir
-            UDFInterlockedExchangeAdd((PLONG)&TargetDirInfo->Fcb->ReferenceCount, DirRefCount);
-            UDFInterlockedExchangeAdd((PLONG)&TargetDirInfo->Fcb->CommonRefCount, DirRefCount);
-            ASSERT_REF(TargetDirInfo->Fcb->ReferenceCount > TargetDirInfo->RefCount);
+            UDFInterlockedExchangeAdd((PLONG)&TargetDirInfo->Fcb->FcbReference, DirRefCount);
+            ASSERT(TargetDirInfo->Fcb->FcbReference > TargetDirInfo->RefCount);
             UDFReferenceFileEx__(TargetDirInfo,FileInfoRefCount);
-            ASSERT_REF(TargetDirInfo->Fcb->ReferenceCount >= TargetDirInfo->RefCount);
+            ASSERT(TargetDirInfo->Fcb->FcbReference >= TargetDirInfo->RefCount);
         }
-        ASSERT_REF(TargetDirInfo->Fcb->ReferenceCount >= TargetDirInfo->RefCount);
-        ASSERT_REF(TargetDirInfo->RefCount);
+        ASSERT(TargetDirInfo->Fcb->FcbReference >= TargetDirInfo->RefCount);
+        ASSERT(TargetDirInfo->RefCount);
 
-        ASSERT_REF(DirInfo->Fcb->ReferenceCount >= DirInfo->RefCount);
+        ASSERT(DirInfo->Fcb->FcbReference >= DirInfo->RefCount);
         // Modify name in Fcb1
-        if(Fcb->FCBName) {
-            if(Fcb->FCBName->ObjectName.Buffer) {
+        if (Fcb->FCBName) {
+            if (Fcb->FCBName->ObjectName.Buffer) {
                 MyFreePool__(Fcb->FCBName->ObjectName.Buffer);
             }
             UDFReleaseObjectName(Fcb->FCBName);
         }
         Fcb->FCBName = UDFAllocateObjectName();
-        if(!(Fcb->FCBName)) {
+        if (!(Fcb->FCBName)) {
 insuf_res:
             BrutePoint();
             // UDFCleanUpFcbChain()...
-            if(AcquiredFcb1) {
+            if (AcquiredFcb1) {
                 UDF_CHECK_PAGING_IO_RESOURCE(Fcb);
-                UDFReleaseResource(&Fcb->MainResource);
+                UDFReleaseResource(&Fcb->FcbNonpaged->FcbResource);
                 AcquiredDir1 = FALSE;
             }
-            if(AcquiredDir1) {
+            if (AcquiredDir1) {
                 UDF_CHECK_PAGING_IO_RESOURCE(DirInfo->Fcb);
-                UDFReleaseResource(&DirInfo->Fcb->MainResource);
+                UDFReleaseResource(&DirInfo->Fcb->FcbNonpaged->FcbResource);
                 AcquiredDir1 = FALSE;
             }
-            UDFCleanUpFcbChain(Vcb, DirInfo, 1, TRUE);
+            UDFTeardownStructures(IrpContext, DirInfo->Fcb, 1, NULL);
             try_return(RC = STATUS_INSUFFICIENT_RESOURCES);
         }
 
         RC = MyCloneUnicodeString(&Fcb->FCBName->ObjectName, &Fcb2->FCBName->ObjectName);
-        if(!NT_SUCCESS(RC))
+        if (!NT_SUCCESS(RC))
             goto insuf_res;
 /*        RC = MyAppendUnicodeStringToString(&(Fcb1->FCBName->ObjectName), &(Fcb2->FCBName->ObjectName));
-        if(!NT_SUCCESS(RC))
+        if (!NT_SUCCESS(RC))
             goto insuf_res;*/
         // if Dir2 is a RootDir, we shoud not append '\\' because
         // uit will be the 2nd '\\' character (RootDir's name is also '\\')
-        if(TargetDirInfo->ParentFile) {
+        if (TargetDirInfo->ParentFile) {
             RC = MyAppendUnicodeToString(&Fcb->FCBName->ObjectName, L"\\");
-            if(!NT_SUCCESS(RC))
+            if (!NT_SUCCESS(RC))
                 goto insuf_res;
         }
         RC = MyAppendUnicodeStringToStringTag(&Fcb->FCBName->ObjectName, &NewName, MEM_USREN2_TAG);
-        if(!NT_SUCCESS(RC))
+        if (!NT_SUCCESS(RC))
             goto insuf_res;
 
-        ASSERT_REF(Fcb1->ReferenceCount >= FileInfo->RefCount);
-        ASSERT_REF(DirInfo->Fcb->ReferenceCount >= DirInfo->RefCount);
-        ASSERT_REF(Dir2->Fcb->ReferenceCount >= Dir2->RefCount);
+        ASSERT(Fcb->FcbReference >= FileInfo->RefCount);
+        ASSERT(DirInfo->Fcb->FcbReference >= DirInfo->RefCount);
+        ASSERT(TargetDirInfo->Fcb->FcbReference >= TargetDirInfo->RefCount);
 
         RC = STATUS_SUCCESS;
 
@@ -2559,33 +2505,33 @@ try_exit:    NOTHING;
 
     } _SEH2_FINALLY {
 
-        if(AcquiredFcb1) {
+        if (AcquiredFcb1) {
             UDF_CHECK_PAGING_IO_RESOURCE(Fcb);
-            UDFReleaseResource(&Fcb->MainResource);
+            UDFReleaseResource(&Fcb->FcbNonpaged->FcbResource);
         }
-        if(AcquiredDir1) {
+        if (AcquiredDir1) {
             UDF_CHECK_PAGING_IO_RESOURCE(DirInfo->Fcb);
-            UDFReleaseResource(&DirInfo->Fcb->MainResource);
+            UDFReleaseResource(&DirInfo->Fcb->FcbNonpaged->FcbResource);
         }
         // perform protected structure release
-        if(NT_SUCCESS(RC) &&
+        if (NT_SUCCESS(RC) &&
            (RC != STATUS_PENDING)) {
             ASSERT(AcquiredVcb);
-            UDFCleanUpFcbChain(Vcb, DirInfo, 1, TRUE);
-            ASSERT_REF(Fcb1->ReferenceCount >= FileInfo->RefCount);
-            ASSERT_REF(Dir2->Fcb->ReferenceCount >= Dir2->RefCount);
+            UDFTeardownStructures(IrpContext, DirInfo->Fcb, 1, NULL);
+            ASSERT(Fcb->FcbReference >= FileInfo->RefCount);
+            ASSERT(TargetDirInfo->Fcb->FcbReference >= TargetDirInfo->RefCount);
         }
 
-        if(AcquiredVcb) {
-            if(AcquiredVcbEx)
-                UDFConvertExclusiveToSharedLite(&Vcb->VCBResource);
+        if (AcquiredVcb) {
+            if (AcquiredVcbEx)
+                UDFConvertExclusiveToSharedLite(&Vcb->VcbResource);
         } else {
             // caller assumes Vcb to be acquired shared
             BrutePoint();
-            UDFAcquireResourceShared(&Vcb->VCBResource, TRUE);
+            UDFAcquireResourceShared(&Vcb->VcbResource, TRUE);
         }
 
-        if(LocalPath.Buffer) {
+        if (LocalPath.Buffer) {
             MyFreePool__(LocalPath.Buffer);
         }
     } _SEH2_END;
@@ -2596,12 +2542,12 @@ try_exit:    NOTHING;
 LONG
 UDFFindFileId(
     IN PVCB Vcb,
-    IN LONGLONG Id
+    IN FILE_ID Id
     )
 {
-    if(!Vcb->FileIdCache) return (-1);
+    if (!Vcb->FileIdCache) return (-1);
     for(ULONG i=0; i<Vcb->FileIdCount; i++) {
-        if(Vcb->FileIdCache[i].Id == Id) return i;
+        if (Vcb->FileIdCache[i].Id.QuadPart == Id.QuadPart) return i;
     }
     return (-1);
 } // end UDFFindFileId()
@@ -2609,19 +2555,19 @@ UDFFindFileId(
 LONG
 UDFFindFreeFileId(
     IN PVCB Vcb,
-    IN LONGLONG Id
+    IN FILE_ID FileId
     )
 {
-    if(!Vcb->FileIdCache) {
-        if(!(Vcb->FileIdCache = (PUDFFileIDCacheItem)MyAllocatePool__(NonPagedPool, sizeof(UDFFileIDCacheItem)*FILE_ID_CACHE_GRANULARITY)))
+    if (!Vcb->FileIdCache) {
+        if (!(Vcb->FileIdCache = (PUDFFileIDCacheItem)MyAllocatePool__(NonPagedPool, sizeof(UDFFileIDCacheItem)*FILE_ID_CACHE_GRANULARITY)))
             return (-1);
         RtlZeroMemory(Vcb->FileIdCache, FILE_ID_CACHE_GRANULARITY*sizeof(UDFFileIDCacheItem));
         Vcb->FileIdCount = FILE_ID_CACHE_GRANULARITY;
     }
     for(ULONG i=0; i<Vcb->FileIdCount; i++) {
-        if(!Vcb->FileIdCache[i].FullName.Buffer) return i;
+        if (!Vcb->FileIdCache[i].FullName.Buffer) return i;
     }
-    if(!MyReallocPool__((PCHAR)(Vcb->FileIdCache), Vcb->FileIdCount*sizeof(UDFFileIDCacheItem),
+    if (!MyReallocPool__((PCHAR)(Vcb->FileIdCache), Vcb->FileIdCount*sizeof(UDFFileIDCacheItem),
                      (PCHAR*)&(Vcb->FileIdCache), (Vcb->FileIdCount+FILE_ID_CACHE_GRANULARITY)*sizeof(UDFFileIDCacheItem))) {
         return (-1);
     }
@@ -2635,21 +2581,21 @@ UDFStoreFileId(
     IN PVCB Vcb,
     IN PCCB Ccb,
     IN PUDF_FILE_INFO fi,
-    IN LONGLONG Id
+    IN FILE_ID FileId
     )
 {
     LONG i;
     NTSTATUS RC = STATUS_SUCCESS;
 
-    if((i = UDFFindFileId(Vcb, Id)) == (-1)) {
-        if((i = UDFFindFreeFileId(Vcb, Id)) == (-1)) return STATUS_INSUFFICIENT_RESOURCES;
+    if ((i = UDFFindFileId(Vcb, FileId)) == (-1)) {
+        if ((i = UDFFindFreeFileId(Vcb, FileId)) == (-1)) return STATUS_INSUFFICIENT_RESOURCES;
     } else {
         return STATUS_SUCCESS;
     }
-    Vcb->FileIdCache[i].Id = Id;
-    Vcb->FileIdCache[i].CaseSens = (Ccb->CCBFlags & UDF_CCB_CASE_SENSETIVE) ? TRUE : FALSE;
+    Vcb->FileIdCache[i].Id = FileId;
+    Vcb->FileIdCache[i].CaseSens = (Ccb->Flags & UDF_CCB_CASE_SENSETIVE) ? TRUE : FALSE;
     RC = MyCloneUnicodeString(&(Vcb->FileIdCache[i].FullName), &(Ccb->Fcb->FCBName->ObjectName));
-/*    if(NT_SUCCESS(RC)) {
+/*    if (NT_SUCCESS(RC)) {
         RC = MyAppendUnicodeStringToStringTag(&(Vcb->FileIdCache[i].FullName), &(Ccb->Fcb->FCBName->ObjectName), MEM_USFIDC_TAG);
     }*/
     return RC;
@@ -2658,12 +2604,12 @@ UDFStoreFileId(
 NTSTATUS
 UDFRemoveFileId(
     IN PVCB Vcb,
-    IN LONGLONG Id
+    IN FILE_ID FileId
     )
 {
     LONG i;
 
-    if((i = UDFFindFileId(Vcb, Id)) == (-1)) return STATUS_INVALID_PARAMETER;
+    if ((i = UDFFindFileId(Vcb, FileId)) == (-1)) return STATUS_INVALID_PARAMETER;
     MyFreePool__(Vcb->FileIdCache[i].FullName.Buffer);
     RtlZeroMemory(&(Vcb->FileIdCache[i]), sizeof(UDFFileIDCacheItem));
     return STATUS_SUCCESS;
@@ -2674,9 +2620,9 @@ UDFReleaseFileIdCache(
     IN PVCB Vcb
     )
 {
-    if(!Vcb->FileIdCache) return;
+    if (!Vcb->FileIdCache) return;
     for(ULONG i=0; i<Vcb->FileIdCount; i++) {
-        if(Vcb->FileIdCache[i].FullName.Buffer) {
+        if (Vcb->FileIdCache[i].FullName.Buffer) {
             MyFreePool__(Vcb->FileIdCache[i].FullName.Buffer);
         }
     }
@@ -2688,14 +2634,14 @@ UDFReleaseFileIdCache(
 NTSTATUS
 UDFGetOpenParamsByFileId(
     IN PVCB Vcb,
-    IN LONGLONG Id,
+    IN FILE_ID FileId,
     OUT PUNICODE_STRING* FName,
     OUT BOOLEAN* CaseSens
     )
 {
     LONG i;
 
-    if((i = UDFFindFileId(Vcb, Id)) == (-1)) return STATUS_NOT_FOUND;
+    if ((i = UDFFindFileId(Vcb, FileId)) == (-1)) return STATUS_NOT_FOUND;
     (*FName) = &(Vcb->FileIdCache[i].FullName);
     (*CaseSens) = !(Vcb->FileIdCache[i].CaseSens);
     return STATUS_SUCCESS;
@@ -2707,7 +2653,8 @@ UDFGetOpenParamsByFileId(
  */
 NTSTATUS
 UDFHardLink(
-    IN PIO_STACK_LOCATION PtrSp,
+    IN PIRP_CONTEXT IrpContext,
+    IN PIO_STACK_LOCATION IrpSp,
     IN PFCB Fcb1,
     IN PCCB Ccb1,
     IN PFILE_OBJECT FileObject1,   // Source File
@@ -2715,9 +2662,9 @@ UDFHardLink(
     )
 {
     // Target Directory
-    PFILE_OBJECT DirObject2 = PtrSp->Parameters.SetFile.FileObject;
+    PFILE_OBJECT DirObject2 = IrpSp->Parameters.SetFile.FileObject;
     // Overwite Flag
-    BOOLEAN Replace = PtrSp->Parameters.SetFile.ReplaceIfExists &&
+    BOOLEAN Replace = IrpSp->Parameters.SetFile.ReplaceIfExists &&
                       PtrBuffer->ReplaceIfExists;
     NTSTATUS RC;
     PVCB Vcb = Fcb1->Vcb;
@@ -2744,29 +2691,29 @@ UDFHardLink(
     _SEH2_TRY {
 
         // do we try to link Volume ?
-        if(!(File1 = Fcb1->FileInfo))
+        if (!(File1 = Fcb1->FileInfo))
             try_return (RC = STATUS_ACCESS_DENIED);
 
         // do we try to link RootDir ?
-        if(!(Dir1 = File1->ParentFile))
+        if (!(Dir1 = File1->ParentFile))
             try_return (RC = STATUS_ACCESS_DENIED);
 
         // do we try to link Stream / Stream Dir ?
 #ifdef UDF_ALLOW_LINKS_TO_STREAMS
-        if(UDFIsAStreamDir(File1))
+        if (UDFIsAStreamDir(File1))
             try_return (RC = STATUS_ACCESS_DENIED);
 #else //UDF_ALLOW_LINKS_TO_STREAMS
-        if(UDFIsAStream(File1) || UDFIsAStreamDir(File1) /*||
+        if (UDFIsAStream(File1) || UDFIsAStreamDir(File1) /*||
            UDFIsADirectory(File1) || UDFHasAStreamDir(File1)*/)
             try_return (RC = STATUS_ACCESS_DENIED);
 #endif // UDF_ALLOW_LINKS_TO_STREAMS
 
         // do we try to link to RootDir or Volume ?
-        if(!DirObject2) {
+        if (!DirObject2) {
             Dir2 = File1->ParentFile;
             DirObject2 = FileObject1->RelatedFileObject;
         } else
-        if(DirObject2->FsContext2 &&
+        if (DirObject2->FsContext2 &&
           (Fcb2 = ((PCCB)(DirObject2->FsContext2))->Fcb)) {
             Dir2 = ((PCCB)(DirObject2->FsContext2))->Fcb->FileInfo;
         } else {
@@ -2774,19 +2721,19 @@ UDFHardLink(
         }
 
         // check target dir
-        if(!Dir2) try_return (RC = STATUS_ACCESS_DENIED);
+        if (!Dir2) try_return (RC = STATUS_ACCESS_DENIED);
 
         // Stream can't be a Dir or have Streams
-        if(UDFIsAStreamDir(Dir2)) {
+        if (UDFIsAStreamDir(Dir2)) {
             try_return (RC = STATUS_ACCESS_DENIED);
-/*            if(UDFIsADirectory(File1) ||
+/*            if (UDFIsADirectory(File1) ||
                UDFHasAStreamDir(File1)) {
                 BrutePoint();
                 try_return (RC = STATUS_ACCESS_DENIED);
             }*/
         }
 
-/*        if(UDFIsAStreamDir(Dir2))
+/*        if (UDFIsAStreamDir(Dir2))
             try_return (RC = STATUS_ACCESS_DENIED);*/
 
         RC = UDFPrepareForRenameMoveLink(Vcb, &AcquiredVcb, &AcquiredVcbEx,
@@ -2795,13 +2742,13 @@ UDFHardLink(
                                          Ccb1, File1,
                                          Dir1, Dir2,
                                          TRUE); // it is HLink operation
-        if(!NT_SUCCESS(RC))
+        if (!NT_SUCCESS(RC))
             try_return(RC);
 
         // check if the source file is used
-        if(!DirObject2) {
+        if (!DirObject2) {
             //  Make sure the name is of legal length.
-            if(PtrBuffer->FileNameLength > UDF_NAME_LEN*sizeof(WCHAR)) {
+            if (PtrBuffer->FileNameLength > UDF_NAME_LEN*sizeof(WCHAR)) {
                 try_return(RC = STATUS_OBJECT_NAME_INVALID);
             }
             NewName.Length = NewName.MaximumLength = (USHORT)(PtrBuffer->FileNameLength);
@@ -2811,51 +2758,51 @@ UDFHardLink(
             NewName = *((PUNICODE_STRING)&DirObject2->FileName);
         }
 
-        ic = (Ccb1->CCBFlags & UDF_CCB_CASE_SENSETIVE) ? FALSE : TRUE;
+        ic = (Ccb1->Flags & UDF_CCB_CASE_SENSETIVE) ? FALSE : TRUE;
 
         AdPrint(("  %ws ->\n    %ws\n",
             Fcb1->FCBName->ObjectName.Buffer,
             NewName.Buffer));
 
-        RC = UDFHardLinkFile__(Vcb, ic, &Replace, &NewName, Dir1, Dir2, File1);
-        if(!NT_SUCCESS(RC)) try_return (RC);
+        RC = UDFHardLinkFile__(IrpContext, Vcb, ic, &Replace, &NewName, Dir1, Dir2, File1);
+        if (!NT_SUCCESS(RC)) try_return (RC);
 
         // Update Parent Objects (mark 'em as modified)
-        if(Vcb->CompatFlags & UDF_VCB_IC_UPDATE_DIR_WRITE) {
-            if(DirObject2) {
+        if (Vcb->CompatFlags & UDF_VCB_IC_UPDATE_DIR_WRITE) {
+            if (DirObject2) {
                 DirObject2->Flags |= FO_FILE_MODIFIED;
-                if(!Replace)
+                if (!Replace)
                     DirObject2->Flags |= FO_FILE_SIZE_CHANGED;
             }
         }
         // report changes
-        UDFNotifyFullReportChange( Vcb, File1,
+        UDFNotifyFullReportChange( Vcb, File1->Fcb,
                                    FILE_NOTIFY_CHANGE_LAST_WRITE |
                                    FILE_NOTIFY_CHANGE_LAST_ACCESS,
                                    FILE_ACTION_MODIFIED );
 
-        RC = MyCloneUnicodeString(&LocalPath, (Dir2->Fcb->FCBFlags & UDF_FCB_ROOT_DIRECTORY) ?
-                                                    &UDFGlobalData.UnicodeStrRoot :
+        RC = MyCloneUnicodeString(&LocalPath, (Dir2->Fcb->FcbState & UDF_FCB_ROOT_DIRECTORY) ?
+                                                    &UdfData.UnicodeStrRoot :
                                                     &(Dir2->Fcb->FCBName->ObjectName));
-        if(!NT_SUCCESS(RC)) try_return (RC);
+        if (!NT_SUCCESS(RC)) try_return (RC);
 /*        RC = MyAppendUnicodeStringToString(&LocalPath, (Dir2->Fcb->FCBFlags & UDF_FCB_ROOT_DIRECTORY) ? &(UDFGlobalData.UnicodeStrRoot) : &(Dir2->Fcb->FCBName->ObjectName));
-        if(!NT_SUCCESS(RC)) try_return (RC);*/
+        if (!NT_SUCCESS(RC)) try_return (RC);*/
         // if Dir2 is a RootDir, we shoud not append '\\' because
         // it will be the 2nd '\\' character (RootDir's name is also '\\')
-        if(Dir2->ParentFile) {
+        if (Dir2->ParentFile) {
             RC = MyAppendUnicodeToString(&LocalPath, L"\\");
-            if(!NT_SUCCESS(RC)) try_return (RC);
+            if (!NT_SUCCESS(RC)) try_return (RC);
         }
         RC = MyAppendUnicodeStringToStringTag(&LocalPath, &NewName, MEM_USHL_TAG);
-        if(!NT_SUCCESS(RC)) try_return (RC);
+        if (!NT_SUCCESS(RC)) try_return (RC);
 
-        if(!Replace) {
+        if (!Replace) {
 /*          UDFNotifyFullReportChange( Vcb, File2,
                                        UDFIsADirectory(File1) ? FILE_NOTIFY_CHANGE_DIR_NAME : FILE_NOTIFY_CHANGE_FILE_NAME,
                                        FILE_ACTION_ADDED );*/
             FsRtlNotifyFullReportChange( Vcb->NotifyIRPMutex, &(Vcb->NextNotifyIRP),
                                          (PSTRING)&LocalPath,
-                                         ((Dir2->Fcb->FCBFlags & UDF_FCB_ROOT_DIRECTORY) ? 0 : Dir2->Fcb->FCBName->ObjectName.Length) + sizeof(WCHAR),
+                                         ((Dir2->Fcb->FcbState & UDF_FCB_ROOT_DIRECTORY) ? 0 : Dir2->Fcb->FCBName->ObjectName.Length) + sizeof(WCHAR),
                                          NULL,NULL,
                                          UDFIsADirectory(File1) ? FILE_NOTIFY_CHANGE_DIR_NAME : FILE_NOTIFY_CHANGE_FILE_NAME,
                                          FILE_ACTION_ADDED,
@@ -2871,7 +2818,7 @@ UDFHardLink(
                                        FILE_ACTION_MODIFIED );*/
             FsRtlNotifyFullReportChange( Vcb->NotifyIRPMutex, &(Vcb->NextNotifyIRP),
                                          (PSTRING)&LocalPath,
-                                         ((Dir2->Fcb->FCBFlags & UDF_FCB_ROOT_DIRECTORY) ? 0 : Dir2->Fcb->FCBName->ObjectName.Length) + sizeof(WCHAR),
+                                         ((Dir2->Fcb->FcbState & UDF_FCB_ROOT_DIRECTORY) ? 0 : Dir2->Fcb->FCBName->ObjectName.Length) + sizeof(WCHAR),
                                          NULL,NULL,
                                          UDFIsADirectory(File1) ? FILE_NOTIFY_CHANGE_DIR_NAME : FILE_NOTIFY_CHANGE_FILE_NAME,
                                          FILE_NOTIFY_CHANGE_ATTRIBUTES |
@@ -2889,24 +2836,24 @@ try_exit:    NOTHING;
 
     } _SEH2_FINALLY {
 
-        if(AcquiredFcb1) {
+        if (AcquiredFcb1) {
             UDF_CHECK_PAGING_IO_RESOURCE(Fcb1);
-            UDFReleaseResource(&Fcb1->MainResource);
+            UDFReleaseResource(&Fcb1->FcbNonpaged->FcbResource);
         }
-        if(AcquiredDir1) {
+        if (AcquiredDir1) {
             UDF_CHECK_PAGING_IO_RESOURCE(Dir1->Fcb);
-            UDFReleaseResource(&Dir1->Fcb->MainResource);
+            UDFReleaseResource(&Dir1->Fcb->FcbNonpaged->FcbResource);
         }
-        if(AcquiredVcb) {
-            if(AcquiredVcbEx)
-                UDFConvertExclusiveToSharedLite(&Vcb->VCBResource);
+        if (AcquiredVcb) {
+            if (AcquiredVcbEx)
+                UDFConvertExclusiveToSharedLite(&Vcb->VcbResource);
         } else {
             // caller assumes Vcb to be acquired shared
             BrutePoint();
-            UDFAcquireResourceShared(&Vcb->VCBResource, TRUE);
+            UDFAcquireResourceShared(&Vcb->VcbResource, TRUE);
         }
 
-        if(LocalPath.Buffer) {
+        if (LocalPath.Buffer) {
             MyFreePool__(LocalPath.Buffer);
         }
     } _SEH2_END;

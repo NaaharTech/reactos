@@ -44,7 +44,6 @@
 #define UDF_DUMP_EXTENT
 //#define USE_TH_PRINT
 //#define USE_TIME_PRINT
-//#define CHECK_REF_COUNTS
 
 //======================================
 
@@ -136,12 +135,6 @@ DbgWaitForSingleObject_(
   #define BrutePoint() {}
 #endif // UDF_DBG
 
-#ifdef CHECK_REF_COUNTS
-#define ASSERT_REF(_a_) ASSERT(_a_)
-#else
-#define ASSERT_REF(_a_) {NOTHING;}
-#endif //CHECK_REF_COUNTS
-
 #ifdef TRACK_SYS_ALLOCS
 
 PVOID DebugAllocatePool(POOL_TYPE Type,ULONG size
@@ -209,11 +202,11 @@ DbgCompareMemory(PVOID d, PVOID s, ULONG l) {
 #ifdef VALIDATE_STRUCTURES
 #define ValidateFileInfo(fi)            \
 {    /* validate FileInfo */            \
-    if(!fi || (fi)->IntegrityTag) {            \
+    if (!fi || (fi)->IntegrityTag) {            \
         KdPrint(("UDF: ERROR! Using deallocated structure !!!\n"));\
         BrutePoint();                   \
     }                                   \
-    if(fi && !fi->Dloc) {               \
+    if (fi && !fi->Dloc) {               \
         KdPrint(("UDF: ERROR! FI without Dloc !!!\n"));\
         BrutePoint();                   \
     }                                   \
@@ -253,8 +246,6 @@ __inline VOID UDFTouch(IN PVOID addr)
 #define DbgCopyMemory(d, s, l)     RtlCopyMemory(d, s, l)
 #define DbgCompareMemory(d, s, l)  RtlCompareMemory(d, s, l)
 
-#define ASSERT_REF(_a_) {NOTHING;}
-
 #define UDFBreakPoint() {}
 #define BrutePoint() {}
 #define ValidateFileInfo(fi)  {}
@@ -266,7 +257,7 @@ __inline VOID UDFTouch(IN PVOID addr)
 #if defined UDF_DBG || defined PRINT_ALWAYS
 
 #define KdDump(a,b)                         \
-if((a)!=NULL) {                             \
+if ((a)!=NULL) {                             \
     ULONG i;                                \
     for(i=0; i<(b); i++) {                  \
         ULONG c;                            \

@@ -13,21 +13,26 @@ extern "C" {
 
 #define WCACHE_BOUND_CHECKS
 
-typedef OSSTATUS     (*PWRITE_BLOCK) (IN PVOID Context,
+struct IRP_CONTEXT;
+typedef struct IRP_CONTEXT *PIRP_CONTEXT;
+
+typedef NTSTATUS     (*PWRITE_BLOCK) (IN PIRP_CONTEXT IrpContext,
+                                      IN PVOID Context,
                                       IN PVOID Buffer,     // Target buffer
                                       IN SIZE_T Length,
                                       IN lba_t Lba,
                                       OUT PSIZE_T WrittenBytes,
                                       IN uint32 Flags);
 
-typedef OSSTATUS     (*PREAD_BLOCK) (IN PVOID Context,
+typedef NTSTATUS     (*PREAD_BLOCK) (IN PIRP_CONTEXT IrpContext,
+                                     IN PVOID Context,
                                      IN PVOID Buffer,     // Target buffer
                                      IN SIZE_T Length,
                                      IN lba_t Lba,
                                      OUT PSIZE_T ReadBytes,
                                      IN uint32 Flags);
 
-typedef OSSTATUS     (*PWRITE_BLOCK_ASYNC) (IN PVOID Context,
+typedef NTSTATUS     (*PWRITE_BLOCK_ASYNC) (IN PVOID Context,
                                             IN PVOID WContext,
                                             IN PVOID Buffer,     // Target buffer
                                             IN SIZE_T Length,
@@ -35,7 +40,7 @@ typedef OSSTATUS     (*PWRITE_BLOCK_ASYNC) (IN PVOID Context,
                                             OUT PSIZE_T WrittenBytes,
                                             IN BOOLEAN FreeBuffer);
 
-typedef OSSTATUS     (*PREAD_BLOCK_ASYNC) (IN PVOID Context,
+typedef NTSTATUS     (*PREAD_BLOCK_ASYNC) (IN PVOID Context,
                                            IN PVOID WContext,
                                            IN PVOID Buffer,     // Source buffer
                                            IN SIZE_T Length,
@@ -52,7 +57,7 @@ typedef OSSTATUS     (*PREAD_BLOCK_ASYNC) (IN PVOID Context,
 typedef ULONG        (*PCHECK_BLOCK) (IN PVOID Context,
                                       IN lba_t Lba);
 
-typedef OSSTATUS     (*PUPDATE_RELOC) (IN PVOID Context,
+typedef NTSTATUS     (*PUPDATE_RELOC) (IN PVOID Context,
                                        IN lba_t Lba,
                                        IN PULONG RelocTab,
                                        IN ULONG BCount);
@@ -66,7 +71,7 @@ typedef OSSTATUS     (*PUPDATE_RELOC) (IN PVOID Context,
 
 typedef struct _WCACHE_ERROR_CONTEXT {
     ULONG WCErrorCode;
-    OSSTATUS Status;
+    NTSTATUS Status;
     BOOLEAN  Retry;
     UCHAR    Padding[3];
     union {
@@ -84,7 +89,7 @@ typedef struct _WCACHE_ERROR_CONTEXT {
     };
 } WCACHE_ERROR_CONTEXT, *PWCACHE_ERROR_CONTEXT;
 
-typedef OSSTATUS     (*PWC_ERROR_HANDLER) (IN PVOID Context,
+typedef NTSTATUS     (*PWC_ERROR_HANDLER) (IN PVOID Context,
                                            IN PWCACHE_ERROR_CONTEXT ErrorInfo);
 // array of pointers to cached data
 // each entry corresponds to logical block on disk
@@ -203,7 +208,7 @@ typedef struct _W_CACHE {
 #define WCACHE_INVALID_FLAGS        (0xffffffff)
 
 // init cache
-OSSTATUS WCacheInit__(IN PW_CACHE Cache,
+NTSTATUS WCacheInit__(IN PW_CACHE Cache,
                       IN ULONG MaxFrames,
                       IN ULONG MaxBlocks,
                       IN SIZE_T MaxBytesToRead,
@@ -222,24 +227,36 @@ OSSTATUS WCacheInit__(IN PW_CACHE Cache,
                       IN PCHECK_BLOCK CheckUsedProc,
                       IN PUPDATE_RELOC UpdateRelocProc,
                       IN PWC_ERROR_HANDLER ErrorHandlerProc);
+
 // write cached
-OSSTATUS WCacheWriteBlocks__(IN PW_CACHE Cache,
-                             IN PVOID Context,
-                             IN PCHAR Buffer,
-                             IN lba_t Lba,
-                             IN ULONG BCount,
-                             OUT PSIZE_T WrittenBytes,
-                             IN BOOLEAN CachedOnly);
+NTSTATUS
+WCacheWriteBlocks__(
+    IN PIRP_CONTEXT IrpContext,
+    IN PW_CACHE Cache,
+    IN PVOID Context,
+    IN PCHAR Buffer,
+    IN lba_t Lba,
+    IN ULONG BCount,
+    OUT PSIZE_T WrittenBytes,
+    IN BOOLEAN CachedOnly
+    );
+
 // read cached
-OSSTATUS WCacheReadBlocks__(IN PW_CACHE Cache,
-                            IN PVOID Context,
-                            IN PCHAR Buffer,
-                            IN lba_t Lba,
-                            IN ULONG BCount,
-                            OUT PSIZE_T ReadBytes,
-                            IN BOOLEAN CachedOnly);
+NTSTATUS
+WCacheReadBlocks__(
+    IN PIRP_CONTEXT IrpContext,
+    IN PW_CACHE Cache,
+    IN PVOID Context,
+    IN PCHAR Buffer,
+    IN lba_t Lba,
+    IN ULONG BCount,
+    OUT PSIZE_T ReadBytes,
+    IN BOOLEAN CachedOnly
+    );
+
 // flush blocks
-OSSTATUS WCacheFlushBlocks__(IN PW_CACHE Cache,
+NTSTATUS WCacheFlushBlocks__(IN PIRP_CONTEXT IrpContext,
+                             IN PW_CACHE Cache,
                              IN PVOID Context,
                              IN lba_t Lba,
                              IN ULONG BCount);
@@ -249,11 +266,21 @@ VOID     WCacheDiscardBlocks__(IN PW_CACHE Cache,
                                IN lba_t Lba,
                                IN ULONG BCount);
 // flush whole cache
-VOID     WCacheFlushAll__(IN PW_CACHE Cache,
-                          IN PVOID Context);
+VOID
+WCacheFlushAll__(
+    IN PIRP_CONTEXT IrpContext,
+    IN PW_CACHE Cache,
+    IN PVOID Context
+    );
+
 // purge whole cache
-VOID     WCachePurgeAll__(IN PW_CACHE Cache,
-                          IN PVOID Context);
+VOID
+WCachePurgeAll__(
+    IN PIRP_CONTEXT IrpContext,
+    IN PW_CACHE Cache,
+    IN PVOID Context
+    );
+
 // free structures
 VOID     WCacheRelease__(IN PW_CACHE Cache);
 
@@ -261,17 +288,22 @@ VOID     WCacheRelease__(IN PW_CACHE Cache);
 BOOLEAN  WCacheIsInitialized__(IN PW_CACHE Cache);
 
 // direct access to cached data
-OSSTATUS WCacheDirect__(IN PW_CACHE Cache,
-                        IN PVOID Context,
-                        IN lba_t Lba,
-                        IN BOOLEAN Modified,
-                        OUT PCHAR* CachedBlock,
-                        IN BOOLEAN CachedOnly);
+NTSTATUS
+WCacheDirect__(
+    IN PIRP_CONTEXT IrpContext,
+    IN PW_CACHE Cache,
+    IN PVOID Context,
+    IN lba_t Lba,
+    IN BOOLEAN Modified,
+    OUT PCHAR* CachedBlock,
+    IN BOOLEAN CachedOnly
+    );
+
 // release resources after direct access
-OSSTATUS WCacheEODirect__(IN PW_CACHE Cache,
+NTSTATUS WCacheEODirect__(IN PW_CACHE Cache,
                           IN PVOID Context);
 // release resources before direct access
-OSSTATUS WCacheStartDirect__(IN PW_CACHE Cache,
+NTSTATUS WCacheStartDirect__(IN PW_CACHE Cache,
                              IN PVOID Context,
                              IN BOOLEAN Exclusive);
 // check if requested extent completly cached
@@ -280,7 +312,7 @@ BOOLEAN  WCacheIsCached__(IN PW_CACHE Cache,
                           IN ULONG BCount);
 
 // change cache media mode
-OSSTATUS WCacheSetMode__(IN PW_CACHE Cache,
+NTSTATUS WCacheSetMode__(IN PW_CACHE Cache,
                          IN ULONG Mode);
 //
 ULONG    WCacheGetMode__(IN PW_CACHE Cache);
@@ -302,7 +334,7 @@ ULONG    WCacheChFlags__(IN PW_CACHE Cache,
 };
 
 // complete async request (callback)
-OSSTATUS WCacheCompleteAsync__(IN PVOID WContext,
-                               IN OSSTATUS Status);
+NTSTATUS WCacheCompleteAsync__(IN PVOID WContext,
+                               IN NTSTATUS Status);
 
 #endif // __CDRW_WCACHE_LIB_H__

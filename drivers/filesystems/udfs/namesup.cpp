@@ -15,10 +15,10 @@
 //  '\dfdf\aaa\ffg'  -->  '\aaa\ffg'
 //       '\aaa\ffg'  -->  '\ffg'
 PWCHAR
-__fastcall
 UDFDissectName(
-    IN  PWCHAR   Buffer,
-    OUT PUSHORT  Length
+    _In_ PIRP_CONTEXT IrpContext,
+    IN  PWCHAR Buffer,
+    OUT PUSHORT Length
     )
 {
 
@@ -99,15 +99,15 @@ UDFIsNameValid(
     PWCHAR Buffer;
     WCHAR c, c0;
 
-    if(StreamOpen) (*StreamOpen) = FALSE;
+    if (StreamOpen) (*StreamOpen) = FALSE;
     // We can't create nameless file or too long path
-    if(!(l = SearchPattern->Length/sizeof(WCHAR)) ||
+    if (!(l = SearchPattern->Length/sizeof(WCHAR)) ||
         (l>UDF_X_PATH_LEN)) return FALSE;
     Buffer = SearchPattern->Buffer;
     for(Index = 0; Index<l; Index++, Buffer++) {
         // Check for disallowed characters
         c = (*Buffer);
-        if((c == L'*') ||
+        if ((c == L'*') ||
            (c == L'>') ||
            (c == L'\"') ||
            (c == L'/') ||
@@ -116,16 +116,16 @@ UDFIsNameValid(
            ((c >= 0x0000) && (c <= 0x001f)) ||
            (c == L'?')) return FALSE;
         // check if this a Stream path (& validate it)
-        if(!(_StreamOpen) && // sub-streams are not allowed
+        if (!(_StreamOpen) && // sub-streams are not allowed
             (Index<(l-1)) && // stream name must be specified
            ((_StreamOpen) = (c == L':'))) {
-            if(StreamOpen) (*StreamOpen) = TRUE;
-            if(SNameIndex) (*SNameIndex) = Index;
+            if (StreamOpen) (*StreamOpen) = TRUE;
+            if (SNameIndex) (*SNameIndex) = Index;
         }
         // According to NT IFS documentation neither SPACE nor DOT can be
         // a trailing character
-        if(Index && (c == L'\\') ) {
-           if((c0 == L' ') ||
+        if (Index && (c == L'\\') ) {
+           if ((c0 == L' ') ||
               (_StreamOpen) || // stream is not a directory
               (c0 == L'.')) return FALSE;
         }
@@ -172,22 +172,22 @@ UDFIsNameInExpression(
     UNICODE_STRING      ShortName;
     WCHAR               Buffer[13];
 
-    if(!PtrSearchPattern) return TRUE;
+    if (!PtrSearchPattern) return TRUE;
     // we try to open file by LFN by default
-    if(DosOpen) (*DosOpen) = FALSE;
+    if (DosOpen) (*DosOpen) = FALSE;
     //  If there are wildcards in the expression then we call the
     //  appropriate FsRtlRoutine.
-    if(ContainsWC) {
+    if (ContainsWC) {
         Match = FsRtlIsNameInExpression( PtrSearchPattern, FileName, IgnoreCase, NULL );
     //  Otherwise do a direct memory comparison for the name string.
     } else if (RtlCompareUnicodeString(FileName, PtrSearchPattern, IgnoreCase)) {
         Match = FALSE;
     }
 
-    if(Match) return TRUE;
+    if (Match) return TRUE;
 
     // check if SFN can match this pattern
-    if(!CanBe8dot3)
+    if (!CanBe8dot3)
         return FALSE;
 
     // try to open by SFN
@@ -198,13 +198,13 @@ UDFIsNameInExpression(
     // PtrSearchPattern is upcased if we are called with IgnoreCase=TRUE
     // DOSName is always upcased
     // thus, we can use case-sensetive compare here to improve performance
-    if(ContainsWC) {
+    if (ContainsWC) {
         Match = FsRtlIsNameInExpression( PtrSearchPattern, &ShortName, FALSE, NULL );
     //  Otherwise do a direct memory comparison for the name string.
     } else if (!RtlCompareUnicodeString(&ShortName, PtrSearchPattern, FALSE)) {
         Match = TRUE;
     }
-    if(DosOpen && Match) {
+    if (DosOpen && Match) {
         // remember that we've opened file by SFN
         (*DosOpen) = TRUE;
     }
@@ -222,41 +222,41 @@ UDFIsMatchAllMask(
     USHORT i;
     PWCHAR Buffer;
 
-    if(DosOpen)
+    if (DosOpen)
         *DosOpen = FALSE;
     Buffer = Name->Buffer;
-    if(Name->Length == sizeof(WCHAR)) {
+    if (Name->Length == sizeof(WCHAR)) {
         // Win32-style wildcard
-        if((*Buffer) != L'*')
+        if ((*Buffer) != L'*')
             return FALSE;
         return TRUE;
     } else
-    if(Name->Length == sizeof(WCHAR)*(8+1+3)) {
+    if (Name->Length == sizeof(WCHAR)*(8+1+3)) {
         // DOS-style wildcard
         for(i=0;i<8;i++,Buffer++) {
-            if((*Buffer) != DOS_QM)
+            if ((*Buffer) != DOS_QM)
                 return FALSE;
         }
-        if((*Buffer) != DOS_DOT)
+        if ((*Buffer) != DOS_DOT)
             return FALSE;
         Buffer++;
         for(i=9;i<12;i++,Buffer++) {
-            if((*Buffer) != DOS_QM)
+            if ((*Buffer) != DOS_QM)
                 return FALSE;
         }
-        if(DosOpen)
+        if (DosOpen)
             *DosOpen = TRUE;
         return TRUE;
     } else
-    if(Name->Length == sizeof(WCHAR)*(3)) {
+    if (Name->Length == sizeof(WCHAR)*(3)) {
         // DOS-style wildcard
-        if(Buffer[0] != DOS_STAR)
+        if (Buffer[0] != DOS_STAR)
             return FALSE;
-        if(Buffer[1] != DOS_DOT)
+        if (Buffer[1] != DOS_DOT)
             return FALSE;
-        if(Buffer[2] != DOS_STAR)
+        if (Buffer[2] != DOS_STAR)
             return FALSE;
-        if(DosOpen)
+        if (DosOpen)
             *DosOpen = TRUE;
         return TRUE;
     } else {
@@ -270,7 +270,7 @@ UDFCanNameBeA8dot3(
     IN PUNICODE_STRING Name
     )
 {
-    if(Name->Length >= 13 * sizeof(WCHAR))
+    if (Name->Length >= 13 * sizeof(WCHAR))
         return FALSE;
 
     ULONG i,l;
@@ -281,20 +281,21 @@ UDFCanNameBeA8dot3(
     l = Name->Length / sizeof(WCHAR);
 
     for(i=0; i<l; i++, buff++) {
-        if( ((*buff) == L'.') ||
+        if ( ((*buff) == L'.') ||
             ((*buff) == DOS_DOT) ) {
-            if(dot_pos)
+            if (dot_pos)
                 return FALSE;
             dot_pos = i+1;
         } else
-        if(dot_pos) {
+        if (dot_pos) {
             ext_len++;
-            if(ext_len > 3)
+            if (ext_len > 3)
                 return FALSE;
         } else
-        if(i >= 8) {
+        if (i >= 8) {
             return FALSE;
         }
     }
     return TRUE;
 } // end UDFCanNameBeA8dot3()
+

@@ -20,6 +20,7 @@
 #define _UDF_ENV_SPEC_H_
 
 extern NTSTATUS NTAPI UDFPhReadSynchronous(
+                   PIRP_CONTEXT IrpContext,
                    PDEVICE_OBJECT      DeviceObject,
                    PVOID           Buffer,
                    SIZE_T          Length,
@@ -45,7 +46,8 @@ extern NTSTATUS UDFPhWriteVerifySynchronous(
 */
 #define UDFPhWriteVerifySynchronous UDFPhWriteSynchronous
 
-extern NTSTATUS NTAPI
+NTSTATUS
+NTAPI
 UDFTSendIOCTL(
     IN ULONG IoControlCode,
     IN PVCB Vcb,
@@ -57,7 +59,9 @@ UDFTSendIOCTL(
     OUT PIO_STATUS_BLOCK Iosb OPTIONAL
     );
 
-extern NTSTATUS NTAPI UDFPhSendIOCTL(
+NTSTATUS
+NTAPI
+UDFPhSendIOCTL(
     IN ULONG IoControlCode,
     IN PDEVICE_OBJECT DeviceObject,
     IN PVOID InputBuffer ,
@@ -76,60 +80,13 @@ extern NTSTATUS UDFTWriteAsync(
     OUT PULONG WrittenBytes,
     IN BOOLEAN FreeBuffer);
 
-extern VOID UDFBGWrite(
-    IN PVOID Context);
-*/
-
-/*#define UDFNotifyFullReportChange(V,FI,E,A)  \
-    FsRtlNotifyFullReportChange( (V)->NotifyIRPMutex, &((V)->NextNotifyIRP),        \
-                                 ((FI)->ParentFile) ? (PSTRING)&((FI)->Fcb->FCBName->ObjectName) : (PSTRING)&(UDFGlobalData.UnicodeStrRoot),  \
-                                 ((FI)->ParentFile) ? ((FI)->ParentFile->Fcb->FCBName->ObjectName.Length + sizeof(WCHAR)) : 0,  \
-                                 NULL,NULL,                                         \
-                                 E, A,                                              \
-                                 NULL);*/
-
-#ifdef UDF_DBG
-VOID UDFNotifyFullReportChange(PVCB V,
-                               PUDF_FILE_INFO FI,
-                               ULONG E,
-                               ULONG A);
-#else // UDF_DBG
-__inline VOID UDFNotifyFullReportChange(
-    PVCB V,
-    PUDF_FILE_INFO FI,
-    ULONG E,
-    ULONG A
-    )
-{
-    FsRtlNotifyFullReportChange( (V)->NotifyIRPMutex, &((V)->NextNotifyIRP),
-                                 (PSTRING)&((FI)->Fcb->FCBName->ObjectName),
-                                 ((FI)->ParentFile) ? ((FI)->ParentFile->Fcb->FCBName->ObjectName.Length + sizeof(WCHAR)) : 0,
-                                 NULL,NULL,
-                                 E, A,
-                                 NULL);
-}
-
-#define UDFNotifyVolumeEvent(FileObject, EventCode) \
-    {/*if(FsRtlNotifyVolumeEvent) FsRtlNotifyVolumeEvent(FileObject, EventCode)*/;}
-
-#endif // UDF_DBG
-
-
-#define CollectStatistics(VCB, Field) {                                      \
-    ((VCB)->Statistics[KeGetCurrentProcessorNumber()].Common.##Field) ++;    \
-}
-
-#define CollectStatisticsEx(VCB, Field, a) {                                 \
-    ((VCB)->Statistics[KeGetCurrentProcessorNumber()].Common.##Field) += (ULONG)a;  \
-}
-
-#define CollectStatistics2(VCB, Field) {                                     \
-    ((VCB)->Statistics[KeGetCurrentProcessorNumber()].Fat.##Field) ++;       \
-}
-
-#define CollectStatistics2Ex(VCB, Field, a) {                                \
-    ((VCB)->Statistics[KeGetCurrentProcessorNumber()].Fat.##Field) += a;     \
-}
+VOID
+UDFNotifyFullReportChange(
+    PVCB Vcb,
+    PFCB Fcb,
+    ULONG Filter,
+    ULONG Action
+    );
 
 NTSTATUS NTAPI UDFAsyncCompletionRoutine(IN PDEVICE_OBJECT DeviceObject,
                                          IN PIRP Irp,
@@ -144,10 +101,6 @@ NTSTATUS NTAPI UDFSyncCompletionRoutine2(IN PDEVICE_OBJECT DeviceObject,
                                          IN PVOID Contxt);
 
 #define UDFGetDevType(DevObj)    (DevObj->DeviceType)
-
-#define OSGetCurrentThread()     PsGetCurrentThread()
-
-#define GetCurrentPID()   HandleToUlong(PsGetCurrentProcessId())
 
 
 #endif  // _UDF_ENV_SPEC_H_

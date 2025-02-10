@@ -58,14 +58,12 @@ UDFLockControl(
 
         // get an IRP context structure and issue the request
         IrpContext = UDFCreateIrpContext(Irp, DeviceObject);
-        if(IrpContext) {
+        if (IrpContext) {
             RC = UDFCommonLockControl(IrpContext, Irp);
         } else {
+
+            UDFCompleteRequest(IrpContext, Irp, STATUS_INSUFFICIENT_RESOURCES);
             RC = STATUS_INSUFFICIENT_RESOURCES;
-            Irp->IoStatus.Status = RC;
-            Irp->IoStatus.Information = 0;
-            // complete the IRP
-            IoCompleteRequest(Irp, IO_DISK_INCREMENT);
         }
 
     } _SEH2_EXCEPT(UDFExceptionFilter(IrpContext, _SEH2_GetExceptionInformation())) {
@@ -107,34 +105,30 @@ UDFCommonLockControl(
     IN PIRP             Irp)
 {
     NTSTATUS            RC = STATUS_SUCCESS;
-    PIO_STACK_LOCATION  IrpSp = NULL;
+    PIO_STACK_LOCATION  IrpSp = IoGetCurrentIrpStackLocation(Irp);
     //IO_STATUS_BLOCK     LocalIoStatus;
 //    BOOLEAN             CompleteRequest = FALSE;
     BOOLEAN             PostRequest = FALSE;
     BOOLEAN             CanWait = FALSE;
     BOOLEAN             AcquiredFCB = FALSE;
-    PFILE_OBJECT        FileObject = NULL;
+    TYPE_OF_OPEN TypeOfOpen;
     PFCB                Fcb = NULL;
     PCCB                Ccb = NULL;
 
     UDFPrint(("UDFCommonLockControl\n"));
 
+    // Extract and decode the type of file object we're being asked to process
+
+    TypeOfOpen = UDFDecodeFileObject(IrpSp->FileObject, &Fcb, &Ccb);
+
+    ASSERT_CCB(Ccb);
+    ASSERT_FCB(Fcb);
+
     _SEH2_TRY {
-        // First, get a pointer to the current I/O stack location.
-        IrpSp = IoGetCurrentIrpStackLocation(Irp);
-        ASSERT(IrpSp);
 
-        FileObject = IrpSp->FileObject;
-        ASSERT(FileObject);
-
-        // Get the FCB and CCB pointers.
-        Ccb = (PCCB)FileObject->FsContext2;
-        ASSERT(Ccb);
-        Fcb = Ccb->Fcb;
-        ASSERT(Fcb);
         // Validate the sent-in FCB
-        if ( (Fcb->NodeIdentifier.NodeTypeCode == UDF_NODE_TYPE_VCB) ||
-             (Fcb->FCBFlags & UDF_FCB_DIRECTORY)) {
+        if ( (Fcb == Fcb->Vcb->VolumeDasdFcb) ||
+             (Fcb->FcbState & UDF_FCB_DIRECTORY)) {
 
 //            CompleteRequest = TRUE;
             try_return(RC = STATUS_INVALID_PARAMETER);
@@ -144,7 +138,7 @@ UDFCommonLockControl(
 
         // Acquire the FCB resource shared
         UDF_CHECK_PAGING_IO_RESOURCE(Fcb);
-        if (!UDFAcquireResourceExclusive(&Fcb->MainResource, CanWait)) {
+        if (!UDFAcquireResourceExclusive(&Fcb->FcbNonpaged->FcbResource, CanWait)) {
             PostRequest = TRUE;
             try_return(RC = STATUS_PENDING);
         }
@@ -169,14 +163,14 @@ try_exit: NOTHING;
         // Release the FCB resources if acquired.
         if (AcquiredFCB) {
             UDF_CHECK_PAGING_IO_RESOURCE(Fcb);
-            UDFReleaseResource(&Fcb->MainResource);
+            UDFReleaseResource(&Fcb->FcbNonpaged->FcbResource);
             AcquiredFCB = FALSE;
         }
         if (PostRequest) {
             // Perform appropriate post related processing here
             RC = UDFPostRequest(IrpContext, Irp);
         } else
-        if(!_SEH2_AbnormalTermination()) {
+        if (!_SEH2_AbnormalTermination()) {
             // Simply free up the IrpContext since the IRP has been queued or
             // Completed by FsRtlProcessFileLock
             UDFCleanupIrpContext(IrpContext);
@@ -224,22 +218,21 @@ UDFFastLock (
     BOOLEAN Results = FALSE;
 
 //    BOOLEAN             AcquiredFCB = FALSE;
+    TYPE_OF_OPEN TypeOfOpen;
     PFCB                  Fcb = NULL;
-    PCCB                  Ccb = NULL;
 
     UDFPrint(("UDFFastLock\n"));
-    //  Decode the type of file object we're being asked to process and make
-    //  sure it is only a user file open.
 
+    // Decode the type of file object we're being asked to process and
+    // make sure that is is only a user file open.
 
-    // Get the FCB and CCB pointers.
-    Ccb = (PCCB)FileObject->FsContext2;
-    ASSERT(Ccb);
-    Fcb = Ccb->Fcb;
-    ASSERT(Fcb);
+    TypeOfOpen = UDFFastDecodeFileObject(FileObject, &Fcb);
+
+    ASSERT_FCB(Fcb);
+
     // Validate the sent-in FCB
-    if ( (Fcb->NodeIdentifier.NodeTypeCode == UDF_NODE_TYPE_VCB) ||
-         (Fcb->FCBFlags & UDF_FCB_DIRECTORY)) {
+    if ( (Fcb == Fcb->Vcb->VolumeDasdFcb) ||
+         (Fcb->FcbState & UDF_FCB_DIRECTORY)) {
 
         IoStatus->Status = STATUS_INVALID_PARAMETER;
         IoStatus->Information = 0;
@@ -333,8 +326,8 @@ UDFFastUnlockSingle(
     BOOLEAN Results = FALSE;
 
 //    BOOLEAN             AcquiredFCB = FALSE;
+    TYPE_OF_OPEN TypeOfOpen;
     PFCB                Fcb = NULL;
-    PCCB                Ccb = NULL;
 
     UDFPrint(("UDFFastUnlockSingle\n"));
     //  Decode the type of file object we're being asked to process and make
@@ -342,14 +335,16 @@ UDFFastUnlockSingle(
 
     IoStatus->Information = 0;
 
-    // Get the FCB and CCB pointers.
-    Ccb = (PCCB)FileObject->FsContext2;
-    ASSERT(Ccb);
-    Fcb = Ccb->Fcb;
-    ASSERT(Fcb);
+    // Decode the type of file object we're being asked to process and
+    // make sure that is is only a user file open.
+
+    TypeOfOpen = UDFFastDecodeFileObject(FileObject, &Fcb);
+
+    ASSERT_FCB(Fcb);
+
     // Validate the sent-in FCB
-    if ( (Fcb->NodeIdentifier.NodeTypeCode == UDF_NODE_TYPE_VCB) ||
-         (Fcb->FCBFlags & UDF_FCB_DIRECTORY)) {
+    if ( (Fcb == Fcb->Vcb->VolumeDasdFcb) ||
+         (Fcb->FcbState & UDF_FCB_DIRECTORY)) {
 
         IoStatus->Status = STATUS_INVALID_PARAMETER;
         return TRUE;
@@ -432,23 +427,23 @@ UDFFastUnlockAll(
     BOOLEAN Results = FALSE;
 
 //    BOOLEAN             AcquiredFCB = FALSE;
+    TYPE_OF_OPEN TypeOfOpen;
     PFCB                Fcb = NULL;
-    PCCB                Ccb = NULL;
 
     UDFPrint(("UDFFastUnlockAll\n"));
 
     IoStatus->Information = 0;
-    //  Decode the type of file object we're being asked to process and make
-    //  sure it is only a user file open.
 
-    // Get the FCB and CCB pointers.
-    Ccb = (PCCB)FileObject->FsContext2;
-    ASSERT(Ccb);
-    Fcb = Ccb->Fcb;
-    ASSERT(Fcb);
+    // Decode the type of file object we're being asked to process and
+    // make sure that is is only a user file open.
+
+    TypeOfOpen = UDFFastDecodeFileObject(FileObject, &Fcb);
+
+    ASSERT_FCB(Fcb);
+
     // Validate the sent-in FCB
-    if ( (Fcb->NodeIdentifier.NodeTypeCode == UDF_NODE_TYPE_VCB) ||
-         (Fcb->FCBFlags & UDF_FCB_DIRECTORY)) {
+    if ( (Fcb == Fcb->Vcb->VolumeDasdFcb) ||
+         (Fcb->FcbState & UDF_FCB_DIRECTORY)) {
 
         IoStatus->Status = STATUS_INVALID_PARAMETER;
         return TRUE;
@@ -459,7 +454,7 @@ UDFFastUnlockAll(
     FsRtlEnterFileSystem();
 
     UDF_CHECK_PAGING_IO_RESOURCE(Fcb);
-    UDFAcquireResourceShared(&Fcb->MainResource, TRUE);
+    UDFAcquireResourceShared(&Fcb->FcbNonpaged->FcbResource, TRUE);
 
     _SEH2_TRY {
 
@@ -490,7 +485,7 @@ UDFFastUnlockAll(
         //  Release the Fcb, and return to our caller
 
         UDF_CHECK_PAGING_IO_RESOURCE(Fcb);
-        UDFReleaseResource(&Fcb->MainResource);
+        UDFReleaseResource(&Fcb->FcbNonpaged->FcbResource);
         FsRtlExitFileSystem();
 
     } _SEH2_END;
@@ -518,34 +513,34 @@ Return Value:
 BOOLEAN
 NTAPI
 UDFFastUnlockAllByKey(
-    IN PFILE_OBJECT FileObject,
-    PEPROCESS ProcessId,
-    ULONG Key,
-    OUT PIO_STATUS_BLOCK IoStatus,
-    IN PDEVICE_OBJECT DeviceObject
+    _In_ PFILE_OBJECT FileObject,
+    _In_ PVOID ProcessId,
+    _In_ ULONG Key,
+    _Out_ PIO_STATUS_BLOCK IoStatus,
+    _In_ PDEVICE_OBJECT DeviceObject
     )
 
 {
     BOOLEAN Results = FALSE;
 
 //    BOOLEAN             AcquiredFCB = FALSE;
+    TYPE_OF_OPEN TypeOfOpen;
     PFCB                Fcb = NULL;
-    PCCB                Ccb = NULL;
 
     UDFPrint(("UDFFastUnlockAllByKey\n"));
 
     IoStatus->Information = 0;
-    //  Decode the type of file object we're being asked to process and make
-    //  sure it is only a user file open.
 
-    // Get the FCB and CCB pointers.
-    Ccb = (PCCB)FileObject->FsContext2;
-    ASSERT(Ccb);
-    Fcb = Ccb->Fcb;
-    ASSERT(Fcb);
+    // Decode the type of file object we're being asked to process and
+    // make sure that is is only a user file open.
+
+    TypeOfOpen = UDFFastDecodeFileObject(FileObject, &Fcb);
+
+    ASSERT_FCB(Fcb);
+
     // Validate the sent-in FCB
-    if ( (Fcb->NodeIdentifier.NodeTypeCode == UDF_NODE_TYPE_VCB) ||
-         (Fcb->FCBFlags & UDF_FCB_DIRECTORY)) {
+    if ( (Fcb == Fcb->Vcb->VolumeDasdFcb) ||
+         (Fcb->FcbState & UDF_FCB_DIRECTORY)) {
 
         IoStatus->Status = STATUS_INVALID_PARAMETER;
         return TRUE;
@@ -556,7 +551,7 @@ UDFFastUnlockAllByKey(
     FsRtlEnterFileSystem();
 
     UDF_CHECK_PAGING_IO_RESOURCE(Fcb);
-    UDFAcquireResourceShared(&Fcb->MainResource, TRUE);
+    UDFAcquireResourceShared(&Fcb->FcbNonpaged->FcbResource, TRUE);
 
     _SEH2_TRY {
 
@@ -574,7 +569,7 @@ UDFFastUnlockAllByKey(
         Results = TRUE;
         IoStatus->Status = FsRtlFastUnlockAllByKey(Fcb->FileLock,
                                                    FileObject,
-                                                   ProcessId,
+                                                   (PEPROCESS)ProcessId,
                                                    Key,
                                                    NULL);
 
@@ -588,7 +583,7 @@ UDFFastUnlockAllByKey(
         //  Release the Fcb, and return to our caller
 
         UDF_CHECK_PAGING_IO_RESOURCE(Fcb);
-        UDFReleaseResource(&Fcb->MainResource);
+        UDFReleaseResource(&Fcb->FcbNonpaged->FcbResource);
         FsRtlExitFileSystem();
 
     } _SEH2_END;

@@ -100,20 +100,17 @@ UDFQueryVolInfo(
 
     // set the top level context
     AreWeTopLevel = UDFIsIrpTopLevel(Irp);
-    ASSERT(!UDFIsFSDevObj(DeviceObject));
 
     _SEH2_TRY {
 
         // get an IRP context structure and issue the request
         IrpContext = UDFCreateIrpContext(Irp, DeviceObject);
-        if(IrpContext) {
+        if (IrpContext) {
             RC = UDFCommonQueryVolInfo(IrpContext, Irp);
         } else {
+
+            UDFCompleteRequest(IrpContext, Irp, STATUS_INSUFFICIENT_RESOURCES);
             RC = STATUS_INSUFFICIENT_RESOURCES;
-            Irp->IoStatus.Status = RC;
-            Irp->IoStatus.Information = 0;
-            // complete the IRP
-            IoCompleteRequest(Irp, IO_DISK_INCREMENT);
         }
 
     } _SEH2_EXCEPT(UDFExceptionFilter(IrpContext, _SEH2_GetExceptionInformation())) {
@@ -159,8 +156,9 @@ UDFCommonQueryVolInfo(
     BOOLEAN PostRequest = FALSE;
     BOOLEAN AcquiredVCB = FALSE;
     PFILE_OBJECT            FileObject = NULL;
-//    PtrUDFFCB               Fcb = NULL;
-    PCCB                    Ccb = NULL;
+    TYPE_OF_OPEN TypeOfOpen;
+    PFCB Fcb;
+    PCCB Ccb = NULL;
 
     _SEH2_TRY {
 
@@ -174,13 +172,16 @@ UDFCommonQueryVolInfo(
         FileObject = IrpSp->FileObject;
         ASSERT(FileObject);
 
-        // Get the FCB and CCB pointers.
-        Ccb = (PCCB)FileObject->FsContext2;
-        ASSERT(Ccb);
+        // Decode the file object and fail if this an unopened file object.
+
+        TypeOfOpen = UDFDecodeFileObject(IrpSp->FileObject, &Fcb, &Ccb);
+
+        ASSERT_CCB(Ccb);
+        ASSERT_FCB(Fcb);
 
         Vcb = (PVCB)(IrpSp->DeviceObject->DeviceExtension);
         ASSERT(Vcb);
-        //Vcb->VCBFlags |= UDF_VCB_SKIP_EJECT_CHECK;
+        //Vcb->VcbState |= UDF_VCB_SKIP_EJECT_CHECK;
         //  Reference our input parameters to make things easier
         Length = IrpSp->Parameters.QueryVolume.Length;
         //  Acquire the Vcb for this volume.
@@ -196,7 +197,7 @@ UDFCommonQueryVolInfo(
             //  copying the volume label.  All other routines copy fields that
             //  cannot change or are just manifest constants.
             UDFFlushTryBreak(Vcb);
-            if (!UDFAcquireResourceShared(&(Vcb->VCBResource), CanWait)) {
+            if (!UDFAcquireResourceShared(&(Vcb->VcbResource), CanWait)) {
                 PostRequest = TRUE;
                 try_return (RC = STATUS_PENDING);
             }
@@ -241,7 +242,7 @@ try_exit:   NOTHING;
     } _SEH2_FINALLY {
 
         if (AcquiredVCB) {
-            UDFReleaseResource(&(Vcb->VCBResource));
+            UDFReleaseResource(&(Vcb->VcbResource));
             AcquiredVCB = FALSE;
         }
 
@@ -255,15 +256,14 @@ try_exit:   NOTHING;
             // and will return STATUS_PENDING back to us
             RC = UDFPostRequest(IrpContext, Irp);
 
-        } else
-        if(!_SEH2_AbnormalTermination()) {
+        } else {
 
-            Irp->IoStatus.Status = RC;
-            // Free up the Irp Context
-            UDFCleanupIrpContext(IrpContext);
-            // complete the IRP
-            IoCompleteRequest(Irp, IO_DISK_INCREMENT);
-        } // can we complete the IRP ?
+            // Can complete the IRP here if no exception was encountered
+            if (!_SEH2_AbnormalTermination()) {
+
+                UDFCompleteRequest(IrpContext, Irp, RC);
+            }
+        } 
 
     } _SEH2_END;
 
@@ -348,7 +348,7 @@ UDFQueryFsSizeInfo(
 
     UDFPrint(("  UDFQueryFsSizeInfo: \n"));
     //  Fill in the output buffer.
-    if(Vcb->BitmapModified) {
+    if (Vcb->BitmapModified) {
         Vcb->TotalAllocUnits =
         Buffer->TotalAllocationUnits.QuadPart = UDFGetTotalSpace(Vcb);
         Vcb->FreeAllocUnits =
@@ -359,13 +359,13 @@ UDFQueryFsSizeInfo(
         Buffer->AvailableAllocationUnits.QuadPart = Vcb->FreeAllocUnits;
     }
     Vcb->LowFreeSpace = (Vcb->FreeAllocUnits < max(Vcb->FECharge,UDF_DEFAULT_FE_CHARGE)*128);
-    if(!Buffer->TotalAllocationUnits.QuadPart)
+    if (!Buffer->TotalAllocationUnits.QuadPart)
         Buffer->TotalAllocationUnits.QuadPart = max(1, Vcb->LastPossibleLBA);
     Buffer->SectorsPerAllocationUnit = Vcb->LBlockSize / Vcb->BlockSize;
-    if(!Buffer->SectorsPerAllocationUnit)
+    if (!Buffer->SectorsPerAllocationUnit)
         Buffer->SectorsPerAllocationUnit = 1;
     Buffer->BytesPerSector = Vcb->BlockSize;
-    if(!Buffer->BytesPerSector)
+    if (!Buffer->BytesPerSector)
         Buffer->BytesPerSector = 2048;
 
     UDFPrint(("  Space: Total %I64x, Free %I64x\n",
@@ -400,7 +400,7 @@ UDFQueryFsFullSizeInfo(
 
     UDFPrint(("  UDFQueryFsFullSizeInfo: \n"));
     //  Fill in the output buffer.
-    if(Vcb->BitmapModified) {
+    if (Vcb->BitmapModified) {
         Vcb->TotalAllocUnits =
         Buffer->TotalAllocationUnits.QuadPart = UDFGetTotalSpace(Vcb);
         Vcb->FreeAllocUnits =
@@ -412,13 +412,13 @@ UDFQueryFsFullSizeInfo(
         Buffer->CallerAvailableAllocationUnits.QuadPart =
         Buffer->ActualAvailableAllocationUnits.QuadPart = Vcb->FreeAllocUnits;
     }
-    if(!Buffer->TotalAllocationUnits.QuadPart)
+    if (!Buffer->TotalAllocationUnits.QuadPart)
         Buffer->TotalAllocationUnits.QuadPart = max(1, Vcb->LastPossibleLBA);
     Buffer->SectorsPerAllocationUnit = Vcb->LBlockSize / Vcb->BlockSize;
-    if(!Buffer->SectorsPerAllocationUnit)
+    if (!Buffer->SectorsPerAllocationUnit)
         Buffer->SectorsPerAllocationUnit = 1;
     Buffer->BytesPerSector = Vcb->BlockSize;
-    if(!Buffer->BytesPerSector)
+    if (!Buffer->BytesPerSector)
         Buffer->BytesPerSector = 2048;
 
     UDFPrint(("  Space: Total %I64x, Free %I64x\n",
@@ -503,7 +503,7 @@ UDFQueryFsAttributeInfo(
 #ifdef ALLOW_SPARSE
                                    FILE_SUPPORTS_SPARSE_FILES |
 #endif //ALLOW_SPARSE
-                                   ((Vcb->VCBFlags & VCB_STATE_VOLUME_READ_ONLY) ? FILE_READ_ONLY_VOLUME : 0) |
+                                   ((Vcb->VcbState & VCB_STATE_VOLUME_READ_ONLY) ? FILE_READ_ONLY_VOLUME : 0) |
 
                                    FILE_UNICODE_ON_DISK;
 
@@ -559,7 +559,6 @@ UDFSetVolInfo(
 
     // set the top level context
     AreWeTopLevel = UDFIsIrpTopLevel(Irp);
-    ASSERT(!UDFIsFSDevObj(DeviceObject));
 
     _SEH2_TRY {
 
@@ -597,15 +596,16 @@ UDFCommonSetVolInfo(
     )
 {
     NTSTATUS RC = STATUS_INVALID_PARAMETER;
-    PIO_STACK_LOCATION IrpSp = IoGetCurrentIrpStackLocation( Irp );
+    PIO_STACK_LOCATION IrpSp = IoGetCurrentIrpStackLocation(Irp);
     ULONG Length;
     BOOLEAN CanWait = FALSE;
     PVCB Vcb;
     BOOLEAN PostRequest = FALSE;
     BOOLEAN AcquiredVCB = FALSE;
     PFILE_OBJECT            FileObject = NULL;
-//    PtrUDFFCB               Fcb = NULL;
-    PCCB                    Ccb = NULL;
+    TYPE_OF_OPEN TypeOfOpen;
+    PFCB Fcb;
+    PCCB Ccb;
 
     _SEH2_TRY {
 
@@ -618,29 +618,27 @@ UDFCommonSetVolInfo(
         FileObject = IrpSp->FileObject;
         ASSERT(FileObject);
 
-        // Get the FCB and CCB pointers.
-        Ccb = (PCCB)FileObject->FsContext2;
-        ASSERT(Ccb);
+        // Decode the file object and fail if this an unopened file object.
 
-        if(Ccb && Ccb->Fcb && (Ccb->Fcb->NodeIdentifier.NodeTypeCode != UDF_NODE_TYPE_VCB)) {
+        TypeOfOpen = UDFDecodeFileObject(IrpSp->FileObject, &Fcb, &Ccb);
+
+        ASSERT_CCB(Ccb);
+        ASSERT_FCB(Fcb);
+
+        if (Ccb && Ccb->Fcb && (Ccb->Fcb->NodeIdentifier.NodeTypeCode != UDF_NODE_TYPE_VCB)) {
             UDFPrint(("    Can't change Label on Non-volume object\n"));
             try_return(RC = STATUS_ACCESS_DENIED);
         }
 
         Vcb = (PVCB)(IrpSp->DeviceObject->DeviceExtension);
         ASSERT(Vcb);
-        Vcb->VCBFlags |= UDF_VCB_SKIP_EJECT_CHECK;
+        Vcb->VcbState |= UDF_VCB_SKIP_EJECT_CHECK;
         //  Reference our input parameters to make things easier
-
-        if(Vcb->VCBFlags & UDF_VCB_FLAGS_RAW_DISK) {
-            UDFPrint(("    Can't change Label on blank volume ;)\n"));
-            try_return(RC = STATUS_ACCESS_DENIED);
-        }
 
         Length = IrpSp->Parameters.SetVolume.Length;
         //  Acquire the Vcb for this volume.
         CanWait = ((IrpContext->Flags & IRP_CONTEXT_FLAG_WAIT) ? TRUE : FALSE);
-        if (!UDFAcquireResourceShared(&(Vcb->VCBResource), CanWait)) {
+        if (!UDFAcquireResourceShared(&(Vcb->VcbResource), CanWait)) {
             PostRequest = TRUE;
             try_return (RC = STATUS_PENDING);
         }
@@ -670,7 +668,7 @@ try_exit:   NOTHING;
     } _SEH2_FINALLY {
 
         if (AcquiredVCB) {
-            UDFReleaseResource(&(Vcb->VCBResource));
+            UDFReleaseResource(&(Vcb->VcbResource));
             AcquiredVCB = FALSE;
         }
 
@@ -688,14 +686,10 @@ try_exit:   NOTHING;
 
             // Can complete the IRP here if no exception was encountered
             if (!_SEH2_AbnormalTermination()) {
-                Irp->IoStatus.Status = RC;
 
-                // Free up the Irp Context
-                UDFCleanupIrpContext(IrpContext);
-                // complete the IRP
-                IoCompleteRequest(Irp, IO_DISK_INCREMENT);
+                UDFCompleteRequest(IrpContext, Irp, RC);
             }
-        } // can we complete the IRP ?
+        }
 
     } _SEH2_END;
 
@@ -716,15 +710,15 @@ UDFSetLabelInfo (
     PAGED_CODE();
 
     UDFPrint(("  UDFSetLabelInfo: \n"));
-    if(Buffer->VolumeLabelLength > UDF_VOL_LABEL_LEN*sizeof(WCHAR)) {
+    if (Buffer->VolumeLabelLength > UDF_VOL_LABEL_LEN*sizeof(WCHAR)) {
         // Too long Volume Label... NT doesn't like it
         UDFPrint(("  UDFSetLabelInfo: STATUS_INVALID_VOLUME_LABEL\n"));
         return STATUS_INVALID_VOLUME_LABEL;
     }
 
-    if(Vcb->VolIdent.Buffer) MyFreePool__(Vcb->VolIdent.Buffer);
+    if (Vcb->VolIdent.Buffer) MyFreePool__(Vcb->VolIdent.Buffer);
     Vcb->VolIdent.Buffer = (PWCHAR)MyAllocatePool__(NonPagedPool, Buffer->VolumeLabelLength+sizeof(WCHAR));
-    if(!Vcb->VolIdent.Buffer) return STATUS_INSUFFICIENT_RESOURCES;
+    if (!Vcb->VolIdent.Buffer) return STATUS_INSUFFICIENT_RESOURCES;
 
     Vcb->VolIdent.Length = (USHORT)Buffer->VolumeLabelLength;
     Vcb->VolIdent.MaximumLength = (USHORT)Buffer->VolumeLabelLength+sizeof(WCHAR);

@@ -48,38 +48,38 @@ UDFVRemoveBlock(
     PUDF_VERIFY_ITEM vItem
     );
 
-OSSTATUS
+NTSTATUS
 UDFVInit(
     IN PVCB Vcb
     )
 {
     PUDF_VERIFY_CTX VerifyCtx = &Vcb->VerifyCtx;
     uint32 i;
-    OSSTATUS status = STATUS_SUCCESS;
+    NTSTATUS status = STATUS_SUCCESS;
     BOOLEAN res_inited = FALSE;
 
-    if(VerifyCtx->VInited) {
+    if (VerifyCtx->VInited) {
         UDFPrint(("Already inited\n"));
         return STATUS_SUCCESS;
     }
 
     _SEH2_TRY {
         RtlZeroMemory(VerifyCtx, sizeof(UDF_VERIFY_CTX));
-        if(!Vcb->VerifyOnWrite) {
+        if (!Vcb->VerifyOnWrite) {
             UDFPrint(("Verify is disabled\n"));
             return STATUS_SUCCESS;
         }
-        if(Vcb->CDR_Mode) {
+        if (Vcb->CDR_Mode) {
             UDFPrint(("Verify is not intended for CD/DVD-R\n"));
             return STATUS_SUCCESS;
         }
-        if(!OS_SUCCESS(status = ExInitializeResourceLite(&(VerifyCtx->VerifyLock)))) {
+        if (!NT_SUCCESS(status = ExInitializeResourceLite(&(VerifyCtx->VerifyLock)))) {
             try_return(status);
         }
         res_inited = TRUE;
         VerifyCtx->ItemCount = 0;
         VerifyCtx->StoredBitMap = (uint8*)DbgAllocatePoolWithTag(PagedPool, (i = (Vcb->LastPossibleLBA+1+7)>>3), 'mNWD' );
-        if(VerifyCtx->StoredBitMap) {
+        if (VerifyCtx->StoredBitMap) {
             RtlZeroMemory(VerifyCtx->StoredBitMap, i);
         } else {
             UDFPrint(("Can't alloc verify bitmap for %x blocks\n", Vcb->LastPossibleLBA));
@@ -94,8 +94,8 @@ try_exit: NOTHING;
 
     } _SEH2_FINALLY {
 
-        if(!OS_SUCCESS(status)) {
-            if(res_inited) {
+        if (!NT_SUCCESS(status)) {
+            if (res_inited) {
                 ExDeleteResourceLite(&(VerifyCtx->VerifyLock));
             }
         }
@@ -115,9 +115,9 @@ UDFVWaitQueued(
         w = InterlockedIncrement((PLONG)&(VerifyCtx->WaiterCount));
         UDFPrint(("  %d waiters\n", w));
         DbgWaitForSingleObject(&(VerifyCtx->vrfEvent), NULL);
-        if((w = InterlockedDecrement((PLONG)&(VerifyCtx->WaiterCount)))) {
+        if ((w = InterlockedDecrement((PLONG)&(VerifyCtx->WaiterCount)))) {
             UDFPrint(("  still %d waiters, q %d\n", w, VerifyCtx->QueuedCount));
-            if(!VerifyCtx->QueuedCount) {
+            if (!VerifyCtx->QueuedCount) {
                 UDFPrint(("  pulse event\n", w));
                 KeSetEvent(&(VerifyCtx->vrfEvent), 0, FALSE);
             }
@@ -135,7 +135,7 @@ UDFVRelease(
     PLIST_ENTRY Link;
     PUDF_VERIFY_ITEM vItem;
 
-    if(!VerifyCtx->VInited) {
+    if (!VerifyCtx->VInited) {
         return;
     }
 
@@ -178,7 +178,7 @@ UDFVStoreBlock(
     UDFPrint(("v-add %x\n", LBA));
 
     vItem = (PUDF_VERIFY_ITEM)DbgAllocatePoolWithTag(PagedPool, sizeof(UDF_VERIFY_ITEM)+Vcb->BlockSize, 'bvWD');
-    if(!vItem)
+    if (!vItem)
         return NULL;
     RtlCopyMemory(vItem+1, Buffer, Vcb->BlockSize);
     vItem->lba = LBA;
@@ -219,7 +219,7 @@ UDFVRemoveBlock(
     return;
 } // end UDFVUpdateBlock()
 
-OSSTATUS
+NTSTATUS
 UDFVWrite(
     IN PVCB Vcb,
     IN void* Buffer,     // Target buffer
@@ -237,45 +237,45 @@ UDFVWrite(
     ULONG n;
     //uint32 prev_lba;
 
-    if(!VerifyCtx->VInited) {
+    if (!VerifyCtx->VInited) {
         return STATUS_SUCCESS;
     }
 
     UDFAcquireResourceExclusive(&(VerifyCtx->VerifyLock), TRUE);
 
     for(i=0, n=0; i<BCount; i++) {
-        if(UDFGetBit(VerifyCtx->StoredBitMap, LBA+i)) {
+        if (UDFGetBit(VerifyCtx->StoredBitMap, LBA+i)) {
             // some blocks are remembered
             n++;
         }
     }
 
-    if(n == BCount) {
+    if (n == BCount) {
         // update all blocks
         n = 0;
         Link = VerifyCtx->vrfList.Blink;
         while(Link != &(VerifyCtx->vrfList)) {
             vItem = CONTAINING_RECORD( Link, UDF_VERIFY_ITEM, vrfList );
             Link = Link->Blink;
-            if(vItem->lba >= LBA && vItem->lba < LBA+BCount) {
+            if (vItem->lba >= LBA && vItem->lba < LBA+BCount) {
                 ASSERT(UDFGetBit(VerifyCtx->StoredBitMap, vItem->lba));
                 UDFVUpdateBlock(Vcb, ((PUCHAR)Buffer)+(vItem->lba-LBA)*Vcb->BlockSize, vItem);
                 n++;
-                if(n == BCount) {
+                if (n == BCount) {
                     // all updated
                     break;
                 }
             }
         }
     } else
-    if(n) {
+    if (n) {
 #if 0
         // find remembered blocks (the 1st one)
         Link = VerifyCtx->vrfList.Blink;
         while(Link != &(VerifyCtx->vrfList)) {
             vItem = CONTAINING_RECORD( Link, UDF_VERIFY_ITEM, vrfList );
             Link = Link->Blink;
-            if(vItem->lba >= LBA && vItem->lba < LBA+BCount) {
+            if (vItem->lba >= LBA && vItem->lba < LBA+BCount) {
                 //UDFVRemoveBlock(VerifyCtx, vItem);
                 break;
             }
@@ -289,11 +289,11 @@ UDFVWrite(
         while((i < n) && (Link != &(VerifyCtx->vrfList))) {
             vItem = CONTAINING_RECORD( Link, UDF_VERIFY_ITEM, vrfList );
             Link = Link->Blink;
-            if(vItem->lba > LBA || vItem->lba >= LBA+BCount) {
+            if (vItem->lba > LBA || vItem->lba >= LBA+BCount) {
                 // end
                 break;
             }
-            if(vItem->lba < prev_lba) {
+            if (vItem->lba < prev_lba) {
                 // not sorted
                 break;
             }
@@ -301,7 +301,7 @@ UDFVWrite(
             i++;
         }
 
-        if(i == n) {
+        if (i == n) {
             // cont
         } else {
             // drop all and add again
@@ -309,17 +309,17 @@ UDFVWrite(
 
         vItem1 = vItem;
         for(i=0; i<BCount; i++) {
-            if(vItem->lba == LBA+i) {
+            if (vItem->lba == LBA+i) {
                 ASSERT(UDFGetBit(VerifyCtx->StoredBitMap, LBA+i));
                 UDFVUpdateBlock(Vcb, ((PUCHAR)Buffer)+i*Vcb->BlockSize, vItem);
                 continue;
             }
-            if(vItem1->lba == LBA+i) {
+            if (vItem1->lba == LBA+i) {
                 ASSERT(UDFGetBit(VerifyCtx->StoredBitMap, LBA+i));
                 UDFVUpdateBlock(Vcb, ((PUCHAR)Buffer)+i*Vcb->BlockSize, vItem1);
                 continue;
             }
-            if(vItem1->lba > LBA+i) {
+            if (vItem1->lba > LBA+i) {
                 // just insert this block
                 ASSERT(!UDFGetBit(VerifyCtx->StoredBitMap, LBA+i));
                 UDFVStoreBlock(Vcb, LBA+i, ((PUCHAR)Buffer)+i*Vcb->BlockSize, &(vItem1->vrfList));
@@ -333,10 +333,10 @@ UDFVWrite(
         while(Link != &(VerifyCtx->vrfList)) {
             vItem = CONTAINING_RECORD( Link, UDF_VERIFY_ITEM, vrfList );
             Link = Link->Blink;
-            if(vItem->lba >= LBA && vItem->lba < LBA+BCount) {
+            if (vItem->lba >= LBA && vItem->lba < LBA+BCount) {
                 UDFVRemoveBlock(VerifyCtx, vItem);
                 i++;
-                if(i == n) {
+                if (i == n) {
                     // all killed
                     break;
                 }
@@ -354,13 +354,13 @@ remember_all:
         }
     }
 
-    if(VerifyCtx->ItemCount > UDF_MAX_VERIFY_CACHE) {
+    if (VerifyCtx->ItemCount > UDF_MAX_VERIFY_CACHE) {
         UDFVVerify(Vcb, UFD_VERIFY_FLAG_LOCKED);
     }
 
     UDFReleaseResource(&(VerifyCtx->VerifyLock));
 
-    if(VerifyCtx->ItemCount > UDF_MAX_VERIFY_CACHE*2) {
+    if (VerifyCtx->ItemCount > UDF_MAX_VERIFY_CACHE*2) {
         //UDFVVerify(Vcb, UFD_VERIFY_FLAG_LOCKED);
         // TODO: make some delay
     }
@@ -369,7 +369,7 @@ remember_all:
 
 } // end UDFVWrite()
 
-OSSTATUS
+NTSTATUS
 UDFVRead(
     IN PVCB Vcb,
     IN void* Buffer,     // Target buffer
@@ -385,10 +385,10 @@ UDFVRead(
     ULONG crc;
     ULONG i;
     ULONG n;
-    OSSTATUS status = STATUS_SUCCESS;
+    NTSTATUS status = STATUS_SUCCESS;
     uint32* bm;
 
-    if(!VerifyCtx->VInited) {
+    if (!VerifyCtx->VInited) {
         return STATUS_SUCCESS;
         //return STATUS_UNSUCCESSFUL;
     }
@@ -396,13 +396,13 @@ UDFVRead(
     UDFAcquireResourceExclusive(&(VerifyCtx->VerifyLock), TRUE);
 
     for(i=0, n=0; i<BCount; i++) {
-        if(UDFGetBit(VerifyCtx->StoredBitMap, LBA+i)) {
+        if (UDFGetBit(VerifyCtx->StoredBitMap, LBA+i)) {
             // some blocks are remembered
             n++;
         }
     }
 
-    if(!n) {
+    if (!n) {
         // no blocks are remembered
         UDFReleaseResource(&(VerifyCtx->VerifyLock));
         return STATUS_SUCCESS;
@@ -413,32 +413,32 @@ UDFVRead(
     while(Link != &(VerifyCtx->vrfList)) {
         vItem = CONTAINING_RECORD( Link, UDF_VERIFY_ITEM, vrfList );
         Link = Link->Flink;
-        if(vItem->lba >= LBA && vItem->lba < LBA+BCount) {
+        if (vItem->lba >= LBA && vItem->lba < LBA+BCount) {
             ASSERT(UDFGetBit(VerifyCtx->StoredBitMap, vItem->lba));
             i++;
-            if(!(Flags & PH_READ_VERIFY_CACHE)) {
+            if (!(Flags & PH_READ_VERIFY_CACHE)) {
                 crc = crc32((PUCHAR)Buffer+(vItem->lba - LBA)*Vcb->BlockSize, Vcb->BlockSize);
-                if(vItem->crc != crc) {
+                if (vItem->crc != crc) {
                     UDFPrint(("UDFVRead: stored %x != %x\n", vItem->crc, crc));
                     RtlCopyMemory((PUCHAR)Buffer+(vItem->lba - LBA)*Vcb->BlockSize, vItem->Buffer, Vcb->BlockSize);
                     status = STATUS_FT_WRITE_RECOVERY;
 
-                    if(!(bm = (uint32*)(Vcb->BSBM_Bitmap))) {
+                    if (!(bm = (uint32*)(Vcb->BSBM_Bitmap))) {
                         crc = (Vcb->LastPossibleLBA+1+7) >> 3; // reuse 'crc' variable
                         bm = (uint32*)(Vcb->BSBM_Bitmap = (int8*)DbgAllocatePoolWithTag(NonPagedPool, crc, 'mNWD' ));
-                        if(bm) {
+                        if (bm) {
                             RtlZeroMemory(bm, crc);
                         } else {
                             UDFPrint(("Can't alloc BSBM for %x blocks\n", Vcb->LastPossibleLBA));
                         }
                     }
-                    if(bm) {
+                    if (bm) {
                         UDFSetBit(bm, vItem->lba);
                         UDFPrint(("Set BB @ %#x\n", vItem->lba));
                     }
 #ifdef _BROWSE_UDF_
                     bm = (uint32*)(Vcb->FSBM_Bitmap);
-                    if(bm) {
+                    if (bm) {
                         UDFSetUsedBit(bm, vItem->lba);
                         UDFPrint(("Set BB @ %#x as used\n", vItem->lba));
                     }
@@ -450,24 +450,24 @@ UDFVRead(
                 UDFPrint(("UDFVRead: get cached @ %x\n", vItem->lba));
                 RtlCopyMemory((PUCHAR)Buffer+(vItem->lba - LBA)*Vcb->BlockSize, vItem->Buffer, Vcb->BlockSize);
             }
-            if(i >= n) {
+            if (i >= n) {
                 // no more blocks expected
                 break;
             }
         }
     }
 
-    if((status == STATUS_SUCCESS && !(Flags & PH_KEEP_VERIFY_CACHE)) || (Flags & PH_FORGET_VERIFIED)) {
+    if ((status == STATUS_SUCCESS && !(Flags & PH_KEEP_VERIFY_CACHE)) || (Flags & PH_FORGET_VERIFIED)) {
         // ok, forget this, no errors found
         Link = VerifyCtx->vrfList.Flink;
         i = 0;
         while(Link != &(VerifyCtx->vrfList)) {
             vItem = CONTAINING_RECORD( Link, UDF_VERIFY_ITEM, vrfList );
             Link = Link->Flink;
-            if(vItem->lba >= LBA && vItem->lba < LBA+BCount) {
+            if (vItem->lba >= LBA && vItem->lba < LBA+BCount) {
                 i++;
                 UDFVRemoveBlock(VerifyCtx, vItem);
-                if(i >= n) {
+                if (i >= n) {
                     // no more blocks expected
                     break;
                 }
@@ -480,7 +480,7 @@ UDFVRead(
 
 } // end UDFVRead()
 
-OSSTATUS
+NTSTATUS
 UDFVForget(
     IN PVCB Vcb,
     IN uint32 BCount,
@@ -493,22 +493,22 @@ UDFVForget(
     PUDF_VERIFY_CTX VerifyCtx = &Vcb->VerifyCtx;
     ULONG i;
     ULONG n;
-    OSSTATUS status = STATUS_SUCCESS;
+    NTSTATUS status = STATUS_SUCCESS;
 
-    if(!VerifyCtx->VInited) {
+    if (!VerifyCtx->VInited) {
         return STATUS_UNSUCCESSFUL;
     }
 
     UDFAcquireResourceExclusive(&(VerifyCtx->VerifyLock), TRUE);
 
     for(i=0, n=0; i<BCount; i++) {
-        if(UDFGetBit(VerifyCtx->StoredBitMap, LBA+i)) {
+        if (UDFGetBit(VerifyCtx->StoredBitMap, LBA+i)) {
             // some blocks are remembered
             n++;
         }
     }
 
-    if(!n) {
+    if (!n) {
         // no blocks are remembered
         UDFReleaseResource(&(VerifyCtx->VerifyLock));
         return STATUS_SUCCESS;
@@ -519,10 +519,10 @@ UDFVForget(
     while(Link != &(VerifyCtx->vrfList)) {
         vItem = CONTAINING_RECORD( Link, UDF_VERIFY_ITEM, vrfList );
         Link = Link->Flink;
-        if(vItem->lba >= LBA && vItem->lba < LBA+BCount) {
+        if (vItem->lba >= LBA && vItem->lba < LBA+BCount) {
             i++;
             UDFVRemoveBlock(VerifyCtx, vItem);
-            if(i >= n) {
+            if (i >= n) {
                 // no more blocks expected
                 break;
             }
@@ -543,15 +543,29 @@ UDFVWorkItem(
     PUDF_VERIFY_REQ VerifyReq = (PUDF_VERIFY_REQ)Context;
     PVCB Vcb = VerifyReq->Vcb;
     SIZE_T ReadBytes;
-//    OSSTATUS RC;
     ULONG i;
+    IRP_CONTEXT IrpContext;
+
+    // Make us appear as a top level FSP request so that we will
+    // receive any errors from the operation.
+
+    IoSetTopLevelIrp((PIRP)FSRTL_FSP_TOP_LEVEL_IRP);
+
+    // Dummy up and Irp Context so we can call our worker routines
+
+    RtlZeroMemory(&IrpContext, sizeof(IRP_CONTEXT));
+
+    SetFlag(IrpContext.Flags, IRP_CONTEXT_FLAG_ON_STACK | IRP_CONTEXT_FLAG_WAIT);
+    IrpContext.NodeIdentifier.NodeTypeCode = UDF_NODE_TYPE_IRP_CONTEXT;
+    IrpContext.Vcb = Vcb;
 
     ReadBytes = (SIZE_T)Vcb;
 #if 1
-    if(Vcb->SparingCountFree) {
+    if (Vcb->SparingCountFree) {
         WCacheStartDirect__(&(Vcb->FastCache), Vcb, TRUE);
         for(i=0; i<VerifyReq->nReq; i++) {
-            UDFTIOVerify(Vcb,
+            UDFTIOVerify(&IrpContext,
+                         Vcb,
                          VerifyReq->Buffer,     // Target buffer
                          VerifyReq->vr[i].BCount << Vcb->BlockSizeBits,
                          VerifyReq->vr[i].lba,
@@ -569,7 +583,7 @@ UDFVWorkItem(
     }
 #else
     for(i=0; i<VerifyReq->nReq; i++) {
-        if(Vcb->SparingCountFree) {
+        if (Vcb->SparingCountFree) {
             WCacheStartDirect__(&(Vcb->FastCache), Vcb, TRUE);
             RC = UDFTIOVerify(Vcb,
                            VerifyReq->Buffer,     // Target buffer
@@ -611,11 +625,11 @@ UDFVVerify(
     ULONG i;
     BOOLEAN do_vrf = FALSE;
 
-    if(!VerifyCtx->VInited) {
+    if (!VerifyCtx->VInited) {
         return;
     }
-    if(VerifyCtx->QueuedCount) {
-        if(Flags & UFD_VERIFY_FLAG_WAIT) {
+    if (VerifyCtx->QueuedCount) {
+        if (Flags & UFD_VERIFY_FLAG_WAIT) {
             UDFPrint(("  wait for verify flush\n"));
             goto wait;
         }
@@ -623,20 +637,20 @@ UDFVVerify(
         return;
     }
 
-    if(!(Flags & (UFD_VERIFY_FLAG_FORCE | UFD_VERIFY_FLAG_BG))) {
-        if(VerifyCtx->ItemCount < UDF_MAX_VERIFY_CACHE) {
+    if (!(Flags & (UFD_VERIFY_FLAG_FORCE | UFD_VERIFY_FLAG_BG))) {
+        if (VerifyCtx->ItemCount < UDF_MAX_VERIFY_CACHE) {
             return;
         }
 
     }
-    if(!(Flags & UFD_VERIFY_FLAG_LOCKED)) {
+    if (!(Flags & UFD_VERIFY_FLAG_LOCKED)) {
         UDFAcquireResourceExclusive(&(VerifyCtx->VerifyLock), TRUE);
     }
 
-    if(Flags & UFD_VERIFY_FLAG_FORCE) {
+    if (Flags & UFD_VERIFY_FLAG_FORCE) {
         i = VerifyCtx->ItemCount;
     } else {
-        if(VerifyCtx->ItemCount >= UDF_MAX_VERIFY_CACHE) {
+        if (VerifyCtx->ItemCount >= UDF_MAX_VERIFY_CACHE) {
             i = VerifyCtx->ItemCount - UDF_VERIFY_CACHE_LOW;
         } else {
             i = min(UDF_VERIFY_CACHE_GRAN, VerifyCtx->ItemCount);
@@ -650,8 +664,8 @@ UDFVVerify(
     while(i) {
         ASSERT(Link != &(VerifyCtx->vrfList));
 /*
-        if(Link == &(VerifyCtx->vrfList)) {
-            if(!len)
+        if (Link == &(VerifyCtx->vrfList)) {
+            if (!len)
                 break;
             i=1;
             goto queue_req;
@@ -661,45 +675,45 @@ UDFVVerify(
         Link = Link->Flink;
 
         //
-        if(!vItem->queued && (prev_lba+len == vItem->lba)) {
+        if (!vItem->queued && (prev_lba+len == vItem->lba)) {
             vItem->queued = TRUE;
             len++;
         } else {
-            if(len) {
+            if (len) {
                 do_vrf = TRUE;
             } else {
                 len = 1;
                 prev_lba = vItem->lba;
             }
         }
-        if((i == 1) && len) {
+        if ((i == 1) && len) {
             do_vrf = TRUE;
         }
-        if(len >= 0x100) {
+        if (len >= 0x100) {
             do_vrf = TRUE;
         }
-        if(do_vrf) {
+        if (do_vrf) {
 //queue_req:
-            if(!VerifyReq) {
+            if (!VerifyReq) {
                 VerifyReq = (PUDF_VERIFY_REQ)DbgAllocatePoolWithTag(NonPagedPool, sizeof(UDF_VERIFY_REQ), 'bNWD');
-                if(VerifyReq) {
+                if (VerifyReq) {
                     RtlZeroMemory(VerifyReq, sizeof(UDF_VERIFY_REQ));
                     VerifyReq->Vcb    = Vcb;
                 }
             }
-            if(VerifyReq) {
+            if (VerifyReq) {
 
                 VerifyReq->vr[VerifyReq->nReq].lba    = prev_lba;
                 VerifyReq->vr[VerifyReq->nReq].BCount = len;
                 VerifyReq->nReq++;
-                if(max_len < len) {
+                if (max_len < len) {
                     max_len = len;
                 }
 
-                if((VerifyReq->nReq >= MAX_VREQ_RANGES) || (i == 1)) {
+                if ((VerifyReq->nReq >= MAX_VREQ_RANGES) || (i == 1)) {
 
                     VerifyReq->Buffer = (PUCHAR)DbgAllocatePoolWithTag(NonPagedPool, max_len * Vcb->BlockSize, 'bNWD');
-                    if(VerifyReq->Buffer) {
+                    if (VerifyReq->Buffer) {
                         InterlockedIncrement((PLONG)&(VerifyCtx->QueuedCount));
 
                         ExInitializeWorkItem( &(VerifyReq->VerifyItem),
@@ -721,10 +735,10 @@ UDFVVerify(
         i--;
     }
 
-    if(!(Flags & UFD_VERIFY_FLAG_LOCKED)) {
+    if (!(Flags & UFD_VERIFY_FLAG_LOCKED)) {
         UDFReleaseResource(&(VerifyCtx->VerifyLock));
     }
-    if(Flags & UFD_VERIFY_FLAG_WAIT) {
+    if (Flags & UFD_VERIFY_FLAG_WAIT) {
 wait:
         UDFPrint(("UDFVVerify: wait for completion\n"));
         UDFVWaitQueued(VerifyCtx);
@@ -740,7 +754,7 @@ UDFVFlush(
 {
     PUDF_VERIFY_CTX VerifyCtx = &Vcb->VerifyCtx;
 
-    if(!VerifyCtx->VInited) {
+    if (!VerifyCtx->VInited) {
         return;
     }
 
@@ -756,13 +770,14 @@ UDFVFlush(
 BOOLEAN
 __fastcall
 UDFCheckArea(
+    PIRP_CONTEXT IrpContext,
     IN PVCB Vcb,
     IN lba_t LBA,
     IN uint32 BCount
     )
 {
     uint8* buff;
-    OSSTATUS RC;
+    NTSTATUS RC;
     SIZE_T ReadBytes;
     uint32 i, d;
     BOOLEAN ext_ok = TRUE;
@@ -770,22 +785,23 @@ UDFCheckArea(
     uint32 PS = Vcb->WriteBlockSize >> Vcb->BlockSizeBits;
 
     buff = (uint8*)DbgAllocatePoolWithTag(NonPagedPool, Vcb->WriteBlockSize, 'bNWD' );
-    if(buff) {
+    if (buff) {
         for(i=0; i<BCount; i+=d) {
-            if(!((LBA+i) & (PS-1)) &&
+            if (!((LBA+i) & (PS-1)) &&
                (i+PS <= BCount)) {
                 d = PS;
             } else {
                 d = 1;
             }
-            RC = UDFTRead(Vcb,
+            RC = UDFTRead(IrpContext,
+                           Vcb,
                            buff,
                            d << Vcb->BlockSizeBits,
                            LBA+i,
                            &ReadBytes,
                            PH_TMP_BUFFER);
 
-            if(RC != STATUS_SUCCESS) {
+            if (RC != STATUS_SUCCESS) {
                 Map[0].extLocation = LBA+i;
                 Map[0].extLength = d << Vcb->BlockSizeBits;
                 UDFMarkSpaceAsXXXNoProtect(Vcb, 0, &(Map[0]), AS_DISCARDED | AS_BAD); // free
@@ -800,9 +816,9 @@ UDFCheckArea(
 /*
     This routine remaps sectors from bad packet
  */
-OSSTATUS
-__fastcall
+NTSTATUS
 UDFRemapPacket(
+    IN PIRP_CONTEXT IrpContext,
     IN PVCB Vcb,
     IN uint32 Lba,
     IN BOOLEAN RemapSpared
@@ -812,21 +828,21 @@ UDFRemapPacket(
     PSPARING_MAP Map;
     BOOLEAN verified = FALSE;
 
-    if(Vcb->SparingTable) {
+    if (Vcb->SparingTable) {
 
         max = Vcb->SparingCount;
         BS = Vcb->SparingBlockSize;
 
         // use sparing table for relocation
-        if(Vcb->SparingCountFree == (ULONG)-1) {
+        if (Vcb->SparingCountFree == (ULONG)-1) {
             UDFPrint(("calculate free spare areas\n"));
 re_check:
             UDFPrint(("verify spare area\n"));
             Vcb->SparingCountFree = 0;
             Map = Vcb->SparingTable;
             for(i=0;i<max;i++,Map++) {
-                if(Map->origLocation == SPARING_LOC_AVAILABLE) {
-                    if(UDFCheckArea(Vcb, Map->mappedLocation, BS)) {
+                if (Map->origLocation == SPARING_LOC_AVAILABLE) {
+                    if (UDFCheckArea(IrpContext, Vcb, Map->mappedLocation, BS)) {
                         Vcb->SparingCountFree++;
                     } else {
                         UDFPrint(("initial check: bad spare block @ %x\n", Map->mappedLocation));
@@ -836,7 +852,7 @@ re_check:
                 }
             }
         }
-        if(!Vcb->SparingCountFree) {
+        if (!Vcb->SparingCountFree) {
             UDFPrint(("sparing table full\n"));
             return STATUS_DISK_FULL;
         }
@@ -845,16 +861,16 @@ re_check:
         Lba &= ~(BS-1);
         for(i=0;i<max;i++,Map++) {
             orig = Map->origLocation;
-            if(Lba == (orig & ~(BS-1)) ) {
+            if (Lba == (orig & ~(BS-1)) ) {
                 // already remapped
 
                 UDFPrint(("remap remapped: bad spare block @ %x\n", Map->mappedLocation));
-                if(!verified) {
+                if (!verified) {
                     verified = TRUE;
                     goto re_check;
                 }
 
-                if(!RemapSpared) {
+                if (!RemapSpared) {
                     return STATUS_SHARING_VIOLATION;
                 } else {
                     // look for another remap area
@@ -867,7 +883,7 @@ re_check:
         }
         Map = Vcb->SparingTable;
         for(i=0;i<max;i++,Map++) {
-            if(Map->origLocation == SPARING_LOC_AVAILABLE) {
+            if (Map->origLocation == SPARING_LOC_AVAILABLE) {
                 UDFPrint(("remap %x -> %x\n", Lba, Map->mappedLocation));
                 Map->origLocation = Lba;
                 Vcb->SparingTableModified = TRUE;
@@ -884,7 +900,7 @@ re_check:
 /*
     This routine releases sector mapping when entire packet is marked as free
  */
-OSSTATUS
+NTSTATUS
 __fastcall
 UDFUnmapRange(
     IN PVCB Vcb,
@@ -895,7 +911,7 @@ UDFUnmapRange(
     uint32 i, max, BS, orig;
     PSPARING_MAP Map;
 
-    if(Vcb->SparingTable) {
+    if (Vcb->SparingTable) {
         // use sparing table for relocation
 
         max = Vcb->SparingCount;
@@ -908,7 +924,7 @@ UDFUnmapRange(
             case SPARING_LOC_CORRUPTED:
                 continue;
             }
-            if(orig >= Lba &&
+            if (orig >= Lba &&
               (orig+BS) <= (Lba+BCount)) {
                 // unmap
                 UDFPrint(("unmap %x -> %x\n", orig, Map->mappedLocation));
@@ -933,7 +949,7 @@ UDFRelocateSector(
 {
     uint32 i, max, BS, orig;
 
-    if(Vcb->SparingTable) {
+    if (Vcb->SparingTable) {
         // use sparing table for relocation
         uint32 _Lba;
         PSPARING_MAP Map = Vcb->SparingTable;
@@ -943,23 +959,23 @@ UDFRelocateSector(
         _Lba = Lba & ~(BS-1);
         for(i=0;i<max;i++,Map++) {
             orig = Map->origLocation;
-            if(_Lba == (orig & ~(BS-1)) ) {
-            //if( (Lba >= (orig = Map->origLocation)) && (Lba < orig + BS) ) {
+            if (_Lba == (orig & ~(BS-1)) ) {
+            //if ( (Lba >= (orig = Map->origLocation)) && (Lba < orig + BS) ) {
                 return Map->mappedLocation + Lba - orig;
             }
         }
-    } else if(Vcb->Vat) {
+    } else if (Vcb->Vat) {
         // use VAT for relocation
         uint32* Map = Vcb->Vat;
         uint32 root;
         // check if given Lba lays in the partition covered by VAT
-        if(Lba >= Vcb->NWA)
+        if (Lba >= Vcb->NWA)
             return Vcb->NWA;
-        if(Lba < (root = Vcb->Partitions[Vcb->VatPartNdx].PartitionRoot))
+        if (Lba < (root = Vcb->Partitions[Vcb->VatPartNdx].PartitionRoot))
             return Lba;
         Map = &(Vcb->Vat[(i = Lba - root)]);
-        if((i < Vcb->VatCount) && (i=(*Map)) ) {
-            if(i != UDF_VAT_FREE_ENTRY) {
+        if ((i < Vcb->VatCount) && (i=(*Map)) ) {
+            if (i != UDF_VAT_FREE_ENTRY) {
                 return i + root;
             } else {
                 return 0x7fffffff;
@@ -981,7 +997,7 @@ UDFAreSectorsRelocated(
     )
 {
 
-    if(Vcb->SparingTable) {
+    if (Vcb->SparingTable) {
         // use sparing table for relocation
         uint32 i, BS, orig;
         BS = Vcb->SparingBlockSize;
@@ -989,24 +1005,24 @@ UDFAreSectorsRelocated(
 
         Map = Vcb->SparingTable;
         for(i=0;i<Vcb->SparingCount;i++,Map++) {
-            if( ((Lba >= (orig = Map->origLocation)) && (Lba < orig + BS)) ||
+            if ( ((Lba >= (orig = Map->origLocation)) && (Lba < orig + BS)) ||
                 ((Lba+BlockCount-1 >= orig) && (Lba+BlockCount-1 < orig + BS)) ||
                 ((orig >= Lba) && (orig < Lba+BlockCount)) ||
                 ((orig+BS >= Lba) && (orig+BS < Lba+BlockCount)) ) {
                 return TRUE;
             }
         }
-    } else if(Vcb->Vat) {
+    } else if (Vcb->Vat) {
         // use VAT for relocation
         uint32 i, root, j;
         uint32* Map;
-        if(Lba < (root = Vcb->Partitions[Vcb->VatPartNdx].PartitionRoot))
+        if (Lba < (root = Vcb->Partitions[Vcb->VatPartNdx].PartitionRoot))
             return FALSE;
-        if(Lba+BlockCount >= Vcb->NWA)
+        if (Lba+BlockCount >= Vcb->NWA)
             return TRUE;
         Map = &(Vcb->Vat[Lba-root/*+i*/]);
         for(i=0; i<BlockCount; i++, Map++) {
-            if((j = (*Map)) &&
+            if ((j = (*Map)) &&
                (j != Lba-root+i) &&
                ((j != UDF_VAT_FREE_ENTRY) || ((Lba+i) < Vcb->LastLBA)))
                 return TRUE;
@@ -1027,7 +1043,7 @@ UDFRelocateSectors(
     IN uint32 BlockCount
     )
 {
-    if(!UDFAreSectorsRelocated(Vcb, Lba, BlockCount)) return UDF_NO_EXTENT_MAP;
+    if (!UDFAreSectorsRelocated(Vcb, Lba, BlockCount)) return UDF_NO_EXTENT_MAP;
 
     PEXTENT_MAP Extent=NULL, Extent2;
     uint32 NewLba, LastLba, j, i;
@@ -1036,18 +1052,18 @@ UDFRelocateSectors(
     LastLba = UDFRelocateSector(Vcb, Lba);
     for(i=0, j=1; i<BlockCount; i++, j++) {
         // create new entry if the extent in not contigous
-        if( ((NewLba = UDFRelocateSector(Vcb, Lba+i+1)) != (LastLba+1)) ||
+        if ( ((NewLba = UDFRelocateSector(Vcb, Lba+i+1)) != (LastLba+1)) ||
             (i==(BlockCount-1)) ) {
             locExt.extLength = j << Vcb->BlockSizeBits;
             locExt.extLocation = LastLba-j+1;
             Extent2 = UDFExtentToMapping(&locExt);
-            if(!Extent) {
+            if (!Extent) {
                 Extent = Extent2;
             } else {
                 Extent = UDFMergeMappings(Extent, Extent2);
                 MyFreePool__(Extent2);
             }
-            if(!Extent) return NULL;
+            if (!Extent) return NULL;
             j = 0;
         }
         LastLba = NewLba;
