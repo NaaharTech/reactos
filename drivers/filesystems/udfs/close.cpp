@@ -26,8 +26,10 @@ typedef BOOLEAN      (*PCHECK_TREE_ITEM) (IN PUDF_FILE_INFO   FileInfo);
     ExAllocatePoolWithTag(NonPagedPool, sizeof( IRP_CONTEXT_LITE ), TAG_IRP_CONTEXT_LITE)
 
 #define UDFFreeIrpContextLite(ICL)  \
-    UDFFreePool((PVOID*)&(ICL))
-
+    {                               \
+        PVOID Pool = (PVOID)ICL;    \
+        UDFFreePool(&Pool);         \
+    }
 
 NTSTATUS
 UDFBuildTreeItemsList(
