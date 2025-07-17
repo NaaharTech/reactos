@@ -70,7 +70,7 @@ UDFPhSendIOCTL(
     IN ULONG OutputBufferLength,
     IN BOOLEAN OverrideVerify,
     OUT PIO_STATUS_BLOCK Iosb OPTIONAL);
-/*
+
 // This routine performs low-level write (asynchronously if possible)
 extern NTSTATUS UDFTWriteAsync(
     IN PVOID _Vcb,
