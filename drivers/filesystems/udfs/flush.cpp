@@ -117,6 +117,7 @@ UDFCommonFlush(
     PVCB                Vcb = NULL;
     BOOLEAN             AcquiredVCB = FALSE;
     BOOLEAN             AcquiredFCB = FALSE;
+    BOOLEAN             AcquiredParentFcb = FALSE;
 
     PAGED_CODE();
 
@@ -204,11 +205,13 @@ UDFCommonFlush(
             // This is a regular file.
             Vcb = Fcb->Vcb;
             ASSERT(Vcb);
-            if (!ExIsResourceAcquiredExclusiveLite(&Vcb->VcbResource) &&
-               !ExIsResourceAcquiredSharedLite(&Vcb->VcbResource)) {
-                UDFAcquireResourceShared(&Vcb->VcbResource, TRUE);
-                AcquiredVCB = TRUE;
+
+            if (Fcb->FileInfo->ParentFile && Fcb->FileInfo->ParentFile->Fcb) {
+                UDF_CHECK_PAGING_IO_RESOURCE(Fcb->FileInfo->ParentFile->Fcb);
+                UDFAcquireResourceExclusive(&Fcb->FileInfo->ParentFile->Fcb->FcbNonpaged->FcbResource, TRUE);
+                AcquiredParentFcb = TRUE;
             }
+
             UDF_CHECK_PAGING_IO_RESOURCE(Fcb);
             UDFAcquireResourceExclusive(&Fcb->FcbNonpaged->FcbResource, TRUE);
             AcquiredFCB = TRUE;
@@ -237,6 +240,13 @@ try_exit:   NOTHING;
             UDFReleaseResource(&Fcb->FcbNonpaged->FcbResource);
             AcquiredFCB = FALSE;
         }
+
+        if (AcquiredParentFcb) {
+            UDF_CHECK_PAGING_IO_RESOURCE(Fcb->FileInfo->ParentFile->Fcb);
+            UDFReleaseResource(&Fcb->FileInfo->ParentFile->Fcb->FcbNonpaged->FcbResource);
+            AcquiredParentFcb = FALSE;
+        }
+
         if (AcquiredVCB) {
             UDFReleaseResource(&Vcb->VcbResource);
             AcquiredVCB = FALSE;
