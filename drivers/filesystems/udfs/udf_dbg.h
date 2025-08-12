@@ -179,8 +179,8 @@ _SEH2_TRY {                               \
 } _SEH2_END;
 
 __inline
-ULONG
-DbgCompareMemory(PVOID d, PVOID s, ULONG l) {
+SIZE_T
+DbgCompareMemory(PVOID d, PVOID s, SIZE_T l) {
     _SEH2_TRY {
         return RtlCompareMemory(d, s, l);
     } _SEH2_EXCEPT (EXCEPTION_EXECUTE_HANDLER) {

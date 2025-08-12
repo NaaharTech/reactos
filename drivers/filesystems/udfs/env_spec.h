@@ -19,32 +19,26 @@
 #ifndef _UDF_ENV_SPEC_H_
 #define _UDF_ENV_SPEC_H_
 
-extern NTSTATUS NTAPI UDFPhReadSynchronous(
-                   PIRP_CONTEXT IrpContext,
-                   PDEVICE_OBJECT      DeviceObject,
-                   PVOID           Buffer,
-                   SIZE_T          Length,
-                   LONGLONG        Offset,
-                   PSIZE_T         ReadBytes,
-                   ULONG           Flags);
+NTSTATUS
+UDFPhReadSynchronous(
+    PIRP_CONTEXT IrpContext,
+    PDEVICE_OBJECT DeviceObject,
+    PVOID Buffer,
+    ULONG ByteCount,
+    LONGLONG Offset,
+    PSIZE_T ReadBytes,
+    ULONG Flags
+    );
 
-extern NTSTATUS NTAPI UDFPhWriteSynchronous(
-                   PDEVICE_OBJECT  DeviceObject,   // the physical device object
-                   PVOID           Buffer,
-                   SIZE_T          Length,
-                   LONGLONG        Offset,
-                   PSIZE_T         WrittenBytes,
-                   ULONG           Flags);
-/*
-extern NTSTATUS UDFPhWriteVerifySynchronous(
-                   PDEVICE_OBJECT  DeviceObject,   // the physical device object
-                   PVOID           Buffer,
-                   SIZE_T          Length,
-                   LONGLONG        Offset,
-                   PSIZE_T         WrittenBytes,
-                   ULONG           Flags);
-*/
-#define UDFPhWriteVerifySynchronous UDFPhWriteSynchronous
+NTSTATUS
+UDFPhWriteSynchronous(
+    PDEVICE_OBJECT  DeviceObject,
+    PVOID Buffer,
+    ULONG ByteCount,
+    LONGLONG Offset,
+    PSIZE_T WrittenBytes,
+    ULONG Flags
+);
 
 NTSTATUS
 NTAPI

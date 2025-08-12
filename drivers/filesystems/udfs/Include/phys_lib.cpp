@@ -483,7 +483,6 @@ UDFTWrite(
     IN uint32 Flags
     )
 {
-#ifndef UDF_READ_ONLY_BUILD
 #define Vcb ((PVCB)_Vcb)
 
 #ifdef _BROWSE_UDF_
@@ -552,7 +551,7 @@ retry_1:
             if (Flags & PH_VCB_IN_RETLEN) {
                 (*WrittenBytes) = (ULONG_PTR)Vcb;
             }
-            RC = UDFPhWriteVerifySynchronous(Vcb->TargetDeviceObject, Buffer, Length,
+            RC = UDFPhWriteSynchronous(Vcb->TargetDeviceObject, Buffer, Length,
                        ((uint64)rLba) << Vcb->BlockSizeBits, WrittenBytes, Flags);
 #ifdef _BROWSE_UDF_
             Vcb->VcbState |= UDF_VCB_SKIP_EJECT_CHECK;
@@ -579,7 +578,7 @@ retry_2:
             if (Flags & PH_VCB_IN_RETLEN) {
                 _WrittenBytes = (ULONG_PTR)Vcb;
             }
-            RC = UDFPhWriteVerifySynchronous(Vcb->TargetDeviceObject, Buffer, RelocExtent->extLength,
+            RC = UDFPhWriteSynchronous(Vcb->TargetDeviceObject, Buffer, RelocExtent->extLength,
                        ((uint64)rLba) << Vcb->BlockSizeBits, &_WrittenBytes, Flags);
             Vcb->VcbState |= UDF_VCB_SKIP_EJECT_CHECK;
             if (!NT_SUCCESS(RC) &&
@@ -606,9 +605,6 @@ try_exit: NOTHING;
     return RC;
 
 #undef Vcb
-#else //UDF_READ_ONLY_BUILD
-    return STATUS_ACCESS_DENIED;
-#endif //UDF_READ_ONLY_BUILD
 } // end UDFTWrite()
 
 /*
@@ -846,8 +842,6 @@ UDFPrepareForWriteOperation(
     IN uint32 BCount
     )
 {
-#ifndef UDF_READ_ONLY_BUILD
-
 #ifdef _UDF_STRUCTURES_H_
     if (Vcb->BSBM_Bitmap) {
         ULONG i;
@@ -865,10 +859,6 @@ UDFPrepareForWriteOperation(
     Vcb->VcbState |= UDF_VCB_LAST_WRITE;
 
     return STATUS_SUCCESS;
-
-#endif //UDF_READ_ONLY_BUILD
-    UDFPrint(("  no suitable track!\n"));
-    return STATUS_INVALID_PARAMETER;
 } // end UDFPrepareForWriteOperation()
 
 //#ifdef _BROWSE_UDF_
@@ -1662,7 +1652,6 @@ UDFReadData(
 
 #endif //_BROWSE_UDF_
 
-#ifndef UDF_READ_ONLY_BUILD
 /*
     This routine writes physical sectors. This routine supposes Lba & Length
     alignment on WriteBlock (packet) size.
@@ -1847,5 +1836,3 @@ UDFWriteData(
 
     return status;
 } // end UDFWriteData()
-
-#endif //UDF_READ_ONLY_BUILD

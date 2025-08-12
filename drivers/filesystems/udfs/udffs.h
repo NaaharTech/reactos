@@ -184,26 +184,24 @@ UDFFreePool(
 
 // small check for illegal open mode (desired access) if volume is
 // read only (on standard CD-ROM device or another like this)
-#define UdfIllegalFcbAccess(Vcb,DesiredAccess) ((   \
-    (Vcb->VcbState & VCB_STATE_VOLUME_READ_ONLY) && \
-     (FlagOn( (DesiredAccess),                       \
-            FILE_WRITE_DATA         |   \
-            FILE_ADD_FILE           |   \
-            FILE_APPEND_DATA        |   \
-            FILE_ADD_SUBDIRECTORY   |   \
-            FILE_WRITE_EA           |   \
-            FILE_DELETE_CHILD       |   \
-            FILE_WRITE_ATTRIBUTES   |   \
-            DELETE                  |   \
-            WRITE_OWNER             |   \
-            WRITE_DAC ))                \
-       ) || (                           \
-    !(Vcb->WriteSecurity) &&            \
-     (FlagOn( (DesiredAccess),          \
-            WRITE_OWNER             |   \
-            0 /*WRITE_DAC*/ ))                \
-))
+inline
+BOOLEAN
+UDFIllegalFcbAccess(
+    IN PVCB Vcb,
+    IN ACCESS_MASK DesiredAccess
+    )
+{
+    //TODO: use real TypeOfOpen;
+    TYPE_OF_OPEN TypeOfOpen = UserFileOpen;
 
+    ACCESS_MASK WriteMask = (TypeOfOpen != UserVolumeOpen) ?
+                            (FILE_WRITE_ATTRIBUTES | FILE_WRITE_EA | FILE_APPEND_DATA | FILE_WRITE_DATA) : 0;
+
+    WriteMask |= (DELETE | WRITE_DAC);
+
+    return FlagOn(Vcb->VcbState, VCB_STATE_VOLUME_READ_ONLY) &&
+           BooleanFlagOn(DesiredAccess, WriteMask);
+}
 
 #if !defined(UDF_DBG) && !defined(PRINT_ALWAYS)
 #define UDFPrint(Args)

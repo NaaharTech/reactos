@@ -277,7 +277,6 @@ UDFCommonWrite(
                 UDFPrint(("  UDF_IRP_CONTEXT_FLUSH2_REQUIRED\n"));
                 IrpContext->Flags &= ~UDF_IRP_CONTEXT_FLUSH2_REQUIRED;
 
-                UDFCloseAllSystemDelayedInDir(Vcb, Vcb->RootIndexFcb->FileInfo);
 
 #ifdef UDF_DELAYED_CLOSE
                 UDFFspClose(Vcb);
@@ -355,12 +354,6 @@ UDFCommonWrite(
 
             CcDeferWrite(FileObject, UDFDeferredWriteCallBack, IrpContext, Irp, WriteLength, IsThisADeferredWrite);
             try_return(RC = STATUS_PENDING);
-        }
-
-        // If the write request is directed to a page file,
-        // send the request directly to the disk
-        if (Fcb->FcbState & UDF_FCB_PAGE_FILE) {
-            NonCachedIo = TRUE;
         }
 
         // We can continue. Check whether this write operation is targeted

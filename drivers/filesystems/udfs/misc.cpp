@@ -234,7 +234,7 @@ UDFIsIrpTopLevel(
 long
 UDFExceptionFilter(
     PIRP_CONTEXT IrpContext,
-    PEXCEPTION_POINTERS PtrExceptionPointers
+    PEXCEPTION_POINTERS ExceptionPointer
     )
 {
     long                            ReturnCode = EXCEPTION_EXECUTE_HANDLER;
@@ -243,40 +243,40 @@ UDFExceptionFilter(
     ULONG i;
 
     UDFPrint(("UDFExceptionFilter\n"));
-    UDFPrint(("    Ex. Code: %x\n",PtrExceptionPointers->ExceptionRecord->ExceptionCode));
-    UDFPrint(("    Ex. Addr: %x\n",PtrExceptionPointers->ExceptionRecord->ExceptionAddress));
-    UDFPrint(("    Ex. Flag: %x\n",PtrExceptionPointers->ExceptionRecord->ExceptionFlags));
-    UDFPrint(("    Ex. Pnum: %x\n",PtrExceptionPointers->ExceptionRecord->NumberParameters));
-    for(i=0;i<PtrExceptionPointers->ExceptionRecord->NumberParameters;i++) {
-        UDFPrint(("       %x\n",PtrExceptionPointers->ExceptionRecord->ExceptionInformation[i]));
+    UDFPrint(("    Ex. Code: %x\n",ExceptionPointer->ExceptionRecord->ExceptionCode));
+    UDFPrint(("    Ex. Addr: %x\n",ExceptionPointer->ExceptionRecord->ExceptionAddress));
+    UDFPrint(("    Ex. Flag: %x\n",ExceptionPointer->ExceptionRecord->ExceptionFlags));
+    UDFPrint(("    Ex. Pnum: %x\n",ExceptionPointer->ExceptionRecord->NumberParameters));
+    for(i=0;i<ExceptionPointer->ExceptionRecord->NumberParameters;i++) {
+        UDFPrint(("       %x\n",ExceptionPointer->ExceptionRecord->ExceptionInformation[i]));
     }
 #ifdef _X86_
     UDFPrint(("Exception context:\n"));
-    if (PtrExceptionPointers->ContextRecord->ContextFlags & CONTEXT_INTEGER) {
-        UDFPrint(("EAX=%8.8x   ",PtrExceptionPointers->ContextRecord->Eax));
-        UDFPrint(("EBX=%8.8x   ",PtrExceptionPointers->ContextRecord->Ebx));
-        UDFPrint(("ECX=%8.8x   ",PtrExceptionPointers->ContextRecord->Ecx));
-        UDFPrint(("EDX=%8.8x\n",PtrExceptionPointers->ContextRecord->Edx));
+    if (ExceptionPointer->ContextRecord->ContextFlags & CONTEXT_INTEGER) {
+        UDFPrint(("EAX=%8.8x   ",ExceptionPointer->ContextRecord->Eax));
+        UDFPrint(("EBX=%8.8x   ",ExceptionPointer->ContextRecord->Ebx));
+        UDFPrint(("ECX=%8.8x   ",ExceptionPointer->ContextRecord->Ecx));
+        UDFPrint(("EDX=%8.8x\n",ExceptionPointer->ContextRecord->Edx));
 
-        UDFPrint(("ESI=%8.8x   ",PtrExceptionPointers->ContextRecord->Esi));
-        UDFPrint(("EDI=%8.8x   ",PtrExceptionPointers->ContextRecord->Edi));
+        UDFPrint(("ESI=%8.8x   ",ExceptionPointer->ContextRecord->Esi));
+        UDFPrint(("EDI=%8.8x   ",ExceptionPointer->ContextRecord->Edi));
     }
-    if (PtrExceptionPointers->ContextRecord->ContextFlags & CONTEXT_CONTROL) {
-        UDFPrint(("EBP=%8.8x   ",PtrExceptionPointers->ContextRecord->Esp));
-        UDFPrint(("ESP=%8.8x\n",PtrExceptionPointers->ContextRecord->Ebp));
+    if (ExceptionPointer->ContextRecord->ContextFlags & CONTEXT_CONTROL) {
+        UDFPrint(("EBP=%8.8x   ",ExceptionPointer->ContextRecord->Esp));
+        UDFPrint(("ESP=%8.8x\n",ExceptionPointer->ContextRecord->Ebp));
 
-        UDFPrint(("EIP=%8.8x\n",PtrExceptionPointers->ContextRecord->Eip));
+        UDFPrint(("EIP=%8.8x\n",ExceptionPointer->ContextRecord->Eip));
     }
-//    UDFPrint(("Flags: %s %s    ",PtrExceptionPointers->ContextRecord->Eip));
+//    UDFPrint(("Flags: %s %s    ",ExceptionPointer->ContextRecord->Eip));
 #endif //_X86_
 
 #endif // UDF_DBG
 
     // figure out the exception code
-    ExceptionCode = PtrExceptionPointers->ExceptionRecord->ExceptionCode;
+    ExceptionCode = ExceptionPointer->ExceptionRecord->ExceptionCode;
 
-    if ((ExceptionCode == STATUS_IN_PAGE_ERROR) && (PtrExceptionPointers->ExceptionRecord->NumberParameters >= 3)) {
-        ExceptionCode = PtrExceptionPointers->ExceptionRecord->ExceptionInformation[2];
+    if ((ExceptionCode == STATUS_IN_PAGE_ERROR) && (ExceptionPointer->ExceptionRecord->NumberParameters >= 3)) {
+        ExceptionCode = (NTSTATUS)ExceptionPointer->ExceptionRecord->ExceptionInformation[2];
     }
 
     if (IrpContext) {
@@ -1125,8 +1125,7 @@ UDFFspDispatch(
                 RC = UDFCommonCleanup(IrpContext, Irp);
                 break;
             case IRP_MJ_CLOSE:
-                // Invoke the common close routine
-                RC = UDFCommonClose(IrpContext, Irp, TRUE);
+                NT_ASSERT(FALSE);
                 break;
             case IRP_MJ_DIRECTORY_CONTROL:
                 // Invoke the common directory control routine
@@ -1223,7 +1222,7 @@ UDFUpdateCompatOption(
     BOOLEAN Default
     )
 {
-    ptrUDFGetParameter UDFGetParameter = UseCfg ? UDFGetCfgParameter : UDFGetRegParameter;
+    ptrUDFGetParameter UDFGetParameter = UDFGetRegParameter;
 
     if (UDFGetParameter(Vcb, Name, Update ? ((Vcb->CompatFlags & Flag) ? TRUE : FALSE) : Default)) {
         Vcb->CompatFlags |= Flag;
@@ -1240,7 +1239,7 @@ UDFReadRegKeys(
     )
 {
     ULONG mult = 1;
-    ptrUDFGetParameter UDFGetParameter = UseCfg ? UDFGetCfgParameter : UDFGetRegParameter;
+    ptrUDFGetParameter UDFGetParameter = UDFGetRegParameter;
 
     Vcb->DefaultRegName = REG_DEFAULT_UNKNOWN;
 
@@ -1394,143 +1393,6 @@ UDFGetRegParameter(
                                      Vcb ? Vcb->DefaultRegName : NULL,
                                      DefValue);
 } // end UDFGetRegParameter()
-
-ULONG
-UDFGetCfgParameter(
-    IN PVCB Vcb,
-    IN PCWSTR Name,
-    IN ULONG DefValue
-    )
-{
-    ULONG len;
-    CHAR NameA[128];
-    ULONG ret_val=0;
-    CHAR a;
-    BOOLEAN wait_name=TRUE;
-    BOOLEAN wait_val=FALSE;
-    BOOLEAN wait_nl=FALSE;
-    ULONG radix=10;
-    ULONG i;
-
-    PUCHAR Cfg    = Vcb->Cfg;
-    ULONG  Length = Vcb->CfgLength;
-
-    if (!Cfg || !Length)
-        return DefValue;
-
-    len = wcslen(Name);
-    if (len >= sizeof(NameA))
-        return DefValue;
-    sprintf(NameA, "%S", Name);
-
-    for(i=0; i<Length; i++) {
-        a=Cfg[i];
-        switch(a) {
-        case '\n':
-        case '\r':
-        case ',':
-            if (wait_val)
-                return DefValue;
-            continue;
-        case ';':
-        case '#':
-        case '[': // ignore sections for now, treat as comment
-            if (!wait_name)
-                return DefValue;
-            wait_nl = TRUE;
-            continue;
-        case '=':
-            if (!wait_val)
-                return DefValue;
-            continue;
-        case ' ':
-        case '\t':
-            continue;
-        default:
-            if (wait_nl)
-                continue;
-        }
-        if (wait_name) {
-            if (i+len+2 > Length)
-                return DefValue;
-            if (RtlCompareMemory(Cfg+i, NameA, len) == len) {
-                a=Cfg[i+len];
-                switch(a) {
-                case '\n':
-                case '\r':
-                case ',':
-                case ';':
-                case '#':
-                    return DefValue;
-                case '=':
-                case ' ':
-                case '\t':
-                    break;
-                default:
-                    wait_nl = TRUE;
-                    wait_val = FALSE;
-                    i+=len;
-                    continue;
-                }
-                wait_name = FALSE;
-                wait_nl = FALSE;
-                wait_val = TRUE;
-                i+=len;
-
-            } else {
-                wait_nl = TRUE;
-            }
-            continue;
-        }
-        if (wait_val) {
-            if (i+3 > Length) {
-                if (a=='0' && Cfg[i+1]=='x') {
-                    i+=2;
-                    radix=16;
-                }
-            }
-            if (i >= Length) {
-                return DefValue;
-            }
-            while(i<Length) {
-                a=Cfg[i];
-                switch(a) {
-                case '\n':
-                case '\r':
-                case ' ':
-                case '\t':
-                case ',':
-                case ';':
-                case '#':
-                    if (wait_val)
-                        return DefValue;
-                    return ret_val;
-                }
-                if (a >= '0' && a <= '9') {
-                    a -= '0';
-                } else {
-                    if (radix != 16)
-                        return DefValue;
-                    if (a >= 'a' && a <= 'f') {
-                        a -= 'a';
-                    } else
-                    if (a >= 'A' && a <= 'F') {
-                        a -= 'A';
-                    } else {
-                        return DefValue;
-                    }
-                    a += 0x0a;
-                }
-                ret_val = ret_val*radix + a;
-                wait_val = FALSE;
-                i++;
-            }
-            return ret_val;
-        }
-    }
-    return DefValue;
-
-} // end UDFGetCfgParameter()
 
 VOID
 UDFDeleteVCB(
@@ -1842,48 +1704,6 @@ UDFInitializeStackIrpContextFromLite(
     SetFlag(IrpContext->Flags, IRP_CONTEXT_FLAG_WAIT);
 
 } // end UDFInitializeStackIrpContextFromLite()
-
-/*
-Routine Description:
-    This routine is called to initialize an IrpContext for the current
-    UDFFS request.  The IrpContext is on the stack and we need to initialize
-    it for the current request.  The request is a close operation.
-
-Arguments:
-
-    IrpContext - IrpContext to initialize.
-
-    IrpContextLite - source for initialization
-
-Return Value:
-
-    None
-
-*/
-NTSTATUS
-UDFInitializeIrpContextLite(
-    OUT PIRP_CONTEXT_LITE *IrpContextLite,
-    IN PIRP_CONTEXT IrpContext,
-    IN PFCB                Fcb
-    )
-{
-    PIRP_CONTEXT_LITE LocalIrpContextLite = (PIRP_CONTEXT_LITE)MyAllocatePool__(NonPagedPool, sizeof(IRP_CONTEXT_LITE));
-    if (!LocalIrpContextLite)
-        return STATUS_INSUFFICIENT_RESOURCES;
-    //  Zero and then initialize the structure.
-    RtlZeroMemory(LocalIrpContextLite, sizeof(IRP_CONTEXT_LITE));
-
-    LocalIrpContextLite->NodeIdentifier.NodeTypeCode = UDF_NODE_TYPE_IRP_CONTEXT_LITE;
-    LocalIrpContextLite->NodeIdentifier.NodeByteSize = sizeof(IRP_CONTEXT_LITE);
-
-    LocalIrpContextLite->Fcb = Fcb;
-    LocalIrpContextLite->TreeLength = IrpContext->TreeLength;
-    //  Copy RealDevice for workque algorithms.
-    LocalIrpContextLite->RealDevice = IrpContext->RealDevice;
-    *IrpContextLite = LocalIrpContextLite;
-
-    return STATUS_SUCCESS;
-} // end UDFInitializeIrpContextLite()
 
 ULONG
 UDFIsResourceAcquired(

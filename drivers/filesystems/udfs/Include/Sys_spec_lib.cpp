@@ -424,7 +424,6 @@ get_name_only:
     return STATUS_SUCCESS;
 } // end UDFFileDirInfoToNT()
 
-#ifndef UDF_READ_ONLY_BUILD
 /*
     This routine changes xxxTime field(s) in (Ext)FileEntry
  */
@@ -490,7 +489,6 @@ UDFSetFileXTime(
 
     }
 } // end UDFSetFileXTime()
-#endif //UDF_READ_ONLY_BUILD
 
 /*
     This routine gets xxxTime field(s) in (Ext)FileEntry
@@ -911,7 +909,6 @@ UDFIsDirInfoCached(
     return TRUE;
 } // end UDFIsDirInfoCached()
 
-#ifndef UDF_READ_ONLY_BUILD
 NTSTATUS
 UDFDoesOSAllowFileToBeTargetForRename__(
     IN PUDF_FILE_INFO FileInfo
@@ -1002,5 +999,4 @@ UDFDoesOSAllowFilePretendDeleted__(
     }
     return STATUS_SUCCESS;
 }
-#endif //UDF_READ_ONLY_BUILD
 

@@ -24,52 +24,6 @@ UDFDissectName(
 
     USHORT  i;
 
-#if defined(_X86_) && defined(_MSC_VER) && !defined(__clang__)
-
-    PWCHAR retval;
-
-    __asm push  ebx
-    __asm push  ecx
-
-    __asm mov   ebx,Buffer
-    __asm xor   ecx,ecx
-Remove_leading_slash:
-    __asm cmp   [word ptr ebx],L'\\'
-    __asm jne   No_IncPointer
-    __asm add   ebx,2
-    __asm jmp   Remove_leading_slash
-No_IncPointer:
-    __asm cmp   [word ptr ebx],L':'
-    __asm jne   Scan_1
-    __asm add   ebx,2
-    __asm inc   ecx
-    __asm jmp   EO_Dissect
-Scan_1:
-    __asm mov   ax,[word ptr ebx]
-    __asm cmp   ax,L'\\'
-    __asm je    EO_Dissect
-    __asm or    ax,ax
-    __asm jz    EO_Dissect
-    __asm cmp   ax,L':'
-    __asm jne   Cont_scan
-    __asm or    ecx,ecx
-    __asm jnz   EO_Dissect
-Cont_scan:
-    __asm inc   ecx
-    __asm add   ebx,2
-    __asm jmp   Scan_1
-EO_Dissect:
-    __asm mov   retval,ebx
-    __asm mov   i,cx
-
-    __asm pop   ecx
-    __asm pop   ebx
-
-    *Length = i;
-    return retval;
-
-#else   // NO X86 optimization , use generic C/C++
-
     while (Buffer[0] == L'\\') {
         Buffer++;
     }
@@ -83,12 +37,9 @@ EO_Dissect:
     *Length = i;
     return &(Buffer[i]);
 
-#endif // _X86_
-
 } // end UDFDissectName()
 
 BOOLEAN
-__fastcall
 UDFIsNameValid(
     IN PUNICODE_STRING SearchPattern,
     OUT BOOLEAN* StreamOpen,

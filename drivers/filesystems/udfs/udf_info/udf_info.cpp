@@ -956,7 +956,12 @@ UDFBuildFileEntry(
     if (!NT_SUCCESS(status = UDFAllocateFESpace(IrpContext, Vcb, DirInfo, PartNum, &_FEExtInfo, l) ))
         return status;
     // remember FE location for future hard link creation
+#ifdef UDF_DBG
+    // Must acquire DlocResource before calling UDFFindDloc to prevent race conditions
+    UDFAcquireResourceExclusive(&Vcb->DlocResource, TRUE);
     ASSERT(UDFFindDloc(Vcb, _FEExtInfo.Mapping[0].extLocation) == (-1));
+    UDFReleaseResource(&Vcb->DlocResource);
+#endif
     if (!NT_SUCCESS(status = UDFStoreDloc(Vcb, FileInfo, _FEExtInfo.Mapping[0].extLocation))) {
         ASSERT(status != STATUS_SHARING_PAUSED);
         UDFFreeFESpace(Vcb, DirInfo, &_FEExtInfo); // free

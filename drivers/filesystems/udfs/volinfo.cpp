@@ -142,93 +142,85 @@ Return Value:
     NTSTATUS - The return status for the operation
 
  */
+_Requires_lock_held_(_Global_critical_region_)
 NTSTATUS
 UDFCommonQueryVolInfo(
-    PIRP_CONTEXT IrpContext,
-    PIRP             Irp
+    _Inout_ PIRP_CONTEXT IrpContext,
+    _Inout_ PIRP Irp
     )
 {
-    NTSTATUS RC = STATUS_INVALID_PARAMETER;
+    NTSTATUS Status = STATUS_INVALID_PARAMETER;
     PIO_STACK_LOCATION IrpSp = IoGetCurrentIrpStackLocation( Irp );
     ULONG Length;
-    BOOLEAN CanWait = FALSE;
     PVCB Vcb;
-    BOOLEAN PostRequest = FALSE;
-    BOOLEAN AcquiredVCB = FALSE;
-    PFILE_OBJECT            FileObject = NULL;
     TYPE_OF_OPEN TypeOfOpen;
     PFCB Fcb;
     PCCB Ccb = NULL;
 
+    PAGED_CODE();
+
+    // Reference our input parameters to make things easier
+
+    Length = IrpSp->Parameters.QueryVolume.Length;
+
+    // Decode the file object and fail if this an unopened file object.
+
+    TypeOfOpen = UDFDecodeFileObject(IrpSp->FileObject, &Fcb, &Ccb);
+
+    if (TypeOfOpen == UnopenedFileObject) {
+
+        UDFCompleteRequest(IrpContext, Irp, STATUS_INVALID_PARAMETER);
+        return STATUS_INVALID_PARAMETER;
+    }
+
+    Vcb = Fcb->Vcb;
+
+    ASSERT_CCB(Ccb);
+    ASSERT_FCB(Fcb);
+    ASSERT_VCB(Vcb);
+
+    // Acquire the Vcb for this volume.
+
+    UDFAcquireVcbShared(IrpContext, Vcb, FALSE);
+
+    // Use a try-finally to facilitate cleanup.
+
     _SEH2_TRY {
 
-        UDFPrint(("UDFCommonQueryVolInfo: \n"));
+        //  Verify the Vcb.
 
-        ASSERT(IrpContext);
-        ASSERT(Irp);
-
-        PAGED_CODE();
-
-        FileObject = IrpSp->FileObject;
-        ASSERT(FileObject);
-
-        // Decode the file object and fail if this an unopened file object.
-
-        TypeOfOpen = UDFDecodeFileObject(IrpSp->FileObject, &Fcb, &Ccb);
-
-        ASSERT_CCB(Ccb);
-        ASSERT_FCB(Fcb);
-
-        Vcb = (PVCB)(IrpSp->DeviceObject->DeviceExtension);
-        ASSERT(Vcb);
-        //Vcb->VcbState |= UDF_VCB_SKIP_EJECT_CHECK;
-        //  Reference our input parameters to make things easier
-        Length = IrpSp->Parameters.QueryVolume.Length;
-        //  Acquire the Vcb for this volume.
-        CanWait = ((IrpContext->Flags & IRP_CONTEXT_FLAG_WAIT) ? TRUE : FALSE);
-
-        RtlZeroMemory(Irp->AssociatedIrp.SystemBuffer, Length);
+        UDFVerifyVcb(IrpContext, Fcb->Vcb);
 
         switch (IrpSp->Parameters.QueryVolume.FsInformationClass) {
 
         case FileFsVolumeInformation:
 
-            //  This is the only routine we need the Vcb shared because of
-            //  copying the volume label.  All other routines copy fields that
-            //  cannot change or are just manifest constants.
-            UDFFlushTryBreak(Vcb);
-            if (!UDFAcquireResourceShared(&(Vcb->VcbResource), CanWait)) {
-                PostRequest = TRUE;
-                try_return (RC = STATUS_PENDING);
-            }
-            AcquiredVCB = TRUE;
-
-            RC = UDFQueryFsVolumeInfo( IrpContext, Vcb, (PFILE_FS_VOLUME_INFORMATION)(Irp->AssociatedIrp.SystemBuffer), &Length );
+            Status = UDFQueryFsVolumeInfo( IrpContext, Vcb, (PFILE_FS_VOLUME_INFORMATION)(Irp->AssociatedIrp.SystemBuffer), &Length );
             break;
 
         case FileFsSizeInformation:
 
-            RC = UDFQueryFsSizeInfo( IrpContext, Vcb, (PFILE_FS_SIZE_INFORMATION)(Irp->AssociatedIrp.SystemBuffer), &Length );
+            Status = UDFQueryFsSizeInfo( IrpContext, Vcb, (PFILE_FS_SIZE_INFORMATION)(Irp->AssociatedIrp.SystemBuffer), &Length );
             break;
 
         case FileFsDeviceInformation:
 
-            RC = UDFQueryFsDeviceInfo( IrpContext, Vcb, (PFILE_FS_DEVICE_INFORMATION)(Irp->AssociatedIrp.SystemBuffer), &Length );
+            Status = UDFQueryFsDeviceInfo( IrpContext, Vcb, (PFILE_FS_DEVICE_INFORMATION)(Irp->AssociatedIrp.SystemBuffer), &Length );
             break;
 
         case FileFsAttributeInformation:
 
-            RC = UDFQueryFsAttributeInfo( IrpContext, Vcb, (PFILE_FS_ATTRIBUTE_INFORMATION)(Irp->AssociatedIrp.SystemBuffer), &Length );
+            Status = UDFQueryFsAttributeInfo( IrpContext, Vcb, (PFILE_FS_ATTRIBUTE_INFORMATION)(Irp->AssociatedIrp.SystemBuffer), &Length );
             break;
 
         case FileFsFullSizeInformation:
 
-            RC = UDFQueryFsFullSizeInfo( IrpContext, Vcb, (PFILE_FS_FULL_SIZE_INFORMATION)(Irp->AssociatedIrp.SystemBuffer), &Length );
+            Status = UDFQueryFsFullSizeInfo( IrpContext, Vcb, (PFILE_FS_FULL_SIZE_INFORMATION)(Irp->AssociatedIrp.SystemBuffer), &Length );
             break;
 
         default:
 
-            RC = STATUS_INVALID_DEVICE_REQUEST;
+            Status = STATUS_INVALID_DEVICE_REQUEST;
             Irp->IoStatus.Information = 0;
             break;
 
@@ -237,37 +229,19 @@ UDFCommonQueryVolInfo(
         //  Set the information field to the number of bytes actually filled in
         Irp->IoStatus.Information = IrpSp->Parameters.QueryVolume.Length - Length;
 
-try_exit:   NOTHING;
-
     } _SEH2_FINALLY {
 
-        if (AcquiredVCB) {
-            UDFReleaseResource(&(Vcb->VcbResource));
-            AcquiredVCB = FALSE;
-        }
+        // Release the Vcb.
 
-        // Post IRP if required
-        if (PostRequest) {
-
-            // Since, the I/O Manager gave us a system buffer, we do not
-            // need to "lock" anything.
-
-            // Perform the post operation which will mark the IRP pending
-            // and will return STATUS_PENDING back to us
-            RC = UDFPostRequest(IrpContext, Irp);
-
-        } else {
-
-            // Can complete the IRP here if no exception was encountered
-            if (!_SEH2_AbnormalTermination()) {
-
-                UDFCompleteRequest(IrpContext, Irp, RC);
-            }
-        } 
+        UDFReleaseVcb(IrpContext, Vcb);
 
     } _SEH2_END;
 
-    return RC;
+    // Complete the request if we didn't raise.
+
+    UDFCompleteRequest(IrpContext, Irp, Status);
+
+    return Status;
 } // end UDFCommonQueryVolInfo()
 
 
@@ -589,72 +563,85 @@ UDFSetVolInfo(
     This is the common routine for setting volume information called by both
     the fsd and fsp threads.
  */
+_Requires_lock_held_(_Global_critical_region_)
 NTSTATUS
 UDFCommonSetVolInfo(
     PIRP_CONTEXT IrpContext,
-    PIRP                            Irp
+    PIRP Irp
     )
 {
-    NTSTATUS RC = STATUS_INVALID_PARAMETER;
+    NTSTATUS Status = STATUS_INVALID_PARAMETER;
     PIO_STACK_LOCATION IrpSp = IoGetCurrentIrpStackLocation(Irp);
     ULONG Length;
-    BOOLEAN CanWait = FALSE;
-    PVCB Vcb;
-    BOOLEAN PostRequest = FALSE;
-    BOOLEAN AcquiredVCB = FALSE;
-    PFILE_OBJECT            FileObject = NULL;
+    FS_INFORMATION_CLASS FsInformationClass;
+    PVOID Buffer;
     TYPE_OF_OPEN TypeOfOpen;
     PFCB Fcb;
     PCCB Ccb;
+    PVCB Vcb;
+
+    PAGED_CODE();
+
+    // Reference our input parameters to make things easier
+
+    Length = IrpSp->Parameters.SetVolume.Length;
+    FsInformationClass = IrpSp->Parameters.SetVolume.FsInformationClass;
+    Buffer = Irp->AssociatedIrp.SystemBuffer;
+
+    // Decode the file object to get the Vcb
+
+    TypeOfOpen = UDFDecodeFileObject(IrpSp->FileObject, &Fcb, &Ccb);
+
+    if (TypeOfOpen != UserVolumeOpen) {
+
+        UDFCompleteRequest(IrpContext, Irp, STATUS_INVALID_PARAMETER);
+        return STATUS_INVALID_PARAMETER;
+    }
+
+    Vcb = Fcb->Vcb;
+
+    ASSERT_CCB(Ccb);
+    ASSERT_FCB(Fcb);
+    ASSERT_VCB(Vcb);
+
+    if (Vcb->VcbState & VCB_STATE_VOLUME_READ_ONLY) {
+
+        if (Vcb->VcbState & VCB_STATE_MEDIA_WRITE_PROTECT) {
+
+            Status = STATUS_MEDIA_WRITE_PROTECTED;
+        }
+        else if (Vcb->VcbState & VCB_STATE_MOUNTED_DIRTY) {
+
+            Status = STATUS_VOLUME_DIRTY;
+        }
+        else {
+
+            Status = STATUS_ACCESS_DENIED;
+        }
+
+        UDFCompleteRequest(IrpContext, Irp, Status);
+        return Status;
+    }
+
+    // Acquire the Vcb for this volume.
+
+    UDFAcquireVcbExclusive(IrpContext, Vcb, FALSE);
+
+    // Use a try-finally to facilitate cleanup.
 
     _SEH2_TRY {
 
-        UDFPrint(("UDFCommonSetVolInfo: \n"));
-        ASSERT(IrpContext);
-        ASSERT(Irp);
-
-        PAGED_CODE();
-
-        FileObject = IrpSp->FileObject;
-        ASSERT(FileObject);
-
-        // Decode the file object and fail if this an unopened file object.
-
-        TypeOfOpen = UDFDecodeFileObject(IrpSp->FileObject, &Fcb, &Ccb);
-
-        ASSERT_CCB(Ccb);
-        ASSERT_FCB(Fcb);
-
-        if (Ccb && Ccb->Fcb && (Ccb->Fcb->NodeIdentifier.NodeTypeCode != UDF_NODE_TYPE_VCB)) {
-            UDFPrint(("    Can't change Label on Non-volume object\n"));
-            try_return(RC = STATUS_ACCESS_DENIED);
-        }
-
-        Vcb = (PVCB)(IrpSp->DeviceObject->DeviceExtension);
-        ASSERT(Vcb);
-        Vcb->VcbState |= UDF_VCB_SKIP_EJECT_CHECK;
-        //  Reference our input parameters to make things easier
-
-        Length = IrpSp->Parameters.SetVolume.Length;
-        //  Acquire the Vcb for this volume.
-        CanWait = ((IrpContext->Flags & IRP_CONTEXT_FLAG_WAIT) ? TRUE : FALSE);
-        if (!UDFAcquireResourceShared(&(Vcb->VcbResource), CanWait)) {
-            PostRequest = TRUE;
-            try_return (RC = STATUS_PENDING);
-        }
-        AcquiredVCB = TRUE;
-
-        switch (IrpSp->Parameters.SetVolume.FsInformationClass) {
+        switch (FsInformationClass) {
 
         case FileFsLabelInformation:
 
-            RC = UDFSetLabelInfo( IrpContext, Vcb, (PFILE_FS_LABEL_INFORMATION)(Irp->AssociatedIrp.SystemBuffer), &Length );
+            Status = UDFSetLabelInfo(IrpContext, Vcb, (PFILE_FS_LABEL_INFORMATION)Irp->AssociatedIrp.SystemBuffer, &Length);
             Irp->IoStatus.Information = 0;
             break;
 
         default:
 
-            RC = STATUS_INVALID_DEVICE_REQUEST;
+            Status = STATUS_INVALID_DEVICE_REQUEST;
             Irp->IoStatus.Information = 0;
             break;
 
@@ -663,37 +650,17 @@ UDFCommonSetVolInfo(
         //  Set the information field to the number of bytes actually filled in
         Irp->IoStatus.Information = IrpSp->Parameters.SetVolume.Length - Length;
 
-try_exit:   NOTHING;
-
     } _SEH2_FINALLY {
 
-        if (AcquiredVCB) {
-            UDFReleaseResource(&(Vcb->VcbResource));
-            AcquiredVCB = FALSE;
-        }
-
-        // Post IRP if required
-        if (PostRequest) {
-
-            // Since, the I/O Manager gave us a system buffer, we do not
-            // need to "lock" anything.
-
-            // Perform the post operation which will mark the IRP pending
-            // and will return STATUS_PENDING back to us
-            RC = UDFPostRequest(IrpContext, Irp);
-
-        } else {
-
-            // Can complete the IRP here if no exception was encountered
-            if (!_SEH2_AbnormalTermination()) {
-
-                UDFCompleteRequest(IrpContext, Irp, RC);
-            }
-        }
+        UDFReleaseVcb(IrpContext, Vcb);
 
     } _SEH2_END;
 
-    return RC;
+    // Complete the request if we didn't raise.
+
+    UDFCompleteRequest(IrpContext, Irp, Status);
+
+    return Status;
 } // end UDFCommonSetVolInfo()
 
 /*

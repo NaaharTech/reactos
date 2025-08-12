@@ -31,7 +31,7 @@ typedef CSHORT NODE_BYTE_SIZE;
 //  typedef RECORD_NAME *PRECORD_NAME;
 
 #ifndef NodeType
-#define NodeType(P) ((P) != NULL ? (*((PNODE_TYPE_CODE)(P))) : NTC_UNDEFINED)
+#define NodeType(P) ((P) != NULL ? (*((PNODE_TYPE_CODE)(P))) : UDF_NODE_TYPE_UNDEFINED)
 #endif
 #ifndef SafeNodeType
 #define SafeNodeType(Ptr) (*((PNODE_TYPE_CODE)(Ptr)))

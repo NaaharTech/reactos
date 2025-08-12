@@ -194,6 +194,8 @@ UDFCommonFlush(
             // Manager. Basically, the sequence of operations listed below
             // for a single file should be executed on all open files.
 
+            UDFVerifyVcb(IrpContext, Vcb);
+
             UDFFlushVolume(IrpContext, Vcb);
 
             UDFReleaseResource(&(Vcb->VcbResource));
@@ -337,8 +339,7 @@ UDFFlushAFile(
             Fcb->FcbNonpaged->SegmentObject.DataSectionObject) {
             if (!(Fcb->NtReqFCBFlags & UDF_NTREQ_FCB_DELETED)
                                          &&
-                ((Fcb->NtReqFCBFlags & UDF_NTREQ_FCB_MODIFIED) ||
-                 (Ccb && !(Ccb->Flags & UDF_CCB_FLUSHED)) )) {
+                (Fcb->NtReqFCBFlags & UDF_NTREQ_FCB_MODIFIED)) {
                 MmPrint(("    CcFlushCache()\n"));
                 CcFlushCache(&Fcb->FcbNonpaged->SegmentObject, NULL, 0, PtrIoStatus);
             }

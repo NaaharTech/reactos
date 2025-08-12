@@ -135,11 +135,11 @@ extern NTSTATUS NTAPI UDFClose(
 PDEVICE_OBJECT              DeviceObject,       // the logical volume device object
 PIRP                        Irp);               // I/O Request Packet
 
+_Requires_lock_held_(_Global_critical_region_)
 NTSTATUS
 UDFCommonClose(
     PIRP_CONTEXT IrpContext,
-    PIRP Irp,
-    BOOLEAN CanWait
+    PIRP Irp
     );
 
 _Requires_lock_held_(_Global_critical_region_)
@@ -156,22 +156,6 @@ NTAPI
 UDFFspClose(
     _In_opt_ PVCB Vcb
     );
-
-extern NTSTATUS UDFCloseAllXXXDelayedInDir(IN PVCB           Vcb,
-                                           IN PUDF_FILE_INFO FileInfo,
-                                           IN BOOLEAN        System);
-
-#define UDFCloseAllDelayedInDir(Vcb,FI) \
-    UDFCloseAllXXXDelayedInDir(Vcb,FI,FALSE);
-
-#define UDFCloseAllSystemDelayedInDir(Vcb,FI) \
-    UDFCloseAllXXXDelayedInDir(Vcb,FI,TRUE);
-
-NTSTATUS
-UDFQueueClose(
-    PIRP_CONTEXT IrpContext,
-    PFCB Fcb,
-    IN ULONG UserReference);
 
 //extern VOID UDFRemoveFromDelayedQueue(PtrUDFFCB Fcb);
 #define UDFRemoveFromDelayedQueue(Fcb) \
@@ -420,25 +404,26 @@ UDFMarkStreamsForDeletion(
     );
 
 NTSTATUS
-UDFSetDispositionInformation(
+UDFSetDispositionInfo(
     IN PIRP_CONTEXT IrpContext,
+    IN PFILE_OBJECT FileObject,
+    IN PFCB Fcb,
+    IN PCCB Ccb,
+    IN PFILE_DISPOSITION_INFORMATION Buffer
+    );
+
+NTSTATUS
+UDFSetAllocationInfo(
     IN PFCB Fcb,
     IN PCCB Ccb,
     IN PVCB Vcb,
     IN PFILE_OBJECT FileObject,
-    IN BOOLEAN Delete
-    );
-
-extern NTSTATUS UDFSetAllocationInformation(
-    IN PFCB                            Fcb,
-    IN PCCB                            Ccb,
-    IN PVCB                            Vcb,
-    IN PFILE_OBJECT                    FileObject,
     IN PIRP_CONTEXT IrpContext,
-    IN PIRP                            Irp,
-    IN PFILE_ALLOCATION_INFORMATION    PtrBuffer);
+    IN PIRP Irp,
+    IN PFILE_ALLOCATION_INFORMATION Buffer);
 
-NTSTATUS UDFSetEOF(
+NTSTATUS
+UDFSetEndOfFileInfo(
     IN PIRP_CONTEXT IrpContext,
     IN PIO_STACK_LOCATION IrpSp,
     IN PFCB Fcb,
@@ -452,7 +437,6 @@ NTSTATUS UDFSetEOF(
 NTSTATUS
 UDFSetRenameInfo(
     IN PIRP_CONTEXT IrpContext,
-    IN PIO_STACK_LOCATION IrpSp,
     IN PFCB Fcb,
     IN PCCB Ccb,
     IN PFILE_OBJECT FileObject,
@@ -593,11 +577,17 @@ extern NTSTATUS UDFIsVolumeMounted(IN PIRP_CONTEXT IrpContext,
 extern NTSTATUS UDFIsVolumeDirty(IN PIRP_CONTEXT IrpContext,
                           IN PIRP Irp);
 
-extern NTSTATUS UDFLockVolume (IN PIRP_CONTEXT IrpContext,
-                               IN PIRP Irp);
+NTSTATUS
+UDFLockVolume(
+    IN PIRP_CONTEXT IrpContext,
+    IN PIRP Irp
+    );
 
-extern NTSTATUS UDFUnlockVolume (IN PIRP_CONTEXT IrpContext,
-                                 IN PIRP Irp);
+NTSTATUS
+UDFUnlockVolume(
+    IN PIRP_CONTEXT IrpContext,
+    IN PIRP Irp
+    );
 
 _Requires_lock_held_(_Global_critical_region_)
 _Requires_lock_held_(Vcb->VcbResource)
@@ -687,9 +677,11 @@ VOID);
 extern BOOLEAN __fastcall UDFIsIrpTopLevel(
 PIRP                        Irp);                   // the IRP sent to our dispatch routine
 
-extern long UDFExceptionFilter(
-PIRP_CONTEXT IrpContext,
-PEXCEPTION_POINTERS         PtrExceptionPointers);
+LONG
+UDFExceptionFilter(
+    PIRP_CONTEXT IrpContext,
+    PEXCEPTION_POINTERS ExceptionPointer
+    );
 
 extern NTSTATUS UDFProcessException(
 PIRP_CONTEXT IrpContext,
@@ -776,7 +768,7 @@ UDFInitializeVCB(
     PVPB Vpb
     );
 
-extern VOID
+VOID
 UDFReadRegKeys(
     PVCB Vcb,
     BOOLEAN Update,
@@ -787,16 +779,11 @@ extern ULONG UDFGetRegParameter(
     IN PCWSTR Name,
     IN ULONG DefValue = 0);
 
-extern ULONG
-UDFGetCfgParameter(
-    IN PVCB Vcb,
-    IN PCWSTR Name,
-    IN ULONG DefValue
-    );
-
-extern VOID UDFDeleteVCB(
+VOID
+UDFDeleteVCB(
     PIRP_CONTEXT IrpContext,
-    PVCB Vcb);
+    PVCB Vcb
+    );
 
 extern ULONG UDFRegCheckParameterValue(
     IN PUNICODE_STRING RegistryPath,
@@ -808,11 +795,6 @@ extern ULONG UDFRegCheckParameterValue(
 extern VOID UDFInitializeStackIrpContextFromLite(
     OUT PIRP_CONTEXT IrpContext,
     IN PIRP_CONTEXT_LITE IrpContextLite);
-
-extern NTSTATUS UDFInitializeIrpContextLite (
-    OUT PIRP_CONTEXT_LITE *IrpContextLite,
-    IN PIRP_CONTEXT IrpContext,
-    IN PFCB                Fcb);
 
 extern ULONG
 UDFIsResourceAcquired(
@@ -1006,7 +988,7 @@ UDFCompleteMdl(
     PIRP Irp
     );
 
-extern NTSTATUS
+NTSTATUS
 UDFCheckAccessRights(
     PFILE_OBJECT FileObject,
     PACCESS_STATE AccessState,
@@ -1146,7 +1128,8 @@ UDFGetTrialEnd(PULONG iTrial);
 * Prototypes for the file verify.cpp
 *************************************************************************/
 
-extern NTSTATUS UDFVerifyVcb (
+VOID
+UDFVerifyVcb(
     IN PIRP_CONTEXT IrpContext,
     IN PVCB Vcb
     );
@@ -1156,30 +1139,33 @@ UDFVerifyFcbOperation(
     IN PIRP_CONTEXT IrpContext OPTIONAL,
     IN PFCB Fcb,
     IN PCCB Ccb
-);
+    );
 
-NTSTATUS UDFVerifyVolume (
+NTSTATUS
+UDFVerifyVolume(
     IN PIRP_CONTEXT IrpContext,
     IN PIRP Irp
     );
 
-extern NTSTATUS UDFPerformVerify (
+NTSTATUS
+UDFPerformVerify(
     IN PIRP_CONTEXT IrpContext,
     IN PIRP Irp,
     IN PDEVICE_OBJECT DeviceToVerify
     );
 
-extern BOOLEAN UDFCheckForDismount (
+BOOLEAN
+UDFCheckForDismount(
     IN PIRP_CONTEXT IrpContext,
     IN PVCB Vcb,
-    IN BOOLEAN VcbAcquired
+    IN BOOLEAN Force
     );
 
 BOOLEAN
-UDFDismountVcb (
+UDFDismountVcb(
     IN PIRP_CONTEXT IrpContext,
     IN PVCB Vcb,
-    IN BOOLEAN VcbAcquired
+    IN IN BOOLEAN FlushBeforeDismount
     );
 
 NTSTATUS
@@ -1196,14 +1182,26 @@ UDFCompareVcb(
 extern NTSTATUS NTAPI UDFQueryVolInfo(PDEVICE_OBJECT DeviceObject,
                                       PIRP Irp);
 
-extern NTSTATUS UDFCommonQueryVolInfo (PIRP_CONTEXT IrpContext,
-                                       PIRP Irp);
+_Requires_lock_held_(_Global_critical_region_)
+NTSTATUS
+UDFCommonQueryVolInfo(
+    _Inout_ PIRP_CONTEXT IrpContext,
+    _Inout_ PIRP Irp
+    );
 
-extern NTSTATUS NTAPI UDFSetVolInfo(PDEVICE_OBJECT DeviceObject,       // the logical volume device object
-                              PIRP           Irp);               // I/O Request Packet
+NTSTATUS
+NTAPI
+UDFSetVolInfo(
+    PDEVICE_OBJECT DeviceObject,
+    PIRP Irp
+    );
 
-extern NTSTATUS UDFCommonSetVolInfo(PIRP_CONTEXT IrpContext,
-                                    PIRP             Irp);
+_Requires_lock_held_(_Global_critical_region_)
+NTSTATUS
+UDFCommonSetVolInfo(
+    PIRP_CONTEXT IrpContext,
+    PIRP Irp
+    );
 
 /*************************************************************************
 * Prototypes for the file write.cpp
@@ -1416,6 +1414,12 @@ UDFAcquireResource(
 
 #define UDFReleaseFcb(IC,F)                                                             \
     ExReleaseResourceLite(&(F)->FcbNonpaged->FcbResource)
+
+#define UDFAcquirePagingIoExclusive(IC,F)                                               \
+    UDFAcquireResource((IC), (F)->Header.PagingIoResource, FALSE, AcquireExclusive)
+
+#define UDFReleasePagingIo(IC,F)                                                        \
+    ExReleaseResourceLite((F)->Header.PagingIoResource)
 
 VOID
 UDFSetThreadContext(

@@ -100,50 +100,25 @@ struct CCB {
 };
 using PCCB = CCB*;
 
-/**************************************************************************
-    the following CCBFlags values are relevant. These flag
-    values are bit fields; therefore we can test whether
-    a bit position is set (1) or not set (0).
-**************************************************************************/
-
-// some on-disk file/directories are opened by UDF itself
-//  as opposed to being opened on behalf of a user process
-#define UDF_CCB_OPENED_BY_UDF                   (0x00000001)
-// the file object specified synchronous access at create/open time.
-//  this implies that UDF must maintain the current byte offset
-#define UDF_CCB_OPENED_FOR_SYNC_ACCESS          (0x00000002)
+#define CCB_FLAG_IGNORE_CASE                    (0x00000004)
 // the CCB has had an IRP_MJ_CLEANUP issued on it. we must
 //  no longer allow the file object / CCB to be used in I/O requests.
 #define UDF_CCB_CLEANED                         (0x00000008)
-// if we were invoked via the fast i/o path to perform file i/o;
-//  we should set the CCB access/modification time at cleanup
-#define UDF_CCB_ACCESSED                        (0x00000010)
-#define UDF_CCB_MODIFIED                        (0x00000020)
 // if an application process set the file date time, we must
 //  honor that request and *not* overwrite the values at cleanup
 #define UDF_CCB_ACCESS_TIME_SET                 (0x00000040)
 #define UDF_CCB_MODIFY_TIME_SET                 (0x00000080)
 #define UDF_CCB_CREATE_TIME_SET                 (0x00000100)
 #define UDF_CCB_WRITE_TIME_SET                  (0x00000200)
-#define UDF_CCB_ATTRIBUTES_SET                  (0x00020000)
-
-#define UDF_CCB_CASE_SENSETIVE                  (0x00000400)
 #define UDF_CCB_DELETE_ON_CLOSE                 (0x00000800)
-#define UDF_CCB_FLAG_DISMOUNT_ON_CLOSE          (0x00040000)
-
-// this CCB was allocated for a "volume open" operation
-#define UDF_CCB_VOLUME_OPEN                     (0x00001000)
 #define UDF_CCB_MATCH_ALL                       (0x00002000)
 #define UDF_CCB_WILDCARD_PRESENT                (0x00004000)
 #define UDF_CCB_CAN_BE_8_DOT_3                  (0x00008000)
-//#define UDF_CCB_ATTRIBUTES_SET                (0x00020000) // see above
-
+#define UDF_CCB_ATTRIBUTES_SET                  (0x00020000)
+#define CCB_FLAG_DISMOUNT_ON_CLOSE              (0x00040000)
 #define CCB_FLAG_OPEN_BY_ID                     (0x01000000)
-
+#define CCB_FLAG_OPEN_RELATIVE_BY_ID            (0x02000000)
 #define CCB_FLAG_SENT_FORMAT_UNIT               (0x10000000)
-#define UDF_CCB_FLUSHED                         (0x20000000)
-#define UDF_CCB_VALID                           (0x40000000)
-#define UDF_CCB_NOT_FROM_ZONE                   (0x80000000)
 
 struct FCB_NONPAGED {
 
@@ -320,8 +295,6 @@ using PFCB = FCB*;
     a bit position is set (1) or not set (0).
 **************************************************************************/
 #define     UDF_FCB_VALID                               (0x00000002)
-
-#define     UDF_FCB_PAGE_FILE                           (0x00000004)
 #define     UDF_FCB_DIRECTORY                           (0x00000008)
 #define     UDF_FCB_ROOT_DIRECTORY                      (0x00000010)
 #define     UDF_FCB_MAPPED                              (0x00000040)
@@ -384,6 +357,8 @@ struct VCB {
     ULONG                               VcbCleanup;
     ULONG                               VcbReference;
     ULONG                               VcbUserReference;
+    ULONG                               VcbResidualReference;
+    ULONG                               VcbResidualUserReference;
     ERESOURCE                           FlushResource;
     // each VCB is accessible off a global linked list
     LIST_ENTRY                          NextVCB;
@@ -664,7 +639,6 @@ struct VCB {
 
     UCHAR           PartitialDamagedVolumeAction;
     BOOLEAN         NoFreeRelocationSpaceVolumeAction;
-    BOOLEAN         WriteSecurity;
     BOOLEAN         ForgetVolume;
     UCHAR           Reserved5[3];
 
@@ -682,10 +656,6 @@ struct VCB {
 
     UDF_VERIFY_CTX  VerifyCtx;
 
-    PUCHAR          Cfg;
-    ULONG           CfgLength;
-    ULONG           CfgVersion;
-
     uint32          CompatFlags;
     UCHAR           ShowBlankCd;
 
@@ -701,7 +671,8 @@ struct VCB {
 using PVCB = VCB*;
 
 // One for root
-#define         UDF_RESIDUAL_REFERENCE              (2)
+#define UDFS_BASE_RESIDUAL_REFERENCE                (4)//(6)
+#define UDFS_BASE_RESIDUAL_USER_REFERENCE           (1)//(3)
 
 // input flush flags
 #define         UDF_FLUSH_FLAGS_BREAKABLE           (0x00000001)
@@ -845,6 +816,7 @@ using PIRP_CONTEXT = IRP_CONTEXT*;
 #define UDF_IRP_CONTEXT_NOT_TOP_LEVEL           (0x10000000)
 #define UDF_IRP_CONTEXT_FLUSH_REQUIRED          (0x20000000)
 #define UDF_IRP_CONTEXT_FLUSH2_REQUIRED         (0x40000000)
+#define IRP_CONTEXT_FLAG_ALLOW_MEDIA_EJECT      (0x80000000)
 
 //  The following flags need to be cleared when a request is posted.
 
@@ -978,13 +950,14 @@ typedef struct _UDFData {
 #define UDFS_FLAGS_SHUTDOWN                   (0x0001)
 
 #define TAG_IRP_CONTEXT         'cidU'
+#define TAG_IRP_CONTEXT_LITE    'lidU'
 #define TAG_OBJECT_NAME         'nodU'
 #define TAG_FCB_NONPAGED        'nfdU'
 #define TAG_FCB                 'pfdU'
 #define TAG_CCB                 'ccdU'
 #define TAG_VPB                 'pvdU'
 #define TAG_FCB_TABLE           'tfdU'
-#define TAG_FILE_NAME           'nFdU'      //  Filename buffer
+#define TAG_FILE_NAME           'nFdU'
 
 // some valid flags for the VCB
 #define         VCB_STATE_LOCKED                    (0x00000001)
@@ -1005,8 +978,6 @@ typedef struct _UDFData {
 #define         VCB_STATE_SEQUENCE_CACHE            (0x00010000)
 #define         VCB_STATE_PNP_NOTIFICATION          (0x00020000)
 #define         UDF_VCB_FLAGS_RAW_DISK              (0x00040000)
-
-#define         UDF_VCB_FLAGS_NO_DELAYED_CLOSE      (0x00200000)
 
 #define         UDF_VCB_FLAGS_FLUSH_BREAK_REQ       (0x01000000)
 #define         UDF_VCB_FLAGS_EJECT_REQ             (0x02000000)
@@ -1058,7 +1029,7 @@ typedef struct _UDFData {
 typedef struct _UDFFileIDCacheItem {
     FILE_ID Id;
     UNICODE_STRING FullName;
-    BOOLEAN CaseSens;
+    BOOLEAN IgnoreCase;
 } UDFFileIDCacheItem, *PUDFFileIDCacheItem;
 
 #define DIRTY_PAGE_LIMIT   32

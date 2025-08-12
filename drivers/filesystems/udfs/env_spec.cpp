@@ -126,15 +126,14 @@ UDFSyncCompletionRoutine2(
 
 */
 NTSTATUS
-NTAPI
 UDFPhReadSynchronous(
     PIRP_CONTEXT IrpContext,
-    PDEVICE_OBJECT      DeviceObject,   // the physical device object
-    PVOID               Buffer,
-    SIZE_T              Length,
-    LONGLONG            Offset,
-    PSIZE_T             ReadBytes,
-    ULONG               Flags
+    PDEVICE_OBJECT DeviceObject,   // the physical device object
+    PVOID Buffer,
+    ULONG ByteCount,
+    LONGLONG Offset,
+    PSIZE_T ReadBytes,
+    ULONG Flags
     )
 {
     NTSTATUS            RC = STATUS_SUCCESS;
@@ -174,7 +173,7 @@ UDFPhReadSynchronous(
     if (Flags & PH_TMP_BUFFER) {
         IoBuf = Buffer;
     } else {
-        IoBuf = DbgAllocatePoolWithTag(NonPagedPool, Length, 'bNWD');
+        IoBuf = DbgAllocatePoolWithTag(NonPagedPool, ByteCount, 'bNWD');
     }
     if (!IoBuf) {
         UDFPrint(("    !IoBuf\n"));
@@ -190,7 +189,7 @@ UDFPhReadSynchronous(
 
     if (TRUE || CurIrql > PASSIVE_LEVEL) {
         Irp = IoBuildAsynchronousFsdRequest(IRP_MJ_READ, DeviceObject, IoBuf,
-                                               Length, &ROffset, &(Context->IosbToUse) );
+                                               ByteCount, &ROffset, &(Context->IosbToUse) );
         if (!Irp) {
             UDFPrint(("    !irp Async\n"));
             try_return(RC = STATUS_INSUFFICIENT_RESOURCES);
@@ -200,7 +199,7 @@ UDFPhReadSynchronous(
                                 Context, TRUE, TRUE, TRUE );
     } else {
         Irp = IoBuildSynchronousFsdRequest(IRP_MJ_READ, DeviceObject, IoBuf,
-                                               Length, &ROffset, &(Context->event), &(Context->IosbToUse) );
+                                               ByteCount, &ROffset, &(Context->event), &(Context->IosbToUse) );
         if (!Irp) {
             UDFPrint(("    !irp Sync\n"));
             try_return(RC = STATUS_INSUFFICIENT_RESOURCES);
@@ -249,7 +248,7 @@ UDFPhReadSynchronous(
 */
 #ifdef _BROWSE_UDF_
         if (Vcb) {
-            RC = UDFVRead(Vcb, IoBuf, Length >> Vcb->BlockSizeBits, (ULONG)(Offset >> Vcb->BlockSizeBits), Flags);
+            RC = UDFVRead(Vcb, IoBuf, ByteCount >> Vcb->BlockSizeBits, (ULONG)(Offset >> Vcb->BlockSizeBits), Flags);
         }
 #endif //_BROWSE_UDF_
     }
@@ -288,14 +287,13 @@ try_exit: NOTHING;
 
 */
 NTSTATUS
-NTAPI
 UDFPhWriteSynchronous(
-    PDEVICE_OBJECT  DeviceObject,   // the physical device object
-    PVOID           Buffer,
-    SIZE_T          Length,
-    LONGLONG        Offset,
-    PSIZE_T         WrittenBytes,
-    ULONG           Flags
+    PDEVICE_OBJECT DeviceObject,   // the physical device object
+    PVOID Buffer,
+    ULONG ByteCount,
+    LONGLONG Offset,
+    PSIZE_T WrittenBytes,
+    ULONG Flags
     )
 {
     NTSTATUS            RC = STATUS_SUCCESS;
@@ -340,7 +338,7 @@ UDFPhWriteSynchronous(
             a = ((PUCHAR)Buffer)[i];
         }
 */
-        *WrittenBytes = Length;
+        *WrittenBytes = ByteCount;
         return STATUS_SUCCESS;
     }
 #endif //DBG
@@ -353,9 +351,9 @@ UDFPhWriteSynchronous(
     if (Flags & PH_TMP_BUFFER) {
         IoBuf = Buffer;
     } else {
-        IoBuf = DbgAllocatePool(NonPagedPool, Length);
+        IoBuf = DbgAllocatePool(NonPagedPool, ByteCount);
         if (!IoBuf) try_return (RC = STATUS_INSUFFICIENT_RESOURCES);
-        RtlCopyMemory(IoBuf, Buffer, Length);
+        RtlCopyMemory(IoBuf, Buffer, ByteCount);
     }
 
     Context = (PUDF_PH_CALL_CONTEXT)MyAllocatePool__( NonPagedPool, sizeof(UDF_PH_CALL_CONTEXT) );
@@ -365,14 +363,14 @@ UDFPhWriteSynchronous(
 
     if (TRUE || CurIrql > PASSIVE_LEVEL) {
         irp = IoBuildAsynchronousFsdRequest(IRP_MJ_WRITE, DeviceObject, IoBuf,
-                                               Length, &ROffset, &(Context->IosbToUse) );
+                                            ByteCount, &ROffset, &(Context->IosbToUse) );
         if (!irp) try_return(RC = STATUS_INSUFFICIENT_RESOURCES);
         MmPrint(("    Alloc async Irp MDL=%x, ctx=%x\n", irp->MdlAddress, Context));
         IoSetCompletionRoutine( irp, &UDFAsyncCompletionRoutine,
                                 Context, TRUE, TRUE, TRUE );
     } else {
         irp = IoBuildSynchronousFsdRequest(IRP_MJ_WRITE, DeviceObject, IoBuf,
-                                               Length, &ROffset, &(Context->event), &(Context->IosbToUse) );
+                                           ByteCount, &ROffset, &(Context->event), &(Context->IosbToUse) );
         if (!irp) try_return(RC = STATUS_INSUFFICIENT_RESOURCES);
         MmPrint(("    Alloc Irp MDL=%x\n, ctx=%x", irp->MdlAddress, Context));
     }
@@ -386,7 +384,7 @@ UDFPhWriteSynchronous(
 */
 #ifdef _BROWSE_UDF_
     if (Vcb) {
-        UDFVWrite(Vcb, IoBuf, Length >> Vcb->BlockSizeBits, (ULONG)(Offset >> Vcb->BlockSizeBits), Flags);
+        UDFVWrite(Vcb, IoBuf, ByteCount >> Vcb->BlockSizeBits, (ULONG)(Offset >> Vcb->BlockSizeBits), Flags);
     }
 #endif //_BROWSE_UDF_
 
@@ -418,7 +416,7 @@ try_exit: NOTHING;
         PerfPrint(("\nUDFPhWriteSynchronous() Relative size=%I64d, time=%I64d.\n", WrittenData, IoRelWriteTime));
         WrittenData = IoRelWriteTime = 0;
     }
-    WrittenData += Length;
+    WrittenData += ByteCount;
     IoRelWriteTime += (IoExitTime-IoEnterTime);
     dt = (ULONG)((IoExitTime-IoEnterTime)/10/1000);
     dtm = (ULONG)(((IoExitTime-IoEnterTime)/10)%1000);
@@ -429,46 +427,6 @@ try_exit: NOTHING;
 
     return(RC);
 } // end UDFPhWriteSynchronous()
-
-#if 0
-NTSTATUS
-UDFPhWriteVerifySynchronous(
-    PDEVICE_OBJECT  DeviceObject,   // the physical device object
-    PVOID           Buffer,
-    SIZE_T          Length,
-    LONGLONG        Offset,
-    PSIZE_T         WrittenBytes,
-    ULONG           Flags
-    )
-{
-    NTSTATUS RC;
-    //PUCHAR v_buff = NULL;
-    //ULONG ReadBytes;
-
-    RC = UDFPhWriteSynchronous(DeviceObject, Buffer, Length, Offset, WrittenBytes, Flags);
-/*
-    if (!Verify)
-        return RC;
-    v_buff = (PUCHAR)DbgAllocatePoolWithTag(NonPagedPool, Length, 'bNWD');
-    if (!v_buff)
-        return RC;
-    RC = UDFPhReadSynchronous(DeviceObject, v_buff, Length, Offset, &ReadBytes, Flags);
-    if (!NT_SUCCESS(RC)) {
-        BrutePoint();
-        DbgFreePool(v_buff);
-        return RC;
-    }
-    if (RtlCompareMemory(v_buff, Buffer, ReadBytes) == Length) {
-        DbgFreePool(v_buff);
-        return RC;
-    }
-    BrutePoint();
-    DbgFreePool(v_buff);
-    return STATUS_LOST_WRITEBEHIND_DATA;
-*/
-    return RC;
-} // end UDFPhWriteVerifySynchronous()
-#endif //0
 
 NTSTATUS
 NTAPI

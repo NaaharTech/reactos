@@ -24,9 +24,9 @@ UDFCheckAccessRights(
     PFILE_OBJECT FileObject, // OPTIONAL
     PACCESS_STATE AccessState,
     PFCB Fcb,
-    PCCB         Ccb,        // OPTIONAL
-    ACCESS_MASK  DesiredAccess,
-    USHORT       ShareAccess
+    PCCB Ccb,        // OPTIONAL
+    ACCESS_MASK DesiredAccess,
+    USHORT ShareAccess
     )
 {
     NTSTATUS RC;
@@ -40,8 +40,9 @@ UDFCheckAccessRights(
         ROCheck = TRUE;
     } else
     if ((Fcb->Vcb->origIntegrityType == INTEGRITY_TYPE_OPEN) &&
-        Ccb && !(Ccb->Flags & UDF_CCB_VOLUME_OPEN) &&
-       (Fcb->Vcb->CompatFlags & UDF_VCB_IC_DIRTY_RO)) {
+        Fcb != Fcb->Vcb->VolumeDasdFcb && //TODO: TypeOfOpen != UserVolumeOpen
+        (Fcb->Vcb->CompatFlags & UDF_VCB_IC_DIRTY_RO)) {
+
         AdPrint(("force R/O on dirty\n"));
         ROCheck = TRUE;
     } if (ROCheck) {

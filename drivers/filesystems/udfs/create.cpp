@@ -179,94 +179,104 @@ UDFCommonCreate(
     PIRP                            Irp
     )
 {
-    NTSTATUS                    RC = STATUS_SUCCESS;
-    PIO_STACK_LOCATION          IrpSp = IoGetCurrentIrpStackLocation(Irp);
-    PIO_SECURITY_CONTEXT        PtrSecurityContext = NULL;
-    PFILE_OBJECT                FileObject = NULL;
-    PFILE_OBJECT                RelatedFileObject = NULL;
-    LONGLONG                    AllocationSize;     // if we create a new file
-    ULONG                       Options;
-    ULONG                       CreateDisposition;
-    USHORT                      FileAttributes;
-    USHORT                      TmpFileAttributes;
-    USHORT                      ShareAccess;
-    ACCESS_MASK                 DesiredAccess;
-    PACCESS_STATE               AccessState;
+    NTSTATUS RC = STATUS_SUCCESS;
+    PIO_STACK_LOCATION IrpSp = IoGetCurrentIrpStackLocation(Irp);
+    PFILE_OBJECT FileObject = NULL;
+    PFILE_OBJECT RelatedFileObject = NULL;
+    LONGLONG AllocationSize;     // if we create a new file
+    ULONG Options;
+    ULONG CreateDisposition;
+    USHORT FileAttributes;
+    USHORT TmpFileAttributes;
+    USHORT ShareAccess;
+    ACCESS_MASK DesiredAccess;
+    PACCESS_STATE AccessState;
 
-    _SEH2_VOLATILE PVCB         Vcb = NULL;
-    _SEH2_VOLATILE BOOLEAN      AcquiredVcb = FALSE;
-    BOOLEAN                     OpenExisting = FALSE;
-    PERESOURCE                  Res1 = NULL;
-    PERESOURCE                  Res2 = NULL;
-    PERESOURCE                  PagingIoRes = NULL;
+    PVCB Vcb = NULL;
+    BOOLEAN OpenExisting = FALSE;
+    PERESOURCE Res1 = NULL;
+    PERESOURCE Res2 = NULL;
+    PERESOURCE PagingIoRes = NULL;
 
-    BOOLEAN                     DeleteOnClose;
-    BOOLEAN                     OpenByFileId;
-    BOOLEAN                     DirectoryFile;
-    BOOLEAN                     NonDirectoryFile;
-    BOOLEAN                     SequentialOnly;
+    BOOLEAN DeleteOnClose;
+    BOOLEAN OpenByFileId;
+    BOOLEAN DirectoryFile;
+    BOOLEAN NonDirectoryFile;
+    BOOLEAN SequentialOnly;
 
     // Is this open for a target directory (used in rename operations)?
-    BOOLEAN                     OpenTargetDirectory;
+    BOOLEAN OpenTargetDirectory;
     // Should we ignore case when attempting to locate the object?
-    BOOLEAN                     IgnoreCase;
+    BOOLEAN IgnoreCase;
 
     PCCB RelatedCcb = NULL;
-    PCCB                        PtrNewCcb = NULL;
-    PFCB                        NextFcb = NULL;
-    PFCB                        PtrNewFcb = NULL;
+    PCCB PtrNewCcb = NULL;
+    PFCB NextFcb = NULL;
+    PFCB PtrNewFcb = NULL;
 
-    ULONG                       ReturnedInformation = 0;
+    ULONG ReturnedInformation = 0;
 
     PUNICODE_STRING FileName;
-    UNICODE_STRING              RelatedObjectName;
+    UNICODE_STRING  RelatedObjectName;
     PUNICODE_STRING RelatedFileName = NULL;
 
     //BOOLEAN VolumeOpen = FALSE;
 
     TYPE_OF_OPEN RelatedTypeOfOpen = UnopenedFileObject;
 
-    UNICODE_STRING              AbsolutePathName;    // '\aaa\cdf\fff\rrrr.tre:s'
-    UNICODE_STRING              LocalPath;           // '\aaa\cdf'
-    UNICODE_STRING              CurName;             // 'cdf'
-    UNICODE_STRING              TailName;            // 'fff\rrrr.tre:s'
-    UNICODE_STRING              LastGoodName;        // it depends...
-    UNICODE_STRING              LastGoodTail;        // it depends...
-    UNICODE_STRING              StreamName;          // ':s'
+    UNICODE_STRING AbsolutePathName;    // '\aaa\cdf\fff\rrrr.tre:s'
+    UNICODE_STRING LocalPath;           // '\aaa\cdf'
+    UNICODE_STRING CurName;             // 'cdf'
+    UNICODE_STRING TailName;            // 'fff\rrrr.tre:s'
+    UNICODE_STRING LastGoodName;        // it depends...
+    UNICODE_STRING LastGoodTail;        // it depends...
+    UNICODE_STRING StreamName;          // ':s'
 
     UNICODE_STRING RemainingName;
 
-    PUDF_FILE_INFO              RelatedFileInfo;
-    PUDF_FILE_INFO              OldRelatedFileInfo = NULL;
-    PUDF_FILE_INFO              NewFileInfo = NULL;
-    PUDF_FILE_INFO              LastGoodFileInfo = NULL;
-    PWCHAR                      TmpBuffer;
-    ULONG                       TreeLength = 0;
-//    ULONG                       i = 0;
+    PUDF_FILE_INFO RelatedFileInfo;
+    PUDF_FILE_INFO OldRelatedFileInfo = NULL;
+    PUDF_FILE_INFO NewFileInfo = NULL;
+    PUDF_FILE_INFO LastGoodFileInfo = NULL;
+    PWCHAR TmpBuffer;
+    ULONG TreeLength = 0;
+    BOOLEAN VolumeOpen = FALSE;
 
-    BOOLEAN                     StreamOpen = FALSE;
-    BOOLEAN                     StreamTargetOpen = FALSE;
-    BOOLEAN                     StreamExists = FALSE;
-    BOOLEAN                     RestoreShareAccess = FALSE;
-    PWCHAR                      TailNameBuffer = NULL;
-    ULONG                       SNameIndex = 0;
+    BOOLEAN StreamOpen = FALSE;
+    BOOLEAN StreamTargetOpen = FALSE;
+    BOOLEAN StreamExists = FALSE;
+    BOOLEAN RestoreShareAccess = FALSE;
+    PWCHAR TailNameBuffer = NULL;
+    ULONG SNameIndex = 0;
     DECLARE_CONST_UNICODE_STRING(StreamSuffix, L":$DATA");
 
-    TmPrint(("UDFCommonCreate:\n"));
+    PAGED_CODE();
 
     ASSERT(IrpContext);
     ASSERT(Irp);
 
+    // If we were called with our file system device object instead of a
+    // volume device object, just complete this request with STATUS_SUCCESS.
+
+    if (IrpContext->Vcb == NULL) {
+
+        UDFCompleteRequest(IrpContext, Irp, STATUS_SUCCESS);
+        return STATUS_SUCCESS;
+    }
+
     Options             = IrpSp->Parameters.Create.Options;
-    OpenTargetDirectory = FlagOn(IrpSp->Flags, SL_OPEN_TARGET_DIRECTORY);
-    DirectoryFile       = FlagOn(Options, FILE_DIRECTORY_FILE);
-    NonDirectoryFile    = FlagOn(Options, FILE_NON_DIRECTORY_FILE);
+    OpenTargetDirectory = BooleanFlagOn(IrpSp->Flags, SL_OPEN_TARGET_DIRECTORY);
+    DirectoryFile       = BooleanFlagOn(Options, FILE_DIRECTORY_FILE);
+    NonDirectoryFile    = BooleanFlagOn(Options, FILE_NON_DIRECTORY_FILE);
     OpenByFileId = BooleanFlagOn(IrpSp->Parameters.Create.Options, FILE_OPEN_BY_FILE_ID);
     IgnoreCase = !BooleanFlagOn( IrpSp->Flags, SL_CASE_SENSITIVE );
     CreateDisposition = (IrpSp->Parameters.Create.Options >> 24) & 0x000000ff;
     SequentialOnly = BooleanFlagOn(Options, FILE_SEQUENTIAL_ONLY);
+    DeleteOnClose = BooleanFlagOn(IrpSp->Parameters.Create.Options, FILE_DELETE_ON_CLOSE);
 
     Vcb = IrpContext->Vcb;
+
+    ASSERT_VCB(Vcb);
 
     // Check if the volume is read - only or write - protected and if the operation
     // requires write access
@@ -394,18 +404,27 @@ UDFCommonCreate(
         return RC;
     }
 
+    // We want to acquire the Vcb.  Exclusively for a volume open, shared otherwise.
+    // The file name is empty for a volume open.
+
+    if ((FileName->Length == 0) &&
+        (RelatedTypeOfOpen <= UserVolumeOpen) &&
+        !OpenByFileId) {
+
+        VolumeOpen = TRUE;
+        UDFAcquireVcbExclusive(IrpContext, Vcb, FALSE);
+
+    } else {
+
+        UDFAcquireVcbShared(IrpContext, Vcb, FALSE);
+    }
+
+    // Use a try-finally to facilitate cleanup.
 
     _SEH2_TRY {
 
         AbsolutePathName.Buffer =
         LocalPath.Buffer = NULL;
-        //  If we were called with our file system device object instead of a
-        //  volume device object, just complete this request with STATUS_SUCCESS.
-        if (!(IrpContext->RealDevice->DeviceExtension)) {
-
-            ReturnedInformation = FILE_OPENED;
-            try_return(RC = STATUS_SUCCESS);
-        }
 
         AbsolutePathName.Length = AbsolutePathName.MaximumLength =
         LocalPath.Length = LocalPath.MaximumLength = 0;
@@ -435,58 +454,22 @@ UDFCommonCreate(
         //  or a file is superseded.
         AllocationSize = Irp->Overlay.AllocationSize.QuadPart;
 
-        // Get a ptr to the supplied security context
-        PtrSecurityContext = IrpSp->Parameters.Create.SecurityContext;
-        AccessState = PtrSecurityContext->AccessState;
-
-        // The desired access can be obtained from the SecurityContext
-        DesiredAccess = PtrSecurityContext->DesiredAccess;
+        AccessState = IrpSp->Parameters.Create.SecurityContext->AccessState;
+        DesiredAccess = IrpSp->Parameters.Create.SecurityContext->DesiredAccess;
         FileAttributes  = (USHORT)(IrpSp->Parameters.Create.FileAttributes & FILE_ATTRIBUTE_VALID_FLAGS);
         ShareAccess = IrpSp->Parameters.Create.ShareAccess;
 
-        // Not all of the native file system implementations support
-        //  the delete-on-close option. All this means is that after the
-        //  last close on the FCB has been performed, the FSD should
-        //  delete the file. It simply saves the caller from issuing a
-        //  separate delete request. Also, some FSD implementations might choose
-        //  to implement a Windows NT idiosyncratic behavior wherein we
-        //  could create such "delete-on-close" marked files under directories
-        //  marked for deletion. Ordinarily, a FSD will not allow us to create
-        //  a new file under a directory that has been marked for deletion.
-        DeleteOnClose = BooleanFlagOn(IrpSp->Parameters.Create.Options, FILE_DELETE_ON_CLOSE);
+        // Verify that the Vcb is not in an unusable condition.  This routine
+        // will raise if not usable.
 
-        // The open target directory flag is used as part of the sequence of
-        //  operations performed by the I/O Manager is response to a file/dir
-        //  rename operation. See the explanation in the book for details.
-        OpenTargetDirectory = (IrpSp->Flags & SL_OPEN_TARGET_DIRECTORY) ? TRUE : FALSE;
+        UDFVerifyVcb(IrpContext, Vcb);
 
-        IgnoreCase = !BooleanFlagOn(IrpSp->Flags, SL_CASE_SENSITIVE);
-        CreateDisposition = (IrpSp->Parameters.Create.Options >> 24) & 0x000000ff;
+        // If the Vcb is locked then we cannot open another file
 
-        // Ensure that the operation has been directed to a valid VCB ...
-        Vcb = (PVCB)(IrpContext->RealDevice->DeviceExtension);
-        ASSERT_VCB(Vcb);
-
-//        Vcb->VcbState |= UDF_VCB_SKIP_EJECT_CHECK;
-
-        UDFFlushTryBreak(Vcb);
-
-        // If the volume has been locked, fail the request
-        if (Vcb->VcbState & VCB_STATE_LOCKED) {
+        if (FlagOn(Vcb->VcbState, VCB_STATE_LOCKED)) {
 
             try_return(RC = STATUS_ACCESS_DENIED);
         }
-        // We need EXCLUSIVE access to Vcb to avoid parallel calls to UDFVerifyVcb()
-        UDFAcquireResourceExclusive(&(Vcb->VcbResource), TRUE);
-        AcquiredVcb = TRUE;
-
-        // Disk based file systems might decide to verify the logical volume
-        //  (if required and only if removable media are supported) at this time
-        RC = UDFVerifyVcb(IrpContext,Vcb);
-        if (!NT_SUCCESS(RC))
-            try_return(RC);
-
-        UDFConvertExclusiveToSharedLite(&(Vcb->VcbResource));
 
         ASSERT(Vcb->VcbCondition == VcbMounted);
 
@@ -523,8 +506,7 @@ UDFCommonCreate(
         // ****************
         // If a Volume open is requested, satisfy it now
         // ****************
-        if (!(FileObject->FileName.Length) && (!RelatedFileObject ||
-              (NextFcb == NextFcb->Vcb->VolumeDasdFcb))) {
+        if (VolumeOpen) {
 
             BOOLEAN UndoLock = FALSE;
 
@@ -630,17 +612,9 @@ UDFCommonCreate(
                     IrpContext->Flags &= ~UDF_IRP_CONTEXT_FLUSH2_REQUIRED;
 
                     UDFInterlockedIncrement((PLONG)&(Vcb->VcbReference));
-                    UDFReleaseResource(&(Vcb->VcbResource));
-                    AcquiredVcb = FALSE;
 
-                    UDFCloseAllSystemDelayedInDir(Vcb, Vcb->RootIndexFcb->FileInfo);
-
-#ifdef UDF_DELAYED_CLOSE
                     UDFFspClose(Vcb);
-#endif //UDF_DELAYED_CLOSE
 
-                    UDFAcquireResourceExclusive(&(Vcb->VcbResource), TRUE);
-                    AcquiredVcb = TRUE;
                     UDFInterlockedDecrement((PLONG)&(Vcb->VcbReference));
 
                     UDFFlushVolume(IrpContext, Vcb);
@@ -668,7 +642,7 @@ UDFCommonCreate(
                 goto op_vol_accs_dnd;
 
             PtrNewCcb = UDFDecodeFileObjectCcb(FileObject);
-            if (PtrNewCcb) PtrNewCcb->Flags |= UDF_CCB_VOLUME_OPEN;
+
             // Check _Security_
             RC = UDFCheckAccessRights(NULL, AccessState, Vcb->RootIndexFcb, PtrNewCcb, DesiredAccess, ShareAccess);
             if (!NT_SUCCESS(RC)) {
@@ -694,7 +668,7 @@ op_vol_accs_dnd:
             try_return(RC);
         }
 
-        if (UdfIllegalFcbAccess(Vcb,DesiredAccess)) {
+        if (UDFIllegalFcbAccess(Vcb, DesiredAccess)) {
             ReturnedInformation = 0;
             AdPrint(("    Illegal share access\n"));
             try_return(RC = STATUS_ACCESS_DENIED);
@@ -2100,10 +2074,9 @@ try_exit:   NOTHING;
                     }
 
                     // case sensetivity
-                    if (!IgnoreCase) {
+                    if (IgnoreCase) {
                         // remember this for possible Rename/Move operation
-                        PtrNewCcb->Flags |= UDF_CCB_CASE_SENSETIVE;
-                        FileObject->Flags |= FO_OPENED_CASE_SENSITIVE;
+                        PtrNewCcb->Flags |= CCB_FLAG_IGNORE_CASE;
                     }
                 } else {
                     BrutePoint();
@@ -2150,7 +2123,6 @@ try_exit:   NOTHING;
                 }
                 // Release resources...
                 UDFReleaseResFromCreate(&PagingIoRes, &Res1, &Res2);
-                ASSERT(AcquiredVcb);
                 // close the chain
                 UDFCloseFileInfoChain(IrpContext, Vcb, LastGoodFileInfo, TreeLength, TRUE);
                 // cleanup FCBs (if any)
@@ -2175,9 +2147,6 @@ try_exit:   NOTHING;
             UDFReleaseResFromCreate(&PagingIoRes, &Res1, &Res2);
         }
 
-        if (AcquiredVcb) {
-            UDFReleaseResource(&(Vcb->VcbResource));
-        }
         // free allocated tmp buffers (if any)
         if (AbsolutePathName.Buffer)
             MyFreePool__(AbsolutePathName.Buffer);
@@ -2185,6 +2154,11 @@ try_exit:   NOTHING;
             MyFreePool__(LocalPath.Buffer);
         if (TailNameBuffer)
             MyFreePool__(TailNameBuffer);
+
+        // Release the Vcb.
+
+        UDFReleaseVcb(IrpContext, Vcb);
+
     } _SEH2_END;
 
     return(RC);

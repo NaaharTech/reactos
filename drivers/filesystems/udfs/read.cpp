@@ -391,8 +391,6 @@ UDFCommonRead(
                 UDFPrint(("  UDF_IRP_CONTEXT_FLUSH2_REQUIRED\n"));
                 IrpContext->Flags &= ~UDF_IRP_CONTEXT_FLUSH2_REQUIRED;
 
-                UDFCloseAllSystemDelayedInDir(Vcb, Vcb->RootIndexFcb->FileInfo);
-
 #ifdef UDF_DELAYED_CLOSE
                 UDFFspClose(Vcb);
 #endif //UDF_DELAYED_CLOSE
@@ -446,9 +444,6 @@ UDFCommonRead(
         // driver. For requests directed to a page file, you have to trust
         // that the offsets will be set correctly by the VMM. You should not
         // attempt to acquire any FSD resources either.
-        if (Fcb->FcbState & UDF_FCB_PAGE_FILE) {
-            NonCachedIo = TRUE;
-        }
 
         if (ByteOffset.HighPart == -1) {
             if (ByteOffset.LowPart == FILE_USE_FILE_POINTER_POSITION) {
@@ -771,7 +766,6 @@ try_exit:   NOTHING;
             // performed and that the file time should be updated at cleanup
             if (NT_SUCCESS(RC) && !PagingIo) {
                 FileObject->Flags |= FO_FILE_FAST_IO_READ;
-                Ccb->Flags |= UDF_CCB_ACCESSED;
             }
 
             if (!_SEH2_AbnormalTermination()) {

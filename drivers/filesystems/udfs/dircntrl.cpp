@@ -27,12 +27,13 @@
 #define UDF_FNM_FLAG_IGNORE_CASE   0x02
 #define UDF_FNM_FLAG_CONTAINS_WC   0x04
 
-NTSTATUS UDFFindNextMatch(
+NTSTATUS
+UDFFindNextMatch(
     IN PVCB            Vcb,
     IN PDIR_INDEX_HDR  hDirIndex,
     IN PLONG           CurrentNumber,      // Must be modified
-    IN PUNICODE_STRING PtrSearchPattern,
-    IN UCHAR           FNM_Flags,
+    IN PUNICODE_STRING SearchPattern,
+    IN ULONG           CcbFlags,
     IN PHASH_ENTRY     hashes,
    OUT PDIR_INDEX_ITEM* _DirNdx);
 
@@ -238,7 +239,6 @@ UDFQueryDirectory(
     PFILE_NAMES_INFORMATION     NamesInfo;
     PFILE_ID_BOTH_DIR_INFORMATION IdBothDirInfo = NULL;
     ULONG                       BytesRemainingInBuffer;
-    UCHAR                       FNM_Flags = 0;
     PHASH_ENTRY                 cur_hashes = NULL;
     PDIR_INDEX_ITEM             DirNdx;
     // do some pre-init...
@@ -283,8 +283,7 @@ UDFQueryDirectory(
         // Obtain the callers parameters
         CanWait = (IrpContext->Flags & IRP_CONTEXT_FLAG_WAIT) ? TRUE : FALSE;
         Vcb = Fcb->Vcb;
-        //Vcb->VcbState |= UDF_VCB_SKIP_EJECT_CHECK;
-        FNM_Flags |= (Ccb->Flags & UDF_CCB_CASE_SENSETIVE) ? 0 : UDF_FNM_FLAG_IGNORE_CASE;
+
         DirFileInfo = Fcb->FileInfo;
         BufferLength = pStackLocation->Parameters.QueryDirectory.Length;
 
@@ -296,7 +295,7 @@ UDFQueryDirectory(
         }
 
         // Continue obtaining the callers parameters...
-        if (IgnoreCase && pStackLocation->Parameters.QueryDirectory.FileName) {
+        if (FlagOn(Ccb->Flags, CCB_FLAG_IGNORE_CASE) && pStackLocation->Parameters.QueryDirectory.FileName) {
             PtrSearchPattern = &SearchPattern;
             if (!NT_SUCCESS(RC = RtlUpcaseUnicodeString(PtrSearchPattern, (PUNICODE_STRING)(pStackLocation->Parameters.QueryDirectory.FileName), TRUE)))
                 try_return(RC);
@@ -431,10 +430,6 @@ UDFQueryDirectory(
             NextMatch = Ccb->CurrentIndex; // Last good index
         }
 
-        FNM_Flags |= (Ccb->Flags & UDF_CCB_WILDCARD_PRESENT) ? UDF_FNM_FLAG_CONTAINS_WC : 0;
-        // this is used only when mask is supplied
-        FNM_Flags |= (Ccb->Flags & UDF_CCB_CAN_BE_8_DOT_3) ? UDF_FNM_FLAG_CAN_BE_8D3 : 0;
-
         // This is an additional verifying
         if (!UDFIsADirectory(DirFileInfo)) {
             try_return(RC = STATUS_INVALID_PARAMETER);
@@ -478,7 +473,7 @@ UDFQueryDirectory(
                 try_return(RC);
             }
             // We call UDFFindNextMatch to look down the next matching dirent.
-            RC = UDFFindNextMatch(Vcb, hDirIndex,&NextMatch,PtrSearchPattern, FNM_Flags, cur_hashes, &DirNdx);
+            RC = UDFFindNextMatch(Vcb, hDirIndex,&NextMatch,PtrSearchPattern, Ccb->Flags, cur_hashes, &DirNdx);
             // If we didn't receive next match, then we are at the end of the
             // directory.  If we have returned any files, we exit with
             // success, otherwise we return STATUS_NO_MORE_FILES.
@@ -618,33 +613,41 @@ UDFFindNextMatch(
     IN PVCB Vcb,
     IN PDIR_INDEX_HDR  hDirIndex,
     IN PLONG           CurrentNumber,      // Must be modified in case, when we found next match
-    IN PUNICODE_STRING PtrSearchPattern,
-    IN UCHAR           FNM_Flags,
+    IN PUNICODE_STRING SearchPattern,
+    IN ULONG           CcbFlags,
     IN PHASH_ENTRY     hashes,
    OUT PDIR_INDEX_ITEM* _DirNdx
     )
 {
     LONG    EntryNumber = (*CurrentNumber);
     PDIR_INDEX_ITEM DirNdx;
-
-#define CanBe8dot3    (FNM_Flags & UDF_FNM_FLAG_CAN_BE_8D3)
-#define IgnoreCase    (FNM_Flags & UDF_FNM_FLAG_IGNORE_CASE)
-#define ContainsWC    (FNM_Flags & UDF_FNM_FLAG_CONTAINS_WC)
-
     for(;(DirNdx = UDFDirIndex(hDirIndex, EntryNumber));EntryNumber++) {
+
         if (!DirNdx->FName.Buffer ||
-           UDFIsDeleted(DirNdx))
+            UDFIsDeleted(DirNdx)) {
+
             continue;
+        }
+
         if (hashes &&
            (DirNdx->hashes.hLfn != hashes->hLfn) &&
            (DirNdx->hashes.hPosix != hashes->hPosix) &&
-           (!CanBe8dot3 || ((DirNdx->hashes.hDos != hashes->hLfn) && (DirNdx->hashes.hDos != hashes->hPosix))) )
+           (!FlagOn(CcbFlags, UDF_CCB_CAN_BE_8_DOT_3) || ((DirNdx->hashes.hDos != hashes->hLfn) && (DirNdx->hashes.hDos != hashes->hPosix))) ) {
+
             continue;
-        if (UDFIsNameInExpression(Vcb, &(DirNdx->FName),PtrSearchPattern, NULL,IgnoreCase,
-                                ContainsWC, CanBe8dot3 && !(DirNdx->FI_Flags & UDF_FI_FLAG_DOS),
-                                EntryNumber < 2) &&
-           !(DirNdx->FI_Flags & UDF_FI_FLAG_FI_INTERNAL))
+        }
+
+        if (UDFIsNameInExpression(Vcb,
+                                  &DirNdx->FName,
+                                  SearchPattern,
+                                  NULL,
+                                  BooleanFlagOn(CcbFlags, CCB_FLAG_IGNORE_CASE),
+                                  BooleanFlagOn(CcbFlags, UDF_CCB_WILDCARD_PRESENT),
+                                  BooleanFlagOn(CcbFlags, UDF_CCB_CAN_BE_8_DOT_3) && !(DirNdx->FI_Flags & UDF_FI_FLAG_DOS),
+                                  EntryNumber < 2) && !(DirNdx->FI_Flags & UDF_FI_FLAG_FI_INTERNAL)) {
+
             break;
+        }
     }
 
     if (DirNdx) {
