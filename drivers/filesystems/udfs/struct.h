@@ -95,8 +95,6 @@ struct CCB {
     PUNICODE_STRING                     DirectorySearchPattern;
     HASH_ENTRY                          hashes;
     ULONG                               TreeLength;
-    // Acces rights previously granted to caller's thread
-    ACCESS_MASK                         PreviouslyGrantedAccess;
 };
 using PCCB = CCB*;
 
@@ -242,6 +240,8 @@ struct FCB {
 
     ULONG FcbState;
 
+    ULONG FileAttributes;
+
     // for the UDF fsd, there exists a 1-1 correspondence between a
     //  full object pathname and a FCB
     PtrUDFObjectName                    FCBName;
@@ -314,7 +314,7 @@ using PFCB = FCB*;
 #define     FCB_STATE_IN_FCB_TABLE                      (0x00040000)
 
 #define     UDF_FCB_DELETE_PARENT                       (0x10000000)
-#define     UDF_FCB_NOT_FROM_ZONE                       (0x80000000)
+#define     FCB_STATE_TEMPORARY                         (0x80000000)
 
 /**************************************************************************
     A logical volume is represented with the following structure.

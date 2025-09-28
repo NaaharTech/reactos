@@ -379,13 +379,11 @@ UDFIllegalFcbAccess(
 #define ASSERT_OPTIONAL_VCB(V)              ASSERT_OPTIONAL_STRUCT( (V), UDF_NODE_TYPE_VCB )
 
 #define ASSERT_FCB(F)                                           \
-    NT_ASSERT( (SafeNodeType( F ) == UDF_NODE_TYPE_FCB ) ||     \
-            (SafeNodeType( F ) == UDF_NODE_TYPE_INDEX ) ||      \
-            (SafeNodeType( F ) == UDF_NODE_TYPE_DATA ) )
+    NT_ASSERT( (SafeNodeType(F) == UDF_NODE_TYPE_INDEX) ||      \
+               (SafeNodeType(F) == UDF_NODE_TYPE_DATA) )
 
 #define ASSERT_OPTIONAL_FCB(F)                                  \
     NT_ASSERT( ((F) == NULL) ||                                 \
-            (SafeNodeType( F ) == UDF_NODE_TYPE_FCB ) ||        \
             (SafeNodeType( F ) == UDF_NODE_TYPE_INDEX ) ||      \
             (SafeNodeType( F ) == UDF_NODE_TYPE_DATA ) )
 

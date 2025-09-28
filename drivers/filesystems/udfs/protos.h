@@ -72,31 +72,35 @@ extern NTSTATUS NTAPI UDFCreate(
     IN PDEVICE_OBJECT          DeviceObject,       // the logical volume device object
     IN PIRP                    Irp);               // I/O Request Packet
 
-extern NTSTATUS UDFCommonCreate(
+NTSTATUS
+UDFCommonCreate(
     IN PIRP_CONTEXT IrpContext,
-    IN PIRP                    Irp);
+    IN PIRP Irp
+    );
 
 NTSTATUS
 UDFFirstOpenFile(
     IN PIRP_CONTEXT IrpContext,
     IN PIO_STACK_LOCATION IrpSp,
-    IN PVCB                    Vcb,                // volume control block
-    IN PFILE_OBJECT            PtrNewFileObject,   // I/O Mgr. created file object
-   OUT PFCB*                   PtrNewFcb,
-    IN PUDF_FILE_INFO          RelatedFileInfo,
-    IN PUDF_FILE_INFO          NewFileInfo,
-    IN PUNICODE_STRING         LocalPath,
-    IN PUNICODE_STRING         CurName
+    IN PVCB Vcb,
+    IN PFILE_OBJECT PtrNewFileObject,
+   OUT PFCB* PtrNewFcb,
+    IN PUDF_FILE_INFO RelatedFileInfo,
+    IN PUDF_FILE_INFO NewFileInfo,
+    IN PUNICODE_STRING LocalPath,
+    IN PUNICODE_STRING CurName,
+    IN ULONG CreateDisposition
     );
 
 NTSTATUS
-UDFOpenFile(
+UDFCompleteFcbOpen(
     _In_ PIRP_CONTEXT IrpContext,
     _In_ PIO_STACK_LOCATION IrpSp,
     _In_ PVCB Vcb,
     _Inout_ PFCB *CurrentFcb,
     _In_ TYPE_OF_OPEN TypeOfOpen,
-    _In_ ULONG UserCcbFlags
+    _In_ ULONG UserCcbFlags,
+    _In_ ULONG CreateDisposition
     );
 
 NTSTATUS
@@ -703,18 +707,9 @@ UDFCreateCcb(
 
 extern VOID UDFReleaseCCB(PCCB Ccb);
 
-extern
 VOID
 UDFDeleteCcb(
     PCCB Ccb
-    );
-
-PFCB
-UDFCreateFcbOld(
-    _In_ PIRP_CONTEXT IrpContext,
-    _In_ FILE_ID FileId,
-    _In_ NODE_TYPE_CODE NodeTypeCode,
-    _Out_opt_ PBOOLEAN FcbExisted
     );
 
 PFCB

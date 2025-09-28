@@ -186,7 +186,7 @@ DbgCompareMemory(PVOID d, PVOID s, SIZE_T l) {
     } _SEH2_EXCEPT (EXCEPTION_EXECUTE_HANDLER) {
         BrutePoint();
     } _SEH2_END;
-    return -1;
+    return (SIZE_T)-1;
 }
 
 #else //PROTECTED_MEM_RTL

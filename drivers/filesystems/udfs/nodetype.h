@@ -9,7 +9,6 @@ typedef CSHORT NODE_BYTE_SIZE;
 #define UDF_NODE_TYPE_UNDEFINED             ((NODE_TYPE_CODE)0x0000)
 #define UDF_NODE_TYPE_OBJECT_NAME           ((NODE_TYPE_CODE)0xba01)
 #define UDF_NODE_TYPE_CCB                   ((NODE_TYPE_CODE)0xba02)
-#define UDF_NODE_TYPE_FCB                   ((NODE_TYPE_CODE)0xba03)
 #define UDF_NODE_TYPE_INDEX                 ((NODE_TYPE_CODE)0xba10)
 #define UDF_NODE_TYPE_DATA                  ((NODE_TYPE_CODE)0xba11)
 #define UDF_NODE_TYPE_FCB_NONPAGED          ((NODE_TYPE_CODE)0xba12)

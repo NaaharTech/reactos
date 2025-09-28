@@ -161,9 +161,6 @@ UDFPhReadSynchronous(
     KeQuerySystemTime((PLARGE_INTEGER)&IoEnterTime);
 #endif //MEASURE_IO_PERFORMANCE
 
-    UDFPrint(("UDFPhRead: Length: %x Lba: %lx\n",Length>>0xb,Offset>>0xb));
-//    UDFPrint(("UDFPhRead: Length: %x Lba: %lx\n",Length>>0x9,Offset>>0x9));
-
     ROffset.QuadPart = Offset;
     (*ReadBytes) = 0;
 /*

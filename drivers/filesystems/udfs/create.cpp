@@ -494,12 +494,6 @@ UDFCommonCreate(
             try_return(RC = STATUS_MEDIA_WRITE_PROTECTED);
         }
 
-/*        if (DesiredAccess & (FILE_READ_EA | FILE_WRITE_EA)) {
-            ReturnedInformation = 0;
-            AdPrint(("    EAs not supported\n"));
-            try_return(RC = STATUS_ACCESS_DENIED);
-        }*/
-
         // If we are opening this volume Dasd then process this immediately
         // and exit.
 
@@ -636,7 +630,7 @@ UDFCommonCreate(
 
             ASSERT(!(PtrNewFcb->FcbState & UDF_FCB_DELETE_ON_CLOSE));
 
-            RC = UDFOpenFile(IrpContext, IrpSp, Vcb, &PtrNewFcb, UserVolumeOpen, 0);
+            RC = UDFCompleteFcbOpen(IrpContext, IrpSp, Vcb, &PtrNewFcb, UserVolumeOpen, 0, CreateDisposition);
 
             if (!NT_SUCCESS(RC))
                 goto op_vol_accs_dnd;
@@ -889,7 +883,7 @@ op_vol_accs_dnd:
             }
 
             PtrNewFcb = Vcb->RootIndexFcb;
-            RC = UDFOpenFile(IrpContext, IrpSp, Vcb, &PtrNewFcb, UserDirectoryOpen, 0);
+            RC = UDFCompleteFcbOpen(IrpContext, IrpSp, Vcb, &PtrNewFcb, UserDirectoryOpen, 0, CreateDisposition);
             if (!NT_SUCCESS(RC)) try_return(RC);
 //            DbgPrint("UDF: Open/Create RootDir : ReferenceCount %x\n",PtrNewFcb->ReferenceCount);
             UDFReferenceFile__(PtrNewFcb->FileInfo);
@@ -1176,7 +1170,7 @@ Skip_open_attempt:
                                               IrpSp,
                                               Vcb,
                                               NULL, &PtrNewFcb, RelatedFileInfo, NewFileInfo,
-                                              &LocalPath, &CurName);
+                                              &LocalPath, &CurName, CreateDisposition);
 
                         if (!NT_SUCCESS(RC)) {
                             BrutePoint();
@@ -1387,7 +1381,7 @@ Skip_open_attempt:
             PtrNewFcb = NewFileInfo->Fcb;
             UDFInterlockedDecrement((PLONG)&PtrNewFcb->FcbReference);
 
-            RC = UDFOpenFile(IrpContext, IrpSp, Vcb, &PtrNewFcb, UserDirectoryOpen, 0);
+            RC = UDFCompleteFcbOpen(IrpContext, IrpSp, Vcb, &PtrNewFcb, UserDirectoryOpen, 0, CreateDisposition);
 
             ASSERT(PtrNewFcb->FcbReference >= NewFileInfo->RefCount);
             if (!NT_SUCCESS(RC)) {
@@ -1552,7 +1546,7 @@ Undo_Create_1:
                                           IrpSp,
                                    Vcb,
                                    NULL, &PtrNewFcb, RelatedFileInfo, NewFileInfo,
-                                   &LocalPath, &LastGoodTail);
+                                   &LocalPath, &LastGoodTail, CreateDisposition);
                     if (!NT_SUCCESS(RC)) {
                         AdPrint(("    Can't perform FirstOpenFile operation for file to contain stream\n"));
                         BrutePoint();
@@ -1606,7 +1600,7 @@ Undo_Create_1:
                                           IrpSp,
                                    Vcb,
                                    NULL, &PtrNewFcb, RelatedFileInfo, NewFileInfo,
-                                   &LocalPath, &(UdfData.UnicodeStrSDir));
+                                   &LocalPath, &UdfData.UnicodeStrSDir, CreateDisposition);
                 } else {
                     BrutePoint();
                 }
@@ -1665,7 +1659,7 @@ Undo_Create_1:
                                       IrpSp,
                                Vcb,
                                FileObject, &PtrNewFcb, RelatedFileInfo, NewFileInfo,
-                               &LocalPath, &LastGoodTail);
+                               &LocalPath, &LastGoodTail, CreateDisposition);
             } else {
                 BrutePoint();
             }
@@ -1762,7 +1756,7 @@ AlreadyOpened:
             TypeOfOpen = UserFileOpen;
         }
 
-        RC = UDFOpenFile(IrpContext, IrpSp, Vcb, &PtrNewFcb, TypeOfOpen, 0);
+        RC = UDFCompleteFcbOpen(IrpContext, IrpSp, Vcb, &PtrNewFcb, TypeOfOpen, 0, DesiredAccess);
 
         if (!NT_SUCCESS(RC)) try_return(RC);
         PtrNewCcb = UDFDecodeFileObjectCcb(FileObject);
@@ -2188,7 +2182,8 @@ UDFFirstOpenFile(
     IN PUDF_FILE_INFO RelatedFileInfo,
     IN PUDF_FILE_INFO NewFileInfo,
     IN PUNICODE_STRING LocalPath,
-    IN PUNICODE_STRING CurName
+    IN PUNICODE_STRING CurName,
+    IN ULONG CreateDisposition
     )
 {
 //    DIR_INDEX           NewFileIndex;
@@ -2341,7 +2336,7 @@ UDFFirstOpenFile(
                 TypeOfOpen = UserFileOpen;
             }
 
-            RC = UDFOpenFile(IrpContext, IrpSp, Vcb, PtrNewFcb, TypeOfOpen, 0);
+            RC = UDFCompleteFcbOpen(IrpContext, IrpSp, Vcb, PtrNewFcb, TypeOfOpen, 0, CreateDisposition);
         } else {
             RC = STATUS_SUCCESS;
         }
@@ -2371,21 +2366,130 @@ UDFFirstOpenFile(
 *************************************************************************/
 _Requires_lock_held_(_Global_critical_region_)
 NTSTATUS
-UDFOpenFile(
+UDFCompleteFcbOpen(
     _In_ PIRP_CONTEXT IrpContext,
     _In_ PIO_STACK_LOCATION IrpSp,
     _In_ PVCB Vcb,
     _Inout_ PFCB *CurrentFcb,
     _In_ TYPE_OF_OPEN TypeOfOpen,
-    _In_ ULONG UserCcbFlags
+    _In_ ULONG UserCcbFlags,
+    _In_ ULONG CreateDisposition
     )
 {
-    NTSTATUS RC = STATUS_SUCCESS;
+    NTSTATUS Status = STATUS_SUCCESS;
+    BOOLEAN LockVolume = FALSE;
     PFCB Fcb = *CurrentFcb;
     PCCB Ccb = NULL;
+    USHORT FileAttributes = IrpSp->Parameters.Create.FileAttributes;
+    PIO_SECURITY_CONTEXT SecurityContext = IrpSp->Parameters.Create.SecurityContext;
+    ACCESS_MASK AddedAccess = 0;
+    ACCESS_MASK DesiredAccess = SecurityContext->DesiredAccess;
+    BOOLEAN DeleteOnClose = BooleanFlagOn(IrpSp->Parameters.Create.Options, FILE_DELETE_ON_CLOSE);
 
-    AdPrint(("UDFOpenFile\n"));
     ASSERT_FCB(Fcb);
+
+    // Expand maximum allowed to something sensible for share access checking
+
+    if (DesiredAccess == MAXIMUM_ALLOWED) {
+
+        if (FlagOn(Vcb->VcbState, VCB_STATE_VOLUME_READ_ONLY)) {
+
+            DesiredAccess = FILE_ALL_ACCESS & ~((TypeOfOpen != UserVolumeOpen ?
+                                                 (FILE_WRITE_ATTRIBUTES           |
+                                                  FILE_WRITE_DATA                 |
+                                                  FILE_WRITE_EA                   |
+                                                  FILE_ADD_FILE                   |                     
+                                                  FILE_ADD_SUBDIRECTORY           |
+                                                  FILE_APPEND_DATA) : 0)          |
+                                                FILE_DELETE_CHILD                 |
+                                                DELETE                            |
+                                                WRITE_DAC);
+        } else {
+
+            DesiredAccess = FILE_ALL_ACCESS & ~(WRITE_DAC | FILE_WRITE_EA);
+        }
+
+        SecurityContext->DesiredAccess = DesiredAccess;
+    }
+
+    if (CreateDisposition == FILE_SUPERSEDE) {
+
+        SetFlag(AddedAccess, ~(DesiredAccess) & DELETE);
+        SetFlag(DesiredAccess, DELETE);
+        SecurityContext->DesiredAccess = DesiredAccess;
+
+    } else if ((CreateDisposition == FILE_OVERWRITE) ||
+               (CreateDisposition == FILE_OVERWRITE_IF)) {
+
+        SetFlag(AddedAccess, ~DesiredAccess & (FILE_WRITE_DATA | FILE_WRITE_EA | FILE_WRITE_ATTRIBUTES));
+        SetFlag(DesiredAccess, FILE_WRITE_DATA | FILE_WRITE_EA | FILE_WRITE_ATTRIBUTES);
+        SecurityContext->DesiredAccess = DesiredAccess;
+    }
+
+    // If this a volume open and the user wants to lock the volume then
+    // purge and lock the volume.
+
+    if ((TypeOfOpen == UserVolumeOpen) &&
+        !FlagOn( IrpSp->Parameters.Create.ShareAccess, FILE_SHARE_READ)) {
+
+        // If there are open handles then fail this immediately.
+
+        if (Vcb->VcbCleanup != 0) {
+
+            return STATUS_SHARING_VIOLATION;
+        }
+
+        // If we can't wait then force this to be posted.
+
+        if (!FlagOn(IrpContext->Flags, IRP_CONTEXT_FLAG_WAIT)) {
+
+            UDFRaiseStatus(IrpContext, STATUS_CANT_WAIT);
+        }
+
+        LockVolume = TRUE;
+
+        // Flush the volume and make sure all of the user references
+        // are gone.
+
+        Status = UDFFlushVolume(IrpContext, Vcb);
+
+        if (!NT_SUCCESS(Status)) {
+
+            return Status;
+        }
+
+        // Now force all of the delayed close operations to go away.
+
+        UDFFspClose(Vcb);
+
+        if (Vcb->VcbUserReference > Vcb->VcbResidualUserReference) {
+
+            return STATUS_SHARING_VIOLATION;
+        }
+    }
+
+    if (CreateDisposition == FILE_CREATE) {
+
+        if (FileAttributes & FILE_ATTRIBUTE_TEMPORARY) {
+
+            Fcb->FcbState |= FCB_STATE_TEMPORARY;
+            Fcb->FileAttributes |= FILE_ATTRIBUTE_TEMPORARY;
+        }
+    }
+    else {
+
+        if ((Fcb->FileAttributes & FILE_ATTRIBUTE_READONLY) &&
+            (Fcb->Header.NodeTypeCode != UDF_NODE_TYPE_INDEX) &&
+            (DesiredAccess & (FILE_WRITE_DATA | FILE_APPEND_DATA))) {
+
+            //return STATUS_ACCESS_DENIED;
+        }
+
+        if (DeleteOnClose && (Fcb->FileAttributes & FILE_ATTRIBUTE_READONLY)) {
+
+            //return STATUS_CANNOT_DELETE;
+        }
+    }
 
     _SEH2_TRY {
 
@@ -2395,8 +2499,28 @@ UDFOpenFile(
             IrpSp->FileObject->FsContext2 = NULL;
             //
             UDFInterlockedIncrement((PLONG)&Fcb->FcbReference);
-            RC = STATUS_INSUFFICIENT_RESOURCES;
-            try_return(RC);
+            Status = STATUS_INSUFFICIENT_RESOURCES;
+            try_return(Status);
+        }
+
+        if (AddedAccess) {
+
+            ClearFlag(DesiredAccess, AddedAccess);
+            SecurityContext->DesiredAccess = DesiredAccess;
+        }
+
+        // Update the share access.
+
+        if (Fcb->FcbCleanup == 0) {
+
+            IoSetShareAccess(DesiredAccess,
+                             IrpSp->Parameters.Create.ShareAccess,
+                             IrpSp->FileObject,
+                             &Fcb->ShareAccess);
+
+        } else {
+
+            IoUpdateShareAccess(IrpSp->FileObject, &Fcb->ShareAccess);
         }
 
         // initialize the CCB
@@ -2434,12 +2558,19 @@ UDFOpenFile(
         UDFInterlockedIncrement((PLONG)&Fcb->FcbReference);
         UDFReleaseResource(&Fcb->CcbListResource);
 
+        Ccb = NULL;
+
 try_exit:   NOTHING;
     } _SEH2_FINALLY {
-        NOTHING;
+
+        if (Ccb) {
+            // TODO: fix NextCCB list
+            //UDFDeleteCcb(Ccb);
+        }
+
     } _SEH2_END;
 
-    return(RC);
+    return Status;
 } // end UDFOpenFile()
 
 _When_(RelatedTypeOfOpen != UnopenedFileObject, _At_(RelatedCcb, _In_))

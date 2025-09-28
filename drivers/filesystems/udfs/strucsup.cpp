@@ -88,15 +88,6 @@ UDFDeallocateFcbData(
     ExFreeToPagedLookasideList(&UdfData.UDFFcbDataLookasideList, Fcb);
 }
 
-inline
-VOID
-UDFDeallocateFcb(
-    PFCB Fcb
-)
-{
-    UDFFreePool((PVOID*)&Fcb);
-}
-
 PFCB_NONPAGED
 UDFCreateFcbNonpaged(
     _In_ PIRP_CONTEXT IrpContext
@@ -243,11 +234,6 @@ Return Value:
     //
 
     switch (Fcb->Header.NodeTypeCode) {
-
-    case UDF_NODE_TYPE_FCB:
-
-        UDFDeallocateFcb(Fcb);
-        break;
 
     case UDF_NODE_TYPE_INDEX:
 
@@ -409,53 +395,6 @@ Return Value:
 * Return Value: A pointer to the FCB structure OR NULL.
 *
 *************************************************************************/
-PFCB
-UDFCreateFcbOld(
-    _In_ PIRP_CONTEXT IrpContext,
-    _In_ FILE_ID FileId,
-    _In_ NODE_TYPE_CODE NodeTypeCode,
-    _Out_opt_ PBOOLEAN FcbExisted
-)
-{
-    PFCB NewFcb = NULL;
-
-    _SEH2_TRY {
-
-        NewFcb = UDFAllocateFcb();
-
-        if (!NewFcb) {
-            UDFRaiseStatus(IrpContext, STATUS_INSUFFICIENT_RESOURCES);
-        }
-
-        // zero out the allocated memory block
-        RtlZeroMemory(NewFcb, sizeof(FCB));
-
-        // set up some fields ...
-        NewFcb->NodeIdentifier.NodeTypeCode = UDF_NODE_TYPE_FCB;
-        NewFcb->NodeIdentifier.NodeByteSize = sizeof(FCB);
-
-        NewFcb->Vcb = IrpContext->Vcb;
-        NewFcb->FileId = FileId;
-
-        // Now create the non-paged section object.
-
-        NewFcb->FcbNonpaged = UDFCreateFcbNonpaged(IrpContext);
-
-    } _SEH2_FINALLY {
-
-        if (_SEH2_AbnormalTermination()) {
-
-            if (NewFcb && NewFcb->FcbNonpaged) {
-                UDFDeleteFcbNonpaged(IrpContext, NewFcb->FcbNonpaged);
-            }
-
-            UDFFreePool((PVOID*)&NewFcb);
-        }
-
-    } _SEH2_END;
-
-    return NewFcb;
-} // end UDFCreateFcb()
 
 PFCB
 UDFCreateFcb(

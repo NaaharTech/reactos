@@ -75,12 +75,6 @@ UDFCheckAccessRights(
         }
     }
 
-    if (DesiredAccess & ACCESS_SYSTEM_SECURITY) {
-        if (!SeSinglePrivilegeCheck(SeExports->SeSecurityPrivilege, UserMode))
-            return STATUS_ACCESS_DENIED;
-        Ccb->PreviouslyGrantedAccess |= ACCESS_SYSTEM_SECURITY;
-    }
-
     if (FileObject) {
         if (Fcb->FcbCleanup) {
             // The FCB is currently in use by some thread.
@@ -88,15 +82,7 @@ UDFCheckAccessRights(
             // conflicts with the existing open operations.
             RC = IoCheckShareAccess(DesiredAccess, ShareAccess, FileObject,
                                             &Fcb->ShareAccess, TRUE);
-
-            if (Ccb)
-                Ccb->PreviouslyGrantedAccess |= DesiredAccess;
-            IoUpdateShareAccess(FileObject, &Fcb->ShareAccess);
         } else {
-            IoSetShareAccess(DesiredAccess, ShareAccess, FileObject, &Fcb->ShareAccess);
-
-            if (Ccb)
-                Ccb->PreviouslyGrantedAccess = DesiredAccess;
 
             RC = STATUS_SUCCESS;
         }

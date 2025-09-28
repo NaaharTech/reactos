@@ -110,7 +110,7 @@ UDFCleanup(
 NTSTATUS
 UDFCommonCleanup(
     PIRP_CONTEXT IrpContext,
-    PIRP             Irp)
+    PIRP Irp)
 {
     IO_STATUS_BLOCK         IoStatus;
     NTSTATUS                RC = STATUS_SUCCESS;
