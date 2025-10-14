@@ -1057,3 +1057,35 @@ UDFFastIoRelCcFlush(
     return STATUS_SUCCESS;
 
 } // end UDFFastIoRelCcFlush()
+
+BOOLEAN
+NTAPI
+UDFFastIoCopyRead(
+    IN PFILE_OBJECT FileObject,
+    IN PLARGE_INTEGER FileOffset,
+    IN ULONG Length,
+    IN BOOLEAN Wait,
+    IN ULONG LockKey,
+    IN PVOID Buffer,
+    OUT PIO_STATUS_BLOCK IoStatus,
+    IN PDEVICE_OBJECT DeviceObject
+)
+{
+    return FALSE;
+}
+
+BOOLEAN
+NTAPI
+UDFFastIoCopyWrite(
+    IN PFILE_OBJECT FileObject,
+    IN PLARGE_INTEGER FileOffset,
+    IN ULONG Length,
+    IN BOOLEAN Wait,
+    IN ULONG LockKey,
+    IN PVOID Buffer,
+    OUT PIO_STATUS_BLOCK IoStatus,
+    IN PDEVICE_OBJECT DeviceObject
+)
+{
+    return FALSE;
+}

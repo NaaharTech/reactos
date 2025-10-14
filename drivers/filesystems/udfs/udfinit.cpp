@@ -309,8 +309,8 @@ UDFInitializeFunctionPointers(
 
     PtrFastIoDispatch->SizeOfFastIoDispatch = sizeof(FAST_IO_DISPATCH);
     PtrFastIoDispatch->FastIoCheckIfPossible    = UDFFastIoCheckIfPossible;
-    PtrFastIoDispatch->FastIoRead               = NULL;
-    PtrFastIoDispatch->FastIoWrite              = NULL;
+    PtrFastIoDispatch->FastIoRead               = UDFFastIoCopyRead;
+    PtrFastIoDispatch->FastIoWrite              = UDFFastIoCopyWrite;
     PtrFastIoDispatch->FastIoQueryBasicInfo     = UDFFastIoQueryBasicInfo;
     PtrFastIoDispatch->FastIoQueryStandardInfo  = UDFFastIoQueryStdInfo;
     PtrFastIoDispatch->FastIoLock               = UDFFastLock;         // Lock
