@@ -254,7 +254,7 @@ UDFCommonDeviceControl(PIRP_CONTEXT IrpContext, PIRP Irp)
                 UDF_CHECK_PAGING_IO_RESOURCE(Fcb);
                 UDFReleaseResource(&Fcb->FcbNonpaged->FcbResource);
             }
-        }
+        } _SEH2_END;
 
         return Status;
     }

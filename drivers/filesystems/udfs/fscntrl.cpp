@@ -915,7 +915,7 @@ UDFIsVolumeMounted(
         } _SEH2_FINALLY {
 
             UDFReleaseVcb(IrpContext, Vcb);
-        }
+        } _SEH2_END;
     }
 
     UDFCompleteRequest(IrpContext, Irp, STATUS_SUCCESS);
@@ -1048,7 +1048,7 @@ UDFLockVolume(
 
         UDFReleaseVcb(IrpContext, Vcb);
         
-        if (AbnormalTermination() || !NT_SUCCESS(Status)) {
+        if (_SEH2_AbnormalTermination() || !NT_SUCCESS(Status)) {
 
             FsRtlNotifyVolumeEvent(IrpSp->FileObject, FSRTL_VOLUME_LOCK_FAILED);
         }

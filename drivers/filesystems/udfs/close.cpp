@@ -503,9 +503,9 @@ UDFTeardownStructures(
 
         } while (CurrentFcb != NULL);
 
-    } _SEH2_FINALLY{
+    } _SEH2_FINALLY {
 
-    }
+    } _SEH2_END;
 
     if (RemovedStartingFcb) {
         *RemovedStartingFcb = (CurrentFcb != StartingFcb);
