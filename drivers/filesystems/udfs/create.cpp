@@ -1491,7 +1491,6 @@ Creation_Err_1:
                             UDFCleanUpFCB(PtrNewFcb);
                         }
                         MyFreePool__(NewFileInfo);
-                        PtrNewFcb = PtrNewFcb;
                     } else {
                         NewFileInfo->Fcb = PtrNewFcb;
                     }

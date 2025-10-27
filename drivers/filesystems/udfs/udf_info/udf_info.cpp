@@ -1935,6 +1935,9 @@ UDFUnlinkAllFilesInDir(
     }
     // start deletion
     for(i=2; (CurDirNdx = UDFDirIndex(hCurDirNdx,i)); i++) {
+
+        FileInfo = NULL;
+
         // try to open Stream
         status = UDFOpenFile__(IrpContext, Vcb, FALSE, TRUE, NULL, DirInfo, &FileInfo, &i);
         if (status == STATUS_FILE_DELETED) {
@@ -3681,6 +3684,9 @@ err_vat_15:
         to_read = len - Offset;
         hdrOffset = 0;
         MyFreePool__(Buf);
+
+        //TODO: Read VirtualAllocationTable20
+        //TODO: fix Use-After-Free
 
         Vcb->minUDFReadRev  = Buf->minReadRevision;
         Vcb->minUDFWriteRev = Buf->minWriteRevision;

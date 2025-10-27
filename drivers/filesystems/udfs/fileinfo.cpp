@@ -2448,7 +2448,7 @@ insuf_res:
             if (TargetParentFcbAcquired) {
                 UDF_CHECK_PAGING_IO_RESOURCE(TargetDirInfo->Fcb);
                 UDFReleaseResource(&TargetDirInfo->Fcb->FcbNonpaged->FcbResource);
-                ParentFcbAcquired = FALSE;
+                TargetParentFcbAcquired = FALSE;
             }
             if (ParentFcbAcquired) {
                 UDF_CHECK_PAGING_IO_RESOURCE(DirInfo->Fcb);
