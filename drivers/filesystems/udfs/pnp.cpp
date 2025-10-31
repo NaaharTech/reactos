@@ -164,7 +164,7 @@ UDFCommonPnp (
     IrpSp = IoGetCurrentIrpStackLocation(Irp);
 
     // Find our Vcb. This is tricky since we have no file object in the Irp.
-    OurDeviceObject = (PVOLUME_DEVICE_OBJECT) IrpSp->DeviceObject;
+    OurDeviceObject = (PVOLUME_DEVICE_OBJECT)IrpSp->DeviceObject;
 
     // IO holds a handle reference on our VDO and holds the device lock, which 
     // syncs us against mounts/verifies.  However we hold no reference on the 
@@ -176,14 +176,11 @@ UDFCommonPnp (
 
     // Make sure this device object really is big enough to be a volume device
     // object.  If it isn't, we need to get out before we try to reference some
-    // field that takes us past the end of an ordinary device object. VOLUME_DEVICE_OBJECT
+    // field that takes us past the end of an ordinary device object.    
 
-    #pragma prefast(suppress: 28175, "this is a filesystem driver, touching the size member is allowed")
-   // if (OurDeviceObject->DeviceObject.Size != sizeof(VOLUME_DEVICE_OBJECT) ||
-   //     OurDeviceObject->Vcb.NodeIdentifier.NodeTypeCode != UDF_NODE_TYPE_VCB) {
-
-    if (OurDeviceObject->DeviceObject.Size != sizeof(DEVICE_OBJECT) + sizeof(VCB) ||
-        ((PVCB)IrpSp->DeviceObject->DeviceExtension)->NodeIdentifier.NodeTypeCode != UDF_NODE_TYPE_VCB) {
+#pragma prefast(suppress: 28175, "this is a filesystem driver, touching the size member is allowed")
+    if (OurDeviceObject->DeviceObject.Size != sizeof(VOLUME_DEVICE_OBJECT) ||
+        NodeType(&OurDeviceObject->Vcb) != UDF_NODE_TYPE_VCB) {
         
         // We were called with something we don't understand.
 
@@ -193,12 +190,11 @@ UDFCommonPnp (
         return Status;
     }
 
-    Vcb = (PVCB)(IrpSp->DeviceObject->DeviceExtension);
-
     // Force all PnP operations to be synchronous.
     IrpContext->Flags |= IRP_CONTEXT_FLAG_WAIT;
 
-    //Vcb = &OurDeviceObject->Vcb;
+    Vcb = &OurDeviceObject->Vcb;
+    ASSERT_VCB(Vcb);
 
     //  Check that the Vcb hasn't already been deleted.  If so,  just pass the
     //  request through to the driver below,  we don't need to do anything.

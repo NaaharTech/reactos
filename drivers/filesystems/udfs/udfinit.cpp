@@ -360,7 +360,6 @@ UDFCreateFsDeviceObject(
 {
     NTSTATUS RC = STATUS_SUCCESS;
     UNICODE_STRING  DriverDeviceName;
-    PUDFFS_DEV_EXTENSION FSDevExt;
     RtlInitUnicodeString(&DriverDeviceName, FsDeviceName);
     *DeviceObject = NULL;
 
@@ -368,7 +367,7 @@ UDFCreateFsDeviceObject(
 
     if (!NT_SUCCESS(RC = IoCreateDevice(
             DriverObject,                   // our driver object
-            sizeof(UDFFS_DEV_EXTENSION),    // don't need an extension for this object
+            0,
             &DriverDeviceName,              // name - can be used to "open" the driver
                                 // see the book for alternate choices
             DeviceType,
@@ -379,14 +378,6 @@ UDFCreateFsDeviceObject(
                 // failed to create a device object, leave ...
         return(RC);
     }
-    FSDevExt = (PUDFFS_DEV_EXTENSION)((*DeviceObject)->DeviceExtension);
-    // Zero it out (typically this has already been done by the I/O
-    // Manager but it does not hurt to do it again)!
-    RtlZeroMemory(FSDevExt, sizeof(UDFFS_DEV_EXTENSION));
-
-    // Initialize the signature fields
-    FSDevExt->NodeIdentifier.NodeTypeCode = UDF_NODE_TYPE_UDFFS_DEVOBJ;
-    FSDevExt->NodeIdentifier.NodeByteSize = sizeof(UDFFS_DEV_EXTENSION);
 
     return(RC);
 } // end UDFCreateFsDeviceObject()

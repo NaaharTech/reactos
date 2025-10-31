@@ -254,7 +254,7 @@ UDFVerifyVolume(
 {
     PIO_STACK_LOCATION IrpSp = IoGetCurrentIrpStackLocation( Irp );
     PVPB Vpb = IrpSp->Parameters.VerifyVolume.Vpb;
-    PVCB Vcb = (PVCB)IrpSp->Parameters.VerifyVolume.DeviceObject->DeviceExtension;
+    PVCB Vcb = &((PVOLUME_DEVICE_OBJECT)IrpSp->Parameters.VerifyVolume.DeviceObject)->Vcb;
     PVCB NewVcb = NULL;
     IO_STATUS_BLOCK Iosb;
     ULONG MediaChangeCount = 0;
@@ -565,7 +565,11 @@ UDFPerformVerify(
 
     IrpSp = IoGetCurrentIrpStackLocation(Irp);
 
-    Vcb = (PVCB)IrpSp->DeviceObject->DeviceExtension;
+    Vcb = &CONTAINING_RECORD(IrpSp->DeviceObject,
+                             VOLUME_DEVICE_OBJECT,
+                             DeviceObject)->Vcb;
+
+    ASSERT_VCB(Vcb);
 
     UDFPrint(("UDFPerformVerify: check\n"));
     //  Check if the volume still thinks it needs to be verified,

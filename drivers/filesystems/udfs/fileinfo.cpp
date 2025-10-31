@@ -218,9 +218,8 @@ UDFCommonQueryInfo(
             try_return(RC);
         }
 
-        Vcb = (PVCB)(IrpSp->DeviceObject->DeviceExtension);
-        ASSERT(Vcb);
-        ASSERT_FCB(Fcb);
+        Vcb = Fcb->Vcb;
+        ASSERT_VCB(Vcb);
         //Vcb->VcbState |= UDF_VCB_SKIP_EJECT_CHECK;
 
         // The NT I/O Manager always allocates and supplies a system

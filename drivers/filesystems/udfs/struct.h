@@ -369,9 +369,6 @@ struct VCB {
     LIST_ENTRY                          NextNotifyIRP;
     // the above list is protected only by the mutex declared below
     PNOTIFY_SYNC                        NotifyIRPMutex;
-    // for each mounted volume, we create a device object. Here then
-    //  is a back pointer to that device object
-    PDEVICE_OBJECT                      VCBDeviceObject;
     // We also retain a pointer to the physical device object on which we
     // have mounted ourselves. The I/O Manager passes us a pointer to this
     // device object when requesting a mount operation.
@@ -391,23 +388,6 @@ struct VCB {
     // Volume lock file object - used in Lock/Unlock routines
     PFILE_OBJECT                        VolumeLockFileObject;
     DEVICE_TYPE                         FsDeviceType;
-
-    //  The following field tells how many requests for this volume have
-    //  either been enqueued to ExWorker threads or are currently being
-    //  serviced by ExWorker threads.  If the number goes above
-    //  a certain threshold, put the request on the overflow queue to be
-    //  executed later.
-    ULONG PostedRequestCount;
-    //  The following field indicates the number of IRP's waiting
-    //  to be serviced in the overflow queue.
-    ULONG OverflowQueueCount;
-    //  The following field contains the queue header of the overflow queue.
-    //  The Overflow queue is a list of IRP's linked via the IRP's ListEntry
-    //  field.
-    LIST_ENTRY OverflowQueue;
-    //  The following spinlock protects access to all the above fields.
-    KSPIN_LOCK OverflowQueueSpinLock;
-    ULONG StopOverflowQueue;
 
     //---------------
     //
@@ -721,16 +701,6 @@ struct VOLUME_DEVICE_OBJECT {
     VCB Vcb;
 };
 typedef VOLUME_DEVICE_OBJECT* PVOLUME_DEVICE_OBJECT;
-
-typedef struct _FILTER_DEV_EXTENSION {
-    UDFIdentifier   NodeIdentifier;
-    PFILE_OBJECT    fileObject;
-    PDEVICE_OBJECT  lowerFSDeviceObject;
-} FILTER_DEV_EXTENSION, *PFILTER_DEV_EXTENSION;
-
-typedef struct _UDFFS_DEV_EXTENSION {
-    UDFIdentifier   NodeIdentifier;
-} UDFFS_DEV_EXTENSION, *PUDFFS_DEV_EXTENSION;
 
 //  Following structure is used to track the top level request.  Each Udfs
 //  Fsd and Fsp entry point will examine the top level irp location in the

@@ -726,14 +726,13 @@ Return Value:
 *************************************************************************/
 NTSTATUS
 UDFInitializeVCB(
-    IN PIRP_CONTEXT IrpContext,
-    IN PDEVICE_OBJECT VolumeDeviceObject,
-    IN PDEVICE_OBJECT TargetDeviceObject,
-    IN PVPB Vpb
+    _In_ PIRP_CONTEXT IrpContext,
+    _Inout_ PVCB Vcb,
+    _In_ PDEVICE_OBJECT TargetDeviceObject,
+    _In_ PVPB Vpb
     )
 {
     NTSTATUS RC = STATUS_SUCCESS;
-    PVCB     Vcb = NULL;
 
     BOOLEAN VCBResourceInit     = FALSE;
     BOOLEAN BitMapResource1Init = FALSE;
@@ -743,8 +742,6 @@ UDFInitializeVCB(
     BOOLEAN FlushResourceInit   = FALSE;
     BOOLEAN PreallocResourceInit= FALSE;
     BOOLEAN IoResourceInit      = FALSE;
-
-    Vcb = (PVCB)(VolumeDeviceObject->DeviceExtension);
 
     _SEH2_TRY {
     // Zero it out (typically this has already been done by the I/O
@@ -830,11 +827,6 @@ UDFInitializeVCB(
     // RealDevice field in the VPB sent to us.
     Vcb->TargetDeviceObject = TargetDeviceObject;
 
-    // We also have a pointer to the newly created device object representing
-    // this logical volume (remember that this VCB structure is simply an
-    // extension of the created device object).
-    Vcb->VCBDeviceObject = VolumeDeviceObject;
-
     // We also have the VPB pointer. This was obtained from the
     // Parameters.MountVolume.Vpb field in the current I/O stack location
     // for the mount IRP.
@@ -849,13 +841,6 @@ UDFInitializeVCB(
 
     // Initialize the list anchor (head) for some lists in this VCB.
     InitializeListHead(&Vcb->NextNotifyIRP);
-
-    //  Initialize the overflow queue for the volume
-    Vcb->OverflowQueueCount = 0;
-    InitializeListHead(&(Vcb->OverflowQueue));
-
-    Vcb->PostedRequestCount = 0;
-    KeInitializeSpinLock(&(Vcb->OverflowQueueSpinLock));
 
     // Initialize the notify IRP list mutex
     FsRtlNotifyInitializeSync(&(Vcb->NotifyIRPMutex));

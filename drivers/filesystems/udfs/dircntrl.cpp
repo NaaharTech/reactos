@@ -149,10 +149,10 @@ UDFCommonDirControl(
         return STATUS_INVALID_PARAMETER;
     }
 
+    Vcb = Fcb->Vcb;
+
     ASSERT_CCB(Ccb);
     ASSERT_FCB(Fcb);
-
-    Vcb = (PVCB)(IrpContext->RealDevice->DeviceExtension);
     ASSERT_VCB(Vcb);
 
     // Validate the sent-in FCB

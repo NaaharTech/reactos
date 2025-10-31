@@ -339,7 +339,7 @@ UDFMountVolume(
     PDEVICE_OBJECT          DeviceObjectWeTalkTo = IrpSp->Parameters.MountVolume.DeviceObject;
     PVPB                    Vpb = IrpSp->Parameters.MountVolume.Vpb;
     PVCB                    Vcb = NULL;
-    PDEVICE_OBJECT          VolDo = NULL;
+    PVOLUME_DEVICE_OBJECT   VolDo = NULL;
     IO_STATUS_BLOCK         Iosb;
     ULONG                   MediaChangeCount = 0;
     DEVICE_TYPE             FsDeviceType;
@@ -434,42 +434,51 @@ UDFMountVolume(
         // Device extension == VCB
         UDFPrint(("UDFMountVolume: create device\n"));
         RC = IoCreateDevice( UdfData.DriverObject,
-                                 sizeof(VCB),
+                                 sizeof(VOLUME_DEVICE_OBJECT) - sizeof(DEVICE_OBJECT),
                                  NULL,
                                  FsDeviceType,
                                  0,
                                  FALSE,
-                                 &VolDo );
+                                 (PDEVICE_OBJECT*)&VolDo);
 
         if (!NT_SUCCESS(RC)) try_return(RC);
 
         // Our alignment requirement is the larger of the processor alignment requirement
         // already in the volume device object and that in the DeviceObjectWeTalkTo
-        if (DeviceObjectWeTalkTo->AlignmentRequirement > VolDo->AlignmentRequirement) {
-            VolDo->AlignmentRequirement = DeviceObjectWeTalkTo->AlignmentRequirement;
+        if (DeviceObjectWeTalkTo->AlignmentRequirement > VolDo->DeviceObject.AlignmentRequirement) {
+            VolDo->DeviceObject.AlignmentRequirement = DeviceObjectWeTalkTo->AlignmentRequirement;
         }
 
         // We must initialize the stack size in our device object before
         // the following reads, because the I/O system has not done it yet.
 
-        VolDo->StackSize = (CCHAR) (DeviceObjectWeTalkTo->StackSize + 1);
+        VolDo->DeviceObject.StackSize = (CCHAR) (DeviceObjectWeTalkTo->StackSize + 1);
 
-        ClearFlag(VolDo->Flags, DO_DEVICE_INITIALIZING);
+        ClearFlag(VolDo->DeviceObject.Flags, DO_DEVICE_INITIALIZING);
+
+        // Initialize the overflow queue for the volume
+
+        VolDo->OverflowQueueCount = 0;
+        InitializeListHead(&VolDo->OverflowQueue);
+
+        VolDo->PostedRequestCount = 0;
+        KeInitializeSpinLock(&VolDo->OverflowQueueSpinLock);
 
         // device object field in the VPB to point to our new volume device
         // object.
-        Vpb->DeviceObject = (PDEVICE_OBJECT) VolDo;
-
-        Vcb = (PVCB)VolDo->DeviceExtension;
+        Vpb->DeviceObject = (PDEVICE_OBJECT)VolDo;
 
         // Initialize the Vcb.  This routine will raise on an allocation
         // failure.
-        RC = UDFInitializeVCB(IrpContext, VolDo, DeviceObjectWeTalkTo, Vpb);
+        RC = UDFInitializeVCB(IrpContext, &VolDo->Vcb, DeviceObjectWeTalkTo, Vpb);
         if (!NT_SUCCESS(RC)) {
             Vcb = NULL;
             try_return(RC);
         }
 
+        //  Show that we initialized the Vcb and can cleanup with the Vcb.
+
+        Vcb = &VolDo->Vcb;
         VolDo = NULL;
         Vpb = NULL;
 
@@ -648,7 +657,7 @@ try_exit: NOTHING;
                     UDFReleaseResource( &(Vcb->VcbResource) );
                 }
             } else if (VolDo) {
-                IoDeleteDevice( VolDo );
+                IoDeleteDevice((PDEVICE_OBJECT)VolDo);
             }
         }
 

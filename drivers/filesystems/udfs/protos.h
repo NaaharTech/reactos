@@ -647,6 +647,12 @@ extern NTSTATUS UDFGetRetrievalPointers(IN PIRP_CONTEXT IrpContext,
 extern NTSTATUS UDFInvalidateVolumes(IN PIRP_CONTEXT IrpContext,
                                      IN PIRP Irp);
 
+NTSTATUS
+UDFCommonPnp(
+    IN PIRP_CONTEXT IrpContext,
+    IN PIRP Irp
+    );
+
 /*************************************************************************
 * Prototypes for the file LockCtrl.cpp
 *************************************************************************/
@@ -783,10 +789,10 @@ UDFFspDispatch(
 
 NTSTATUS
 UDFInitializeVCB(
-    PIRP_CONTEXT IrpContext,
-    PDEVICE_OBJECT VolumeDeviceObject,
-    PDEVICE_OBJECT TargetDeviceObject,
-    PVPB Vpb
+    _In_ PIRP_CONTEXT IrpContext,
+    _Inout_ PVCB Vcb,
+    _In_ PDEVICE_OBJECT TargetDeviceObject,
+    _In_ PVPB Vpb
     );
 
 VOID

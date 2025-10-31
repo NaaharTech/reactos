@@ -186,7 +186,9 @@ UDFCommonShutdown(
 
             UDFFlushVolume(IrpContext, Vcb);
 
-            ASSERT(!Vcb->OverflowQueueCount);
+            ASSERT(CONTAINING_RECORD(IoGetCurrentIrpStackLocation(Irp)->DeviceObject,
+                                     VOLUME_DEVICE_OBJECT,
+                                     DeviceObject)->OverflowQueueCount == 0);
 
             {
             _SEH2_TRY {
@@ -220,7 +222,9 @@ UDFCommonShutdown(
             } _SEH2_END;
             }
 
-            ASSERT(!Vcb->OverflowQueueCount);
+            ASSERT(CONTAINING_RECORD(IoGetCurrentIrpStackLocation(Irp)->DeviceObject,
+                                     VOLUME_DEVICE_OBJECT,
+                                     DeviceObject)->OverflowQueueCount == 0);
 
             SetFlag(Vcb->VcbState, VCB_STATE_SHUTDOWN);
 
