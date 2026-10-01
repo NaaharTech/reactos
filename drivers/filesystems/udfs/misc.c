@@ -1864,5 +1864,5 @@ UDFWaitForIoAtEof(
     return TRUE;
 }
 
-#include "Include/regtools.cpp"
+#include "Include/regtools.c"
 
