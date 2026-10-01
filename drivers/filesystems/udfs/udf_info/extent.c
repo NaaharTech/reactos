@@ -388,6 +388,14 @@ UDFShortAllocDescToMapping(
 
             uint32 ExtentNextLength = (AllocDescsCount + 1) * sizeof(EXTENT_AD);
             ExtentNext = (PEXTENT_MAP)MyAllocatePoolTag__(NonPagedPool, ExtentNextLength, MEM_EXTMAP_TAG);
+            if(!ExtentNext)
+            {
+                UDFPrint(("Memory alloc failed: `ExtentNext`\n"));
+                MyFreePool__(NextAllocDesc);
+                ASSERT(ExtentNext == Extent || ExtentNext == NULL);
+                MyFreePool__(Extent);
+                return NULL;
+            }
 
             // set terminator
             ExtentNext[AllocDescsCount].extLength = 0;
