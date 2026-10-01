@@ -19,7 +19,7 @@
 #define PAGE_SIZE_ALIGN             (PAGE_SIZE - 1)
 #define AlignToPageSize(size) (((size)+PAGE_SIZE_ALIGN)&(~PAGE_SIZE_ALIGN))
 
-BOOLEAN inline MyAllocInit(VOID) {return TRUE;}
+static inline BOOLEAN MyAllocInit(VOID) {return TRUE;}
 #define MyAllocRelease()
 
 #ifdef TRACK_SYS_ALLOC_CALLERS

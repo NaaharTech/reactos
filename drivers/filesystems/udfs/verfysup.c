@@ -234,6 +234,10 @@ UDFVerifyVcb(
             UDFRaiseStatus(IrpContext, STATUS_FILE_INVALID);
         }
         break;
+
+    case VcbMounted:
+    case VcbMountInProgress:
+        break;
     }
 } // end UDFVerifyVcb()
 

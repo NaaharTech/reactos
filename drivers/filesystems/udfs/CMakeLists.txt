@@ -46,8 +46,7 @@ target_compile_definitions(udfs PRIVATE _CRT_NON_CONFORMING_SWPRINTFS)
 
 if(CMAKE_C_COMPILER_ID STREQUAL "GNU")
     target_compile_options(udfs PRIVATE -Wno-unused-but-set-variable)
-    target_compile_options(udfs PRIVATE -Wno-invalid-offsetof)
-    target_compile_options(udfs PRIVATE -Wno-error)
+    target_compile_options(udfs PRIVATE -Werror)
 endif()
 
 if(CMAKE_C_COMPILER_ID STREQUAL "Clang")

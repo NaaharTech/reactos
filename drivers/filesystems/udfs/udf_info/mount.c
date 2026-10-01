@@ -450,9 +450,9 @@ UDFUpdateLogicalVolInt(
     lvid->lengthOfImpUse =
         sizeof(struct LogicalVolIntegrityDescImpUse);
     UDFSetUpTag(Vcb, PTag,
-        sizeof(struct LogicalVolIntegrityDesc) +
+        (uint16)(sizeof(struct LogicalVolIntegrityDesc) +
         sizeof(uint32)*2*lvid->numOfPartitions +
-        sizeof(struct LogicalVolIntegrityDescImpUse),
+        sizeof(struct LogicalVolIntegrityDescImpUse)),
         PTag->tagLocation, 0);
 
     Vcb->IntegrityType = INTEGRITY_TYPE_OPEN; // make happy auto-dirty
@@ -1967,22 +1967,6 @@ UDFVerifyFreeSpaceBitmap(
     }
     return status;
 } // end UDFVerifyFreeSpaceBitmap()
-
-// Returns upper PSN bound: max(PartitionRoot + PartitionLen) across all partitions
-static
-uint32
-UDFGetBitmapLimit(
-    IN PVCB Vcb
-    )
-{
-    uint32 limit = 0;
-    for (uint32 i = 0; i < Vcb->PartitionMaps; i++) {
-        uint32 end = Vcb->Partitions[i].PartitionRoot + Vcb->Partitions[i].PartitionLen;
-        if (end > limit)
-            limit = end;
-    }
-    return limit;
-}
 
 /*
     This routine builds FreeSpaceBitmap (internal) according to media

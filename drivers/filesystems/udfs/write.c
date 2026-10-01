@@ -973,8 +973,8 @@ UDFZeroData (
 
 --*/
 {
-    LARGE_INTEGER ZeroStart = {0,0};
-    LARGE_INTEGER BeyondZeroEnd = {0,0};
+    LARGE_INTEGER ZeroStart = { {0,0} };
+    LARGE_INTEGER BeyondZeroEnd = { {0,0} };
 
     BOOLEAN Finished;
 

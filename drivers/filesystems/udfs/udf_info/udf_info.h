@@ -840,31 +840,6 @@ NTSTATUS UDFReadFileLocation__(IN PVCB Vcb,
     (UDFReadExtent(Vcb, &((FileInfo)->Dloc->DataLoc), Offset, Length, Direct, Buffer, ReadBytes))
 */
 
-// zero data in file described by FileInfo
-__inline
-NTSTATUS
-UDFZeroFile__(
-    IN PIRP_CONTEXT IrpContext,
-    IN PVCB Vcb,
-    IN PUDF_FILE_INFO FileInfo,
-    IN int64 Offset,   // offset in extent
-    IN SIZE_T Length,
-    IN BOOLEAN Direct,
-    OUT PSIZE_T ReadBytes
-    );
-
-// make sparse area in file described by FileInfo
-__inline
-NTSTATUS UDFSparseFile__(
-    IN PIRP_CONTEXT IrpContext,
-    IN PVCB Vcb,
-    IN PUDF_FILE_INFO FileInfo,
-    IN int64 Offset,   // offset in extent
-    IN SIZE_T Length,
-    IN BOOLEAN Direct,
-    OUT PSIZE_T ReadBytes
-    );
-
 // pad sector tail with zeros
 NTSTATUS
 UDFPadLastSector(

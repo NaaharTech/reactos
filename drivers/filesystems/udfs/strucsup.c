@@ -46,6 +46,7 @@ UDFInsertFcbIntoTable(
     SetFlag(Fcb->FcbState, FCB_STATE_IN_FCB_TABLE);
 }
 
+static
 inline
 PFCB_NONPAGED
 UDFAllocateFcbNonpaged(
@@ -54,6 +55,7 @@ UDFAllocateFcbNonpaged(
     return (PFCB_NONPAGED)ExAllocateFromNPagedLookasideList(&UdfData.UDFNonPagedFcbLookasideList);
 }
 
+static
 inline
 PFCB
 UDFAllocateFcbIndex(
@@ -62,6 +64,7 @@ UDFAllocateFcbIndex(
     return (PFCB)ExAllocateFromPagedLookasideList(&UdfData.UDFFcbIndexLookasideList);
 }
 
+static
 inline
 PFCB
 UDFAllocateFcbData(
@@ -70,6 +73,7 @@ UDFAllocateFcbData(
     return (PFCB)ExAllocateFromPagedLookasideList(&UdfData.UDFFcbDataLookasideList);
 }
 
+static
 inline
 PFCB
 UDFAllocateFcb(
@@ -78,6 +82,7 @@ UDFAllocateFcb(
     return (PFCB)ExAllocatePoolWithTag(NonPagedPool, sizeof(struct FCB), TAG_FCB);
 }
 
+static
 inline
 VOID
 UDFDeallocateFcbNonpaged(
@@ -87,6 +92,7 @@ UDFDeallocateFcbNonpaged(
     ExFreeToNPagedLookasideList(&UdfData.UDFNonPagedFcbLookasideList, FcbNonpaged);
 }
 
+static
 inline
 VOID
 UDFDeallocateFcbIndex(
@@ -96,6 +102,7 @@ UDFDeallocateFcbIndex(
     ExFreeToPagedLookasideList(&UdfData.UDFFcbIndexLookasideList, Fcb);
 }
 
+static
 inline
 VOID
 UDFDeallocateFcbData(
