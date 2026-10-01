@@ -156,6 +156,28 @@ UDFNonCachedIo(
 
     ASSERT(IrpContext->Irp->MdlAddress != NULL);
 
+    // I/O when (volume offset == device offset) must be sector aligned.
+    if (Fcb == Fcb->Vcb->VolumeDasdFcb) 
+    {
+        if (UdfSectorOffset(Fcb->Vcb, StartingOffset) ||
+            UdfSectorOffset(Fcb->Vcb, ByteCount)
+        ) 
+        {
+            return STATUS_INVALID_PARAMETER;
+        }
+        IrpContext->Vcb = Fcb->Vcb;
+
+        UDFSingleAsync(IrpContext, StartingOffset, ByteCount);
+        if (FlagOn(IrpContext->Flags, IRP_CONTEXT_FLAG_WAIT))
+        {
+            UDFWaitSync(IrpContext);
+            return IrpContext->Irp->IoStatus.Status;
+        }
+        
+        ClearFlag(IrpContext->Flags, IRP_CONTEXT_FLAG_ALLOC_IO);
+        return STATUS_PENDING;
+    }
+
     //  For writes with a sub-sector tail (e.g. paging I/O truncated to
     //  FileSize), round up to a full sector.  The MDL covers whole pages
     //  and MM zero-fills beyond FileSize, so the extra bytes are zeros.
