@@ -68,6 +68,7 @@ UDFCommonRead(
     PVCB                    Vcb = NULL;
     BOOLEAN                 VcbAcquired = FALSE;
     BOOLEAN                 FcbAcquired = FALSE;
+    BOOLEAN                 PagingIoResourceAcquired = FALSE;
     PVOID                   SystemBuffer = NULL;
     struct UDF_IO_CONTEXT          LocalIoContext;
 
@@ -213,6 +214,10 @@ UDFCommonRead(
             Wait = TRUE;
             UDFAcquireFcbSharedStarveExclusive(IrpContext, Fcb, FALSE);
             FcbAcquired = TRUE;
+
+            // Prevent potential UAFs when iterating DataLoc.Mapping.
+            UDFAcquireResourceShared(&Fcb->FcbNonpaged->FcbPagingIoResource, TRUE);
+            PagingIoResourceAcquired = TRUE;
 
         } else {
 
@@ -583,6 +588,11 @@ UDFCommonRead(
 try_exit:   NOTHING;
 
     } _SEH2_FINALLY {
+
+        if (PagingIoResourceAcquired) {
+         
+            UDFReleaseResource(&Fcb->FcbNonpaged->FcbPagingIoResource);
+        }
 
         if (FcbAcquired) {
 
