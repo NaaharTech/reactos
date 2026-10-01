@@ -734,9 +734,15 @@ UDFLockUserBuffer(
     if (!IrpContext->Irp->MdlAddress) {
 
         // This will place allocated Mdl to Irp
+        // `IoAllocateMdl` refuses buffers above about 64 MB on x86 and 32 MB on amd64 on ReactOS 
+        // and NT 5.x, but `MmCreateMdl` doesn't have a cap like that. It doesn't attach the MDL 
+        // to the IRP though so gotta do that manually.
         if (!(Mdl = IoAllocateMdl(IrpContext->Irp->UserBuffer, BufferLength, FALSE, FALSE, IrpContext->Irp))) {
 
-            return(RC = STATUS_INSUFFICIENT_RESOURCES);
+            if (!(Mdl = MmCreateMdl(NULL, IrpContext->Irp->UserBuffer, BufferLength))) {
+
+                return(RC = STATUS_INSUFFICIENT_RESOURCES);
+            }
         }
 
         // Probe and lock the pages described by the MDL
@@ -748,6 +754,8 @@ UDFLockUserBuffer(
         _SEH2_TRY {
 
             MmProbeAndLockPages(Mdl, IrpContext->Irp->RequestorMode, LockOperation);
+
+            IrpContext->Irp->MdlAddress = Mdl;
 
         } _SEH2_EXCEPT(EXCEPTION_EXECUTE_HANDLER) {
 
