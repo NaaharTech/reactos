@@ -270,7 +270,7 @@ UDFShortAllocDescToMapping(
 {
     PEXTENT_MAP AllocMap;
     EXTENT_AD AllocExt;
-    PALLOC_EXT_DESC NextAllocDesc;
+    PALLOC_EXT_DESC NextAllocDesc = NULL;
     lb_addr locAddr;
     EXTENT_INFO NextAllocLoc;
     BOOLEAN w2k_compat = FALSE;
@@ -327,14 +327,14 @@ UDFShortAllocDescToMapping(
 
             // read next frag of allocation descriptors if encountered
             if (len < sizeof(ALLOC_EXT_DESC)) {
-                MyFreePool__(ExtentNext);
+                ASSERT(ExtentNext == Extent || ExtentNext == NULL);
                 MyFreePool__(Extent);
                 return NULL;
             }
 
             NextAllocDesc = (PALLOC_EXT_DESC)MyAllocatePoolTag__(NonPagedPool, len, MEM_ALLOCDESC_TAG);
             if (!NextAllocDesc) {
-                MyFreePool__(ExtentNext);
+                ASSERT(ExtentNext == Extent || ExtentNext == NULL);
                 MyFreePool__(Extent);
                 return NULL;
             }
@@ -342,7 +342,7 @@ UDFShortAllocDescToMapping(
             if (AllocExt.extLocation == LBA_OUT_OF_EXTENT) {
                 UDFPrint(("bad address\n"));
                 MyFreePool__(NextAllocDesc);
-                MyFreePool__(ExtentNext);
+                ASSERT(ExtentNext == Extent || ExtentNext == NULL);
                 MyFreePool__(Extent);
                 return NULL;
             }
@@ -351,7 +351,7 @@ UDFShortAllocDescToMapping(
             NextAllocLoc.Length = len;
             if (!AllocMap) {
                 MyFreePool__(NextAllocDesc);
-                MyFreePool__(ExtentNext);
+                ASSERT(ExtentNext == Extent || ExtentNext == NULL);
                 MyFreePool__(Extent);
                 return NULL;
             }
@@ -363,7 +363,7 @@ UDFShortAllocDescToMapping(
             {
                 MyFreePool__(AllocMap);
                 MyFreePool__(NextAllocDesc);
-                MyFreePool__(ExtentNext);
+                ASSERT(ExtentNext == Extent || ExtentNext == NULL);
                 MyFreePool__(Extent);
                 return NULL;
             }
@@ -376,7 +376,7 @@ UDFShortAllocDescToMapping(
                 UDFPrint(("NextAllocDesc->lengthAllocDescs = %x\n", NextAllocDesc->lengthAllocDescs));
                 UDFPrint(("len = %x\n", len));
                 MyFreePool__(NextAllocDesc);
-                MyFreePool__(ExtentNext);
+                ASSERT(ExtentNext == Extent || ExtentNext == NULL);
                 MyFreePool__(Extent);
                 return NULL;
             }
@@ -408,8 +408,10 @@ UDFShortAllocDescToMapping(
                 ExtentNext[AllocDescsIndex].extLocation = UDFPartLbaToPhys(Vcb, &locAddr);
                 if (ExtentNext[AllocDescsIndex].extLocation == LBA_OUT_OF_EXTENT) {
                     UDFPrint(("bad address (2)\n"));
-                    MyFreePool__(NextAllocDesc);
-                    MyFreePool__(ExtentNext);
+                    if(ExtentNext != Extent) {
+                        MyFreePool__(ExtentNext);
+                        MyFreePool__(NextAllocDesc);
+                    }
                     MyFreePool__(Extent);
                     return NULL;
                 }
