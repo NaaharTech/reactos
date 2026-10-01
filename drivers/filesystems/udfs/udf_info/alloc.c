@@ -705,7 +705,7 @@ UDFCheckSpaceAllocation_(
     BS = Vcb->BlockSize;
     BSh = Vcb->BlockSizeBits;
 
-    UDFAcquireResourceShared(&(Vcb->BitMapResource1),TRUE);
+    UDFAcquireResourceExclusive(&(Vcb->BitMapResource1),TRUE);
     // walk through all frags in data area specified
 #ifdef UDF_TRACK_ONDISK_ALLOCATION
     AdPrint(("ChkAlloc:Map:%x:File:%x:Line:%d\n",
@@ -1149,6 +1149,7 @@ UDFGetPartFreeSpace(
     uint32 s=0;
 
     if (Vcb->BitmapFcb) {
+        UDFAcquireResourceExclusive(&(Vcb->BitMapResource1),TRUE);
         // Per-page: iterate pinned pages, count free (set) bits via RTL_BITMAP
         ULONG pos = 0;
         while (pos < Vcb->FSBM_BitCount) {
@@ -1166,6 +1167,7 @@ UDFGetPartFreeSpace(
             pos = startLbn + bits;
         }
         UDFUnpinBitmapPage(Vcb);
+        UDFReleaseResource(&(Vcb->BitMapResource1));
     } else {
         PUCHAR cur = (PUCHAR)(Vcb->FSBM_Bitmap);
         ULONG lim = (Vcb->FSBM_BitCount+7)/8;
@@ -1187,14 +1189,8 @@ UDFGetFreeSpace(
 //    uint32* cur = (uint32*)(Vcb->FSBM_Bitmap);
 
     if (!Vcb->CDR_Mode) {
-        if (Vcb->BitmapFcb) {
-            UDFAcquireResourceShared(&(Vcb->BitMapResource1),TRUE);
-        }
         for(i=0;i<Vcb->PartitionMaps;i++) {
             s += UDFGetPartFreeSpace(Vcb, i);
-        }
-        if (Vcb->BitmapFcb) {
-            UDFReleaseResource(&(Vcb->BitMapResource1));
         }
     } else {
         ASSERT(Vcb->FSBM_BitCount >= max(Vcb->NWA, Vcb->SessionEndLba));
