@@ -303,7 +303,7 @@ UDFUpdatePartDesc(
     int8* Buf
     )
 {
-    PartitionDesc *p = (PartitionDesc *)Buf;
+    struct PartitionDesc *p = (struct PartitionDesc *)Buf;
     uint32 i; // PartNdx
     tag* PTag;
     SIZE_T WrittenBytes;
@@ -379,9 +379,9 @@ UDFUpdateLogicalVolInt(
 //    uint32      lvid_count = 0;
     uint32      pSize;
     tag*        PTag;
-    LogicalVolIntegrityDesc *lvid;
-    LogicalVolIntegrityDescImpUse* LVID_iUse;
-    LogicalVolHeaderDesc* LVID_hd;
+    struct LogicalVolIntegrityDesc *lvid;
+    struct LogicalVolIntegrityDescImpUse* LVID_iUse;
+    struct LogicalVolHeaderDesc* LVID_hd;
     uint32*     partFreeSpace;
     BOOLEAN     equal = FALSE;
 
@@ -437,7 +437,7 @@ UDFUpdateLogicalVolInt(
     }
 
     // Update LVID Header Descriptor
-    LVID_hd = (LogicalVolHeaderDesc*)&(lvid->logicalVolContentsUse);
+    LVID_hd = (struct LogicalVolHeaderDesc*)&(lvid->logicalVolContentsUse);
     equal = equal && (LVID_hd->uniqueID == Vcb->NextUniqueId);
     LVID_hd->uniqueID = Vcb->NextUniqueId;
 
@@ -448,11 +448,11 @@ UDFUpdateLogicalVolInt(
 
     PTag = &(lvid->descTag);
     lvid->lengthOfImpUse =
-        sizeof(LogicalVolIntegrityDescImpUse);
+        sizeof(struct LogicalVolIntegrityDescImpUse);
     UDFSetUpTag(Vcb, PTag,
-        sizeof(LogicalVolIntegrityDesc) +
+        sizeof(struct LogicalVolIntegrityDesc) +
         sizeof(uint32)*2*lvid->numOfPartitions +
-        sizeof(LogicalVolIntegrityDescImpUse),
+        sizeof(struct LogicalVolIntegrityDescImpUse),
         PTag->tagLocation, 0);
 
     Vcb->IntegrityType = INTEGRITY_TYPE_OPEN; // make happy auto-dirty
@@ -632,7 +632,7 @@ UDFUpdateLogicalVol(
     IN PUNICODE_STRING VolIdent
     )
 {
-    LogicalVolDesc* lvd = NULL;
+    struct LogicalVolDesc* lvd = NULL;
 #define CUR_IDENT_SZ (sizeof(lvd->logicalVolIdent))
     dstring CS0[CUR_IDENT_SZ];
     uint16 ident;
@@ -642,7 +642,7 @@ UDFUpdateLogicalVol(
 
     status = UDFUpdateSparingTable(IrpContext, Vcb);
 
-    lvd = (LogicalVolDesc*)MyAllocatePool__(NonPagedPool, max(Vcb->SectorSize, sizeof(LogicalVolDesc)) );
+    lvd = (struct LogicalVolDesc*)MyAllocatePool__(NonPagedPool, max(Vcb->SectorSize, sizeof(struct LogicalVolDesc)) );
 
     if (!lvd) {
         status = STATUS_INSUFFICIENT_RESOURCES;
@@ -838,7 +838,7 @@ UDFUpdateVolIdent(
     )
 {
 #define CUR_IDENT_SZ (sizeof(pvoldesc->volIdent))
-    PrimaryVolDesc* pvoldesc = (PrimaryVolDesc*)MyAllocatePool__(NonPagedPool, max(Vcb->SectorSize, sizeof(PrimaryVolDesc)) );
+    struct PrimaryVolDesc* pvoldesc = (struct PrimaryVolDesc*)MyAllocatePool__(NonPagedPool, max(Vcb->SectorSize, sizeof(struct PrimaryVolDesc)) );
     NTSTATUS status;
     dstring CS0[CUR_IDENT_SZ];
     uint16 ident;
@@ -1058,7 +1058,7 @@ UDFFindAnchorVolumeDescriptor(
     uint32 LastBlock;
     NTSTATUS status;
 
-    int8* Buf = (int8*)MyAllocatePool__(NonPagedPool, ROUND_TO_PAGES(SectorAlign(Vcb, sizeof(AnchorVolDescPtr))));
+    int8* Buf = (int8*)MyAllocatePool__(NonPagedPool, ROUND_TO_PAGES(SectorAlign(Vcb, sizeof(struct AnchorVolDescPtr))));
 
     if (!Buf)
         return 0;
@@ -1122,7 +1122,7 @@ UDFFindVRS(
     IN PVCB Vcb
     )
 {
-    VolStructDesc  *vsd = NULL;
+    struct VolStructDesc  *vsd = NULL;
     uint32       offset;
     uint32       retStat = 0;
     uint32       BeginOffset = Vcb->SessionStartLba;
@@ -1142,7 +1142,7 @@ UDFFindVRS(
         if (!NT_SUCCESS(RC)) continue;
 
         // Look for ISO descriptors
-        vsd = (VolStructDesc *)(buffer);
+        vsd = (struct VolStructDesc *)(buffer);
 
         if (vsd->stdIdent[0]) {
             if (!strncmp((int8*)(&vsd->stdIdent), STD_ID_CD001, STD_ID_LEN))
@@ -1208,10 +1208,10 @@ UDFLoadPVolDesc(
     int8* Buf // pointer to buffer containing PVD
     )
 {
-    PrimaryVolDesc *pvoldesc;
+    struct PrimaryVolDesc *pvoldesc;
 //    NTSTATUS    RC = STATUS_SUCCESS;
 
-    pvoldesc = (PrimaryVolDesc *)Buf;
+    pvoldesc = (struct PrimaryVolDesc *)Buf;
     UDFPrint(("UDF: PrimaryVolDesc:\n"));
     UDFPrint(("volDescSeqNum     = %d\n", pvoldesc->volDescSeqNum));
     UDFPrint(("primaryVolDescNum = %d\n", pvoldesc->primaryVolDescNum));
@@ -1261,8 +1261,8 @@ UDFLoadLogicalVolInt(
     int8*       Buf = NULL;
     int8*       TempBuf = NULL;
     uint16      ident;
-    LogicalVolIntegrityDescImpUse* LVID_iUse;
-    LogicalVolHeaderDesc* LVID_hd;
+    struct LogicalVolIntegrityDescImpUse* LVID_iUse;
+    struct LogicalVolHeaderDesc* LVID_hd;
     uint32      MaxIterations = UDF_MAX_LVID_CHAIN_LENGTH;
 
     ASSERT(!Vcb->LVid);
@@ -1324,7 +1324,7 @@ UDFLoadLogicalVolInt(
 
             // Valid LVID found - check integrity type
 
-            LogicalVolIntegrityDesc* lvid = (LogicalVolIntegrityDesc*)Buf;
+            struct LogicalVolIntegrityDesc* lvid = (struct LogicalVolIntegrityDesc*)Buf;
 
             if (lvid->integrityType != INTEGRITY_TYPE_OPEN &&
                 lvid->integrityType != INTEGRITY_TYPE_CLOSE) {
@@ -1366,7 +1366,7 @@ UDFLoadLogicalVolInt(
             // Swap buffers - save current descriptor as result
 
             TempBuf = (int8*)Vcb->LVid;
-            Vcb->LVid = (LogicalVolIntegrityDesc*)Buf;
+            Vcb->LVid = (struct LogicalVolIntegrityDesc*)Buf;
             Buf = TempBuf;
             TempBuf = NULL;
 
@@ -1430,7 +1430,7 @@ UDFLoadLogicalVolInt(
             Vcb->VcbState |= VCB_STATE_VOLUME_READ_ONLY;
         }
 
-        LVID_hd = (LogicalVolHeaderDesc*)&(Vcb->LVid->logicalVolContentsUse);
+        LVID_hd = (struct LogicalVolHeaderDesc*)&(Vcb->LVid->logicalVolContentsUse);
         Vcb->NextUniqueId = LVID_hd->uniqueID;
         UDFPrint(("     Next FID: %x\n",Vcb->NextUniqueId));
 
@@ -1473,7 +1473,7 @@ UDFLoadLogicalVol(
     lb_addr         *fileset
     )
 {
-    LogicalVolDesc *lvd = (LogicalVolDesc *)Buf;
+    struct LogicalVolDesc *lvd = (struct LogicalVolDesc *)Buf;
     uint16 i, offset;
     uint8 type;
     NTSTATUS status = STATUS_SUCCESS;
@@ -1507,14 +1507,14 @@ UDFLoadLogicalVol(
     // walk through all available part maps
     for (i=0,offset=0;
          i<Vcb->PartitionMaps && offset<lvd->mapTableLength;
-         i++,offset+=((GenericPartitionMap *)( ((uint8*)(lvd+1))+offset) )->partitionMapLength)
+         i++,offset+=((struct GenericPartitionMap *)( ((uint8*)(lvd+1))+offset) )->partitionMapLength)
     {
-        GenericPartitionMap* gpm = (GenericPartitionMap *)(((uint8*)(lvd+1))+offset);
+        struct GenericPartitionMap* gpm = (struct GenericPartitionMap *)(((uint8*)(lvd+1))+offset);
         type = gpm->partitionMapType;
         UDFPrint(("Partition (%d) type %x, len %x\n", i, type, gpm->partitionMapLength));
         if (type == PARTITION_MAP_TYPE_1)
         {
-            GenericPartitionMap1 *gpm1 = (GenericPartitionMap1 *)(((uint8*)(lvd+1))+offset);
+            struct GenericPartitionMap1 *gpm1 = (struct GenericPartitionMap1 *)(((uint8*)(lvd+1))+offset);
 
             Vcb->Partitions[i].PartitionType = UDF_TYPE1_MAP15;
             Vcb->Partitions[i].VolumeSeqNum = gpm1->volSeqNum;
@@ -1523,7 +1523,7 @@ UDFLoadLogicalVol(
         }
         else if (type == PARTITION_MAP_TYPE_2)
         {
-            UdfPartitionMap2* upm2 = (UdfPartitionMap2 *)(((uint8*)(lvd+1))+offset);
+            struct UdfPartitionMap2* upm2 = (struct UdfPartitionMap2 *)(((uint8*)(lvd+1))+offset);
             if (!strncmp((int8*)&(upm2->partIdent.ident), UDF_ID_VIRTUAL, strlen(UDF_ID_VIRTUAL)))
             {
                 UDFIdentSuffix* udfis =
@@ -2120,7 +2120,7 @@ UDFLoadPartDesc(
     int8*     Buf
     )
 {
-    PartitionDesc *p = (PartitionDesc *)Buf;
+    struct PartitionDesc *p = (struct PartitionDesc *)Buf;
     uint32 i;
     NTSTATUS RC;
     BOOLEAN Found = FALSE;
@@ -2306,7 +2306,7 @@ UDFVerifyPartDesc(
     int8*     Buf
     )
 {
-    PartitionDesc *p = (PartitionDesc *)Buf;
+    struct PartitionDesc *p = (struct PartitionDesc *)Buf;
     uint32 i;
     NTSTATUS RC;
     BOOLEAN Found = FALSE;
@@ -2422,7 +2422,7 @@ UDFReadVDS(
     )
 {
     NTSTATUS status;
-    GenericDesc* gd;
+    struct GenericDesc* gd;
     BOOLEAN done=FALSE;
     uint32 vdsn;
     uint16 ident;
@@ -2508,12 +2508,12 @@ UDFLoadImpUseVolDesc(
     )
 {
 #ifdef UDF_DBG
-    ImpUseVolDesc* iuvd = (ImpUseVolDesc*)Buf;
-    ImpUseVolDescImpUse* iuvdiu = (ImpUseVolDescImpUse*)&(iuvd->impUse);
+    struct ImpUseVolDesc* iuvd = (struct ImpUseVolDesc*)Buf;
+    struct ImpUseVolDescImpUse* iuvdiu = (struct ImpUseVolDescImpUse*)&(iuvd->impUse);
     UDFPrint(("UDF: Imp Use Vol Desc:\n"));
     UDFPrint((" volDescSeqNum = %x\n", iuvd->volDescSeqNum));
     UDFPrint(("UDF: Imp Use Vol Desc Imp Use:\n"));
-    KdDump(iuvdiu, sizeof(ImpUseVolDescImpUse));
+    KdDump(iuvdiu, sizeof(struct ImpUseVolDescImpUse));
 #endif
     return STATUS_SUCCESS;
 } // UDFLoadImpUseVolDesc()
@@ -2744,7 +2744,7 @@ UDFLoadPartition(
     )
 {
     NTSTATUS            RC = STATUS_UNRECOGNIZED_VOLUME;
-    AnchorVolDescPtr    *anchor;
+    struct AnchorVolDescPtr    *anchor;
     uint16              ident;
     int8*               Buf = (int8*)MyAllocatePool__(NonPagedPool,Vcb->SectorSize);
     uint32              main_s, main_e;
@@ -2771,7 +2771,7 @@ UDFLoadPartition(
     }
 
     UDFPrint(("Using anchor in block %x\n", Vcb->Anchor[i]));
-    anchor = (AnchorVolDescPtr *)Buf;
+    anchor = (struct AnchorVolDescPtr *)Buf;
 
     // Locate the main sequence
     main_s = ( anchor->mainVolDescSeqExt.extLocation );
@@ -2850,7 +2850,7 @@ UDFFindLastFileSet(
     uint16 Ident;
     uint32 relPrevExt, prevExt;
 
-    relPrevExt, prevExt = NULL;
+    relPrevExt, prevExt = 0;
     FileSetDesc->nextExt.extLength = 1;  // ;)
     // walk through FileSet chain
     // we've just pre-init'd extent length to read 1st FileSet

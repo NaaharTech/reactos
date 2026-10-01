@@ -2,13 +2,13 @@
 include_directories(Include)
 
 list(APPEND SOURCE
-    udf_info/alloc.cpp
-    udf_info/dirtree.cpp
-    udf_info/extent.cpp
-    udf_info/mount.cpp
-    udf_info/physical.cpp
-    udf_info/remap.cpp
-    udf_info/udf_info.cpp
+    udf_info/alloc.c
+    udf_info/dirtree.c
+    udf_info/extent.c
+    udf_info/mount.c
+    udf_info/physical.c
+    udf_info/remap.c
+    udf_info/udf_info.c
     cleanup.c
     close.c
     create.c

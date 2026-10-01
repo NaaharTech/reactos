@@ -159,7 +159,7 @@ UDFShortAllocDescToMapping(
     IN PIRP_CONTEXT IrpContext,
     IN PVCB Vcb,
     IN uint32 PartNum,
-    IN PLONG_AD AllocDesc,
+    IN PSHORT_AD AllocDesc,
     IN uint32 AllocDescLength,
     IN uint32 SubCallCount,
     OUT PEXTENT_INFO AllocLoc
@@ -181,7 +181,7 @@ PEXTENT_MAP
 UDFExtAllocDescToMapping(
     IN PIRP_CONTEXT IrpContext,
     IN PVCB Vcb,
-    IN PLONG_AD AllocDesc,
+    IN PEXT_AD AllocDesc,
     IN uint32 AllocDescLength,
     IN uint32 SubCallCount,
     OUT PEXTENT_INFO AllocLoc
@@ -848,9 +848,9 @@ UDFZeroFile__(
     IN PVCB Vcb,
     IN PUDF_FILE_INFO FileInfo,
     IN int64 Offset,   // offset in extent
-    IN uint32 Length,
+    IN SIZE_T Length,
     IN BOOLEAN Direct,
-    OUT uint32* ReadBytes
+    OUT PSIZE_T ReadBytes
     );
 
 // make sparse area in file described by FileInfo
@@ -860,9 +860,9 @@ NTSTATUS UDFSparseFile__(
     IN PVCB Vcb,
     IN PUDF_FILE_INFO FileInfo,
     IN int64 Offset,   // offset in extent
-    IN uint32 Length,
+    IN SIZE_T Length,
     IN BOOLEAN Direct,
-    OUT uint32* ReadBytes
+    OUT PSIZE_T ReadBytes
     );
 
 // pad sector tail with zeros
@@ -1112,7 +1112,7 @@ void     UDFLoadPVolDesc(PVCB Vcb,
 //
 #define UDFGetLVIDiUse(Vcb) \
     ( ((Vcb) && (Vcb)->LVid) ? \
-        ( (LogicalVolIntegrityDescImpUse*) \
+        ( (struct LogicalVolIntegrityDescImpUse*) \
                      ( ((int8*)(Vcb->LVid+1)) + \
                        Vcb->LVid->numOfPartitions*2*sizeof(uint32))) \
        : NULL)

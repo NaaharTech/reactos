@@ -673,7 +673,7 @@ UDFGetBlockSize(
 
         UDFPrint(("UDFGetBlockSize: HDD\n"));
         RC = UDFPerformDevIoCtrl(IOCTL_DISK_GET_DRIVE_GEOMETRY_EX,DeviceObject,
-            0,NULL,
+            NULL,0,
             &DiskGeometryEx,sizeof(DISK_GEOMETRY_EX),
             TRUE,NULL );
 

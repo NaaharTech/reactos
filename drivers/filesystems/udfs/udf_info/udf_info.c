@@ -1359,7 +1359,7 @@ UDFSetFileUID(
         fe->uniqueID = UID;
     }
     if (FileInfo->FileIdent)
-        ((FidADImpUse*)&(FileInfo->FileIdent->icb.impUse))->uniqueID = (uint32)UID;
+        ((struct FidADImpUse*)&(FileInfo->FileIdent->icb.impUse))->uniqueID = (uint32)UID;
     return;
 } // end UDFSetFileUID()
 
@@ -1917,7 +1917,7 @@ UDFDeleteAllStreams(
         UDFLockVcb(IrpContext, Vcb);
         while (!IsListEmpty(&SDirFcb->ParentLcbQueue)) {
 
-            PLCB Lcb = CONTAINING_RECORD(SDirFcb->ParentLcbQueue.Flink, LCB, ChildFcbLinks);
+            PLCB Lcb = CONTAINING_RECORD(SDirFcb->ParentLcbQueue.Flink, struct LCB, ChildFcbLinks);
             PFCB ParentFcb = Lcb->ParentFcb;
 
             // A create may be holding this prefix; leave it to the normal path.
@@ -3921,12 +3921,12 @@ retry_load_vat:
     if (Vcb->Partitions[PartNdx].PartitionType == UDF_VIRTUAL_MAP15) {
         // load Vat 1.50 header
         UDFPrint(("Load VAT 1.50\n"));
-        VirtualAllocationTable15* Buf;
+        struct VirtualAllocationTable15* Buf;
         if (((icbtag*)(VatFileInfo->Dloc->FileEntry+1))->fileType != UDF_FILE_TYPE_VAT15) {
             status = STATUS_FILE_CORRUPT_ERROR;
             goto err_vat_15;
         }
-        Buf = (VirtualAllocationTable15*)MyAllocatePool__(NonPagedPool, sizeof(VirtualAllocationTable15));
+        Buf = (struct VirtualAllocationTable15*)MyAllocatePool__(NonPagedPool, sizeof(struct VirtualAllocationTable15));
         if (!Buf) {
 err_vat_15_2:
             status = STATUS_INSUFFICIENT_RESOURCES;
@@ -3939,7 +3939,7 @@ err_vat_15:
         }
         Offset = 0;
         to_read =
-        hdrOffset = len - sizeof(VirtualAllocationTable15);
+        hdrOffset = len - sizeof(struct VirtualAllocationTable15);
         MyFreePool__(Buf);
 
         Vcb->minUDFReadRev  =
@@ -3953,12 +3953,12 @@ err_vat_15:
     if (Vcb->Partitions[PartNdx].PartitionType == UDF_VIRTUAL_MAP20) {
         // load Vat 2.00 header
         UDFPrint(("Load VAT 2.00\n"));
-        VirtualAllocationTable20* Buf;
+        struct VirtualAllocationTable20* Buf;
         if (((icbtag*)(VatFileInfo->Dloc->FileEntry+1))->fileType != UDF_FILE_TYPE_VAT20) {
             status = STATUS_FILE_CORRUPT_ERROR;
             goto err_vat_15;
         }
-        Buf = (VirtualAllocationTable20*)MyAllocatePool__(NonPagedPool, sizeof(VirtualAllocationTable20));
+        Buf = (struct VirtualAllocationTable20*)MyAllocatePool__(NonPagedPool, sizeof(struct VirtualAllocationTable20));
         if (!Buf) goto err_vat_15_2;
         Offset = Buf->lengthHeader;
         to_read = len - Offset;
@@ -4714,7 +4714,7 @@ UDFReadTagged(
 
     // Read the block
     if (Block == 0xFFFFFFFF)
-        return NULL;
+        return 0;
 
     _SEH2_TRY {
         RC = UDFReadSectors(IrpContext, Vcb, FALSE, Block, 1, FALSE, Buf);
@@ -4907,7 +4907,7 @@ cleanup_and_abort_hlink:
 //    UDFUpdateModifyTime(Vcb, FileInfo);
     FileInfo->Dloc->LinkRefCount += FileInfo2->Dloc->LinkRefCount;
     if (FileInfo2->FileIdent)
-        ((FidADImpUse*)&(FileInfo2->FileIdent->icb.impUse))->uniqueID = (uint32)UDFAssingNewFUID(Vcb);
+        ((struct FidADImpUse*)&(FileInfo2->FileIdent->icb.impUse))->uniqueID = (uint32)UDFAssingNewFUID(Vcb);
 
     // PHASE 3
     // drop all unnecessary info from FileInfo2
@@ -5222,8 +5222,8 @@ UDFRecordVAT(
     if (Vcb->Partitions[PartNdx].PartitionType == UDF_VIRTUAL_MAP15) {
         Offset = 0;
         to_read =
-        hdrOffset = len - sizeof(VirtualAllocationTable15);
-        hdrLen = sizeof(VirtualAllocationTable15);
+        hdrOffset = len - sizeof(struct VirtualAllocationTable15);
+        hdrLen = sizeof(struct VirtualAllocationTable15);
         hdrOffsetNew = VatLen;
         New = (int8*)DbgAllocatePool(PagedPool, VatLen + hdrLen);
         if (!New) {
@@ -5231,9 +5231,9 @@ UDFRecordVAT(
             return STATUS_INSUFFICIENT_RESOURCES;
         }
         RtlCopyMemory(New+hdrOffsetNew, Old+hdrOffset, hdrLen);
-        ((VirtualAllocationTable15*)(New + hdrOffset))->previousVATICB =
+        ((struct VirtualAllocationTable15*)(New + hdrOffset))->previousVATICB =
             VatFileInfo->Dloc->FELoc.Mapping[0].extLocation - root;
-        eID = &(((VirtualAllocationTable15*)(New + hdrOffset))->ident);
+        eID = &(((struct VirtualAllocationTable15*)(New + hdrOffset))->ident);
 
         UDFSetEntityID_imp(eID, UDF_ID_ALLOC);
 
@@ -5242,12 +5242,12 @@ UDFRecordVAT(
         iis->OSClass = UDF_OS_CLASS_WINNT;
         iis->OSIdent = UDF_OS_ID_WINNT;*/
     } else {
-        VirtualAllocationTable20* Buf;
+        struct VirtualAllocationTable20* Buf;
 
-        Offset = ((VirtualAllocationTable20*)Old)->lengthHeader;
+        Offset = ((struct VirtualAllocationTable20*)Old)->lengthHeader;
         to_read = len - Offset;
         hdrOffset = 0;
-        hdrLen = sizeof(VirtualAllocationTable20);
+        hdrLen = sizeof(struct VirtualAllocationTable20);
         hdrOffsetNew = 0;
         New = (int8*)DbgAllocatePool(PagedPool, VatLen + hdrLen);
         if (!New) {
@@ -5255,10 +5255,10 @@ UDFRecordVAT(
             return STATUS_INSUFFICIENT_RESOURCES;
         }
         RtlCopyMemory(New+hdrOffsetNew, Old+hdrOffset, hdrLen);
-        ((VirtualAllocationTable20*)New)->previousVatICBLoc =
+        ((struct VirtualAllocationTable20*)New)->previousVatICBLoc =
             VatFileInfo->Dloc->FELoc.Mapping[0].extLocation - root;
 
-        Buf = (VirtualAllocationTable20*)New;
+        Buf = (struct VirtualAllocationTable20*)New;
 
         Buf->minReadRevision  = Vcb->minUDFReadRev;
         Buf->minWriteRevision = Vcb->minUDFWriteRev;
