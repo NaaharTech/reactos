@@ -542,10 +542,9 @@ typedef struct LCB* PLCB;
 #define UDF_LCB_FLAG_SHORT_NAME_CREATED     0x00000200  // Short name was created (bit 9)
 
 // LCB size constants
-// Zero 0xF0 bytes (up to +0xE8, excluding FileName UNICODE_STRING buffer pointer)
-// Actual structure size is 0xF8 (248 bytes) but we only zero first 0xF0 bytes
-#define UDF_LCB_BASE_SIZE               0xF0    // 240 bytes - bytes to zero in RtlZeroMemory (excludes FileName buffer ptr)
+#define UDF_LCB_BASE_SIZE               ((ULONG)sizeof(struct LCB)) 
 #define UDF_LCB_LOOKASIDE_SIZE          0x158   // 344 bytes - max size for lookaside allocation
+C_ASSERT(UDF_LCB_LOOKASIDE_SIZE > sizeof(struct LCB));
 
 // LCB lookaside size - fits LCB + 16 WCHARs for short names
 // NOTE: SIZEOF_LOOKASIDE_LCB must be at least UDF_LCB_LOOKASIDE_SIZE (0x158)
