@@ -53,6 +53,9 @@
 #define DEFAULT_LAST_LBA_FP_CD  276159
 #define TOC_LastTrack_ID        0xAA
 #define MediaType_UnknownSize_CDRW 0x20
+
+#define UDF_MAX_SECTOR_IO_BYTES  0x100000 // 1 MB which is a multiple of every sector size
+
 // Local functions:
 
 uint32
@@ -83,17 +86,17 @@ UDFReallocTrackMap(
 
 /*************************************************************************
 *
-*  Function: UDFSendSectorIo()
+*  Function: UDFSendSectorIoChunk()
 *
 *  Description:
-*    Build and send a single read/write IRP to the target device.
+*    Build and send a single read/write IRP (capped at the chunk size) to the target device.
 *    Waits for completion synchronously.  Handles MDL and IRP cleanup.
 *
 *************************************************************************/
 
 static
 NTSTATUS
-UDFSendSectorIo(
+UDFSendSectorIoChunk(
     IN PIRP_CONTEXT IrpContext,
     IN PDEVICE_OBJECT TargetDeviceObject,
     IN PVOID Buffer,
@@ -158,6 +161,52 @@ UDFSendSectorIo(
     }
 
     IoFreeIrp(Irp);
+
+    return Status;
+} // end UDFSendSectorIoChunk()
+
+/*************************************************************************
+*
+*  Function: UDFSendSectorIo()
+*
+*  Description:
+*    Build and send a read/write IRP to the target device as a series of chunks.
+*    Waits for completion synchronously.  Handles MDL and IRP cleanup.
+*
+*    Sending as chunks because, the Mdl is allocated with IoAllocateMdl by 
+*    IoBuildAsynchronousFsdRequest, which fails above ~64 MB on x86 and ~32 MB 
+*    on amd64 on ReactOS and NT 5.x.
+*
+*************************************************************************/
+
+static
+NTSTATUS
+UDFSendSectorIo(
+    IN PIRP_CONTEXT IrpContext,
+    IN PDEVICE_OBJECT TargetDeviceObject,
+    IN PVOID Buffer,
+    IN ULONG ByteCount,
+    IN LONGLONG Offset,
+    IN BOOLEAN IsWrite
+    )
+{
+    PCHAR BufPtr = Buffer;
+    ULONG ChunkLen = 0;
+    NTSTATUS Status = STATUS_SUCCESS;
+
+    while (ByteCount > 0) {
+        ChunkLen = min(ByteCount, UDF_MAX_SECTOR_IO_BYTES);
+        Status = UDFSendSectorIoChunk(IrpContext, TargetDeviceObject, BufPtr, ChunkLen, Offset, IsWrite);
+        
+        if (!NT_SUCCESS(Status)) {
+
+            return Status;
+        }
+        
+        BufPtr += ChunkLen;
+        Offset += ChunkLen;
+        ByteCount -= ChunkLen;
+    }
 
     return Status;
 } // end UDFSendSectorIo()
