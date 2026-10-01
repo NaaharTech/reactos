@@ -1053,16 +1053,23 @@ UDFMultipleAsync(
         //  Allocate and build a partial MDL for the request.
         //
 
-        Mdl = IoAllocateMdl(IoRuns[UnwindRunCount].TransferVirtualAddress,
+        // `IoAllocateMdl` refuses buffers above about 64 MB on x86 and 32 MB on amd64 on ReactOS 
+        // and NT 5.x, but `MmCreateMdl` doesn't have a cap like that. It doesn't attach the MDL 
+        // to the IRP though so gotta do that manually.
+        if (!(Mdl = IoAllocateMdl(IoRuns[UnwindRunCount].TransferVirtualAddress,
                             IoRuns[UnwindRunCount].DiskByteCount,
                             FALSE,
                             FALSE,
-                            Irp);
+                            Irp))) {
+            
+            if (!(Mdl = MmCreateMdl(NULL, IoRuns[UnwindRunCount].TransferVirtualAddress, 
+                                IoRuns[UnwindRunCount].DiskByteCount))) {
 
-        if (Mdl == NULL) {
+                IrpContext->Irp->IoStatus.Information = 0;
+                ExRaiseStatus(STATUS_INSUFFICIENT_RESOURCES);
+            }
 
-            IrpContext->Irp->IoStatus.Information = 0;
-            ExRaiseStatus(STATUS_INSUFFICIENT_RESOURCES);
+            Irp->MdlAddress = Mdl;
         }
 
         IoBuildPartialMdl(IoRuns[UnwindRunCount].TransferMdl,
