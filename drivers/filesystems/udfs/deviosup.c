@@ -136,7 +136,7 @@ UDFNonCachedIo(
 {
     NTSTATUS Status = STATUS_SUCCESS;
 
-    UDF_IO_RUN IoRuns[UDF_MAX_PARALLEL_IOS];
+    struct UDF_IO_RUN IoRuns[UDF_MAX_PARALLEL_IOS];
     ULONG RunCount = 0;
     ULONG CleanupRunCount = 0;
 

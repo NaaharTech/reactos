@@ -69,7 +69,7 @@ UDFCommonRead(
     BOOLEAN                 VcbAcquired = FALSE;
     BOOLEAN                 FcbAcquired = FALSE;
     PVOID                   SystemBuffer = NULL;
-    UDF_IO_CONTEXT          LocalIoContext;
+    struct UDF_IO_CONTEXT          LocalIoContext;
 
     BOOLEAN Wait;
     BOOLEAN PagingIo;
@@ -417,13 +417,13 @@ UDFCommonRead(
 
                     IrpContext->IoContext = (PUDF_IO_CONTEXT)
                         FsRtlAllocatePoolWithTag(NonPagedPool,
-                                                 sizeof(UDF_IO_CONTEXT),
+                                                 sizeof(struct UDF_IO_CONTEXT),
                                                  TAG_IO_CONTEXT);
                     SetFlag(IrpContext->Flags, IRP_CONTEXT_FLAG_ALLOC_IO);
                 }
             }
 
-            RtlZeroMemory(IrpContext->IoContext, sizeof(UDF_IO_CONTEXT));
+            RtlZeroMemory(IrpContext->IoContext, sizeof(struct UDF_IO_CONTEXT));
 
             IrpContext->IoContext->AllocatedContext =
                 BooleanFlagOn(IrpContext->Flags, IRP_CONTEXT_FLAG_ALLOC_IO);

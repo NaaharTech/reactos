@@ -72,7 +72,7 @@ UDFCommonWrite(
     BOOLEAN                 RecursiveWriteThrough = FALSE;
     BOOLEAN                 ZeroBlock = FALSE;
     BOOLEAN                 ZeroBlockDone = FALSE;
-    UDF_IO_CONTEXT          LocalIoContext;
+    struct UDF_IO_CONTEXT          LocalIoContext;
 
     // Examine our input parameters to determine if this is noncached and/or
     // a paging io operation.
@@ -657,7 +657,7 @@ UDFCommonWrite(
                 IrpContext->IoContext = &LocalIoContext;
                 ClearFlag(IrpContext->Flags, IRP_CONTEXT_FLAG_ALLOC_IO);
 
-                RtlZeroMemory(&LocalIoContext, sizeof(UDF_IO_CONTEXT));
+                RtlZeroMemory(&LocalIoContext, sizeof(struct UDF_IO_CONTEXT));
 
                 KeInitializeEvent(&LocalIoContext.SyncEvent,
                                   NotificationEvent,

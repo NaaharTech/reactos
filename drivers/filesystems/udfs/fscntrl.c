@@ -382,7 +382,7 @@ UDFMountVolume(
         // Device extension == VCB
         UDFPrint(("UDFMountVolume: create device\n"));
         RC = IoCreateDevice( UdfData.DriverObject,
-                                 sizeof(VOLUME_DEVICE_OBJECT) - sizeof(DEVICE_OBJECT),
+                                 sizeof(struct VOLUME_DEVICE_OBJECT) - sizeof(DEVICE_OBJECT),
                                  NULL,
                                  FsDeviceType,
                                  0,
@@ -746,7 +746,7 @@ UDFScanForDismountedVcb(
 
     while (Link != &(UdfData.VcbQueue)) {
 
-        Vcb = CONTAINING_RECORD(Link, VCB, VcbLinks);
+        Vcb = CONTAINING_RECORD(Link, struct VCB, VcbLinks);
 
         // Move to the next link now since the current Vcb may be deleted.
         Link = Link->Flink;
@@ -1771,7 +1771,7 @@ UDFInvalidateVolumes(
     while (Links != &UdfData.VcbQueue) {
 
         // Get 'next' Vcb
-        Vcb = CONTAINING_RECORD(Links, VCB, VcbLinks);
+        Vcb = CONTAINING_RECORD(Links, struct VCB, VcbLinks);
 
         // Move to the next link now since the current Vcb may be deleted.
         Links = Links->Flink;

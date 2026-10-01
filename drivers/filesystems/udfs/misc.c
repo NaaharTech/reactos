@@ -350,11 +350,11 @@ UDFAllocateObjectName(VOID)
     }
 
     // zero out the allocated memory block
-    RtlZeroMemory(NewObjectName, sizeof(UDFObjectName));
+    RtlZeroMemory(NewObjectName, sizeof(struct UDFObjectName));
 
     // set up some fields ...
     NewObjectName->NodeIdentifier.NodeTypeCode = UDF_NODE_TYPE_OBJECT_NAME;
-    NewObjectName->NodeIdentifier.NodeByteSize = sizeof(UDFObjectName);
+    NewObjectName->NodeIdentifier.NodeByteSize = sizeof(struct UDFObjectName);
 
     return NewObjectName;
 } // end UDFAllocateObjectName()
@@ -413,11 +413,11 @@ UDFCreateCcb()
     }
 
     // zero out the allocated memory block
-    RtlZeroMemory(NewCcb, sizeof(CCB));
+    RtlZeroMemory(NewCcb, sizeof(struct CCB));
 
     // set up some fields ...
     NewCcb->NodeIdentifier.NodeTypeCode = UDF_NODE_TYPE_CCB;
-    NewCcb->NodeIdentifier.NodeByteSize = sizeof(CCB);
+    NewCcb->NodeIdentifier.NodeByteSize = sizeof(struct CCB);
 
     return NewCcb;
 } // end UDFCreateCcb()
@@ -483,11 +483,11 @@ UDFCreateIrpContext(
     }
 
     // zero out the allocated memory block
-    RtlZeroMemory(NewIrpContext, sizeof(IRP_CONTEXT));
+    RtlZeroMemory(NewIrpContext, sizeof(struct IRP_CONTEXT));
 
     // Set the proper node type code and node byte size
     NewIrpContext->NodeIdentifier.NodeTypeCode = UDF_NODE_TYPE_IRP_CONTEXT;
-    NewIrpContext->NodeIdentifier.NodeByteSize = sizeof(IRP_CONTEXT);
+    NewIrpContext->NodeIdentifier.NodeByteSize = sizeof(struct IRP_CONTEXT);
 
     // Set the originating Irp field
     NewIrpContext->Irp = Irp;
@@ -501,7 +501,7 @@ UDFCreateIrpContext(
     }
 
     // TODO: fix
-    if (false && IrpSp->FileObject != NULL) {
+    if (0 && IrpSp->FileObject != NULL) {
 
         PFILE_OBJECT FileObject = IrpSp->FileObject;
 
@@ -847,7 +847,7 @@ UDFAddToWorkque(
     if (IrpSp->FileObject != NULL) {
 
         Vdo = CONTAINING_RECORD(IrpSp->DeviceObject,
-            VOLUME_DEVICE_OBJECT,
+            struct VOLUME_DEVICE_OBJECT,
             DeviceObject);
 
         // Check to see if this request should be sent to the overflow
@@ -963,7 +963,7 @@ UDFFspDispatch(
     IN PVOID Context   // actually is a pointer to IRPContext structure
     )
 {
-    THREAD_CONTEXT ThreadContext = { 0 };
+    struct THREAD_CONTEXT ThreadContext = { 0 };
     PIRP_CONTEXT IrpContext = (PIRP_CONTEXT)Context;
     NTSTATUS Status;
 
@@ -977,7 +977,7 @@ UDFFspDispatch(
     if (IrpSp->FileObject != NULL) {
 
         VolDo = CONTAINING_RECORD(IrpSp->DeviceObject,
-                                  VOLUME_DEVICE_OBJECT,
+                                  struct VOLUME_DEVICE_OBJECT,
                                   DeviceObject);
     }
 
@@ -1167,7 +1167,7 @@ UDFFspDispatch(
             //
 
             IrpContext = CONTAINING_RECORD(Entry,
-                                           IRP_CONTEXT,
+                                           struct IRP_CONTEXT,
                                            WorkQueueItem.List);
 
             Irp = IrpContext->Irp;
@@ -1303,7 +1303,7 @@ UDFDeleteVCB(
     UDFPrint(("UDFDeleteVCB\n"));
 
     PVOLUME_DEVICE_OBJECT Vdo = (PVOLUME_DEVICE_OBJECT)CONTAINING_RECORD(Vcb,
-                                                                         VOLUME_DEVICE_OBJECT,
+                                                                         struct VOLUME_DEVICE_OBJECT,
                                                                          Vcb);
 
     delay.QuadPart = -500000; // 0.05 sec
@@ -1361,7 +1361,7 @@ UDFDeleteVCB(
     UDFFreePool((PVOID*)&Vcb->Vpb);
 
     IoDeleteDevice((PDEVICE_OBJECT)CONTAINING_RECORD(Vcb,
-                                                     VOLUME_DEVICE_OBJECT,
+                                                     struct VOLUME_DEVICE_OBJECT,
                                                      Vcb));
 
 } // end UDFDeleteVCB()
@@ -1393,11 +1393,11 @@ UDFInitializeStackIrpContextFromLite(
     ASSERT(IrpContextLite->NodeIdentifier.NodeByteSize == sizeof(IRP_CONTEXT_LITE));
 
     // Zero and then initialize the structure.
-    RtlZeroMemory(IrpContext, sizeof(IRP_CONTEXT));
+    RtlZeroMemory(IrpContext, sizeof(struct IRP_CONTEXT));
 
     // Set the proper node type code and node byte size
     IrpContext->NodeIdentifier.NodeTypeCode = UDF_NODE_TYPE_IRP_CONTEXT;
-    IrpContext->NodeIdentifier.NodeByteSize = sizeof(IRP_CONTEXT);
+    IrpContext->NodeIdentifier.NodeByteSize = sizeof(struct IRP_CONTEXT);
 
     //  Major/Minor Function codes
     IrpContext->MajorFunction = IRP_MJ_CLOSE;
@@ -1667,9 +1667,9 @@ Return Value:
 #pragma warning(suppress: 6011) // Bug in PREFast around bitflag operations
     if (FlagOn( IrpContext->Flags, IRP_CONTEXT_FLAG_TOP_LEVEL ) ||
 #ifndef __REACTOS__
-        (!IoWithinStackLimits( (ULONG_PTR)CurrentThreadContext, sizeof(THREAD_CONTEXT) ) ||
+        (!IoWithinStackLimits( (ULONG_PTR)CurrentThreadContext, sizeof(struct THREAD_CONTEXT) ) ||
 #else
-        (((ULONG_PTR) CurrentThreadContext > StackBottom - sizeof( THREAD_CONTEXT )) ||
+        (((ULONG_PTR) CurrentThreadContext > StackBottom - sizeof( struct THREAD_CONTEXT )) ||
          ((ULONG_PTR) CurrentThreadContext <= StackTop) ||
 #endif
          FlagOn( (ULONG_PTR) CurrentThreadContext, 0x3 ) ||
@@ -1706,7 +1706,7 @@ UDFAcquireResource(
     _In_ PIRP_CONTEXT IrpContext,
     _Inout_ PERESOURCE Resource,
     _In_ BOOLEAN IgnoreWait,
-    _In_ TYPE_OF_ACQUIRE Type
+    _In_ enum TYPE_OF_ACQUIRE Type
     )
 
 /*++

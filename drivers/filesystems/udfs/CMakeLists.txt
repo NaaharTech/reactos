@@ -10,33 +10,33 @@ list(APPEND SOURCE
     udf_info/remap.cpp
     udf_info/udf_info.cpp
     cleanup.c
-    close.cpp
-    create.cpp
-    devcntrl.cpp
-    deviosup.cpp
-    dircntrl.cpp
-    fastio.cpp
-    fileinfo.cpp
-    flush.cpp
-    fscntrl.cpp
-    lockctrl.cpp
-    misc.cpp
-    namesup.cpp
-    prefxsup.cpp
-    pnp.cpp
-    read.cpp
-    secursup.cpp
-    shutdown.cpp
-    sys_spec.cpp
-    udf_dbg.cpp
-    udfinit.cpp
-    unload.cpp
-    verfysup.cpp
-    volinfo.cpp
-    write.cpp
-    strucsup.cpp
-    filobsup.cpp
-    udfdata.cpp
+    close.c
+    create.c
+    devcntrl.c
+    deviosup.c
+    dircntrl.c
+    fastio.c
+    fileinfo.c
+    flush.c
+    fscntrl.c
+    lockctrl.c
+    misc.c
+    namesup.c
+    prefxsup.c
+    pnp.c
+    read.c
+    secursup.c
+    shutdown.c
+    sys_spec.c
+    udf_dbg.c
+    udfinit.c
+    unload.c
+    verfysup.c
+    volinfo.c
+    write.c
+    strucsup.c
+    filobsup.c
+    udfdata.c
     udffs.h
 )
 

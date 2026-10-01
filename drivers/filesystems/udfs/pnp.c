@@ -116,7 +116,7 @@ UDFCommonPnp (
     // field that takes us past the end of an ordinary device object.    
 
 #pragma prefast(suppress: 28175, "this is a filesystem driver, touching the size member is allowed")
-    if (OurDeviceObject->DeviceObject.Size != sizeof(VOLUME_DEVICE_OBJECT) ||
+    if (OurDeviceObject->DeviceObject.Size != sizeof(struct VOLUME_DEVICE_OBJECT) ||
         NodeType(&OurDeviceObject->Vcb) != UDF_NODE_TYPE_VCB) {
         
         // We were called with something we don't understand.

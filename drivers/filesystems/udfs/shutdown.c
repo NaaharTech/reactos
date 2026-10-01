@@ -91,7 +91,7 @@ UDFCommonShutdown(
 
         while (Link != &(UdfData.VcbQueue)) {
 
-            Vcb = CONTAINING_RECORD(Link, VCB, VcbLinks);
+            Vcb = CONTAINING_RECORD(Link, struct VCB, VcbLinks);
 
             // Move to the next link now since the current Vcb may be deleted.
 
@@ -112,7 +112,7 @@ UDFCommonShutdown(
             UDFFlushVolume(IrpContext, Vcb, 0);
 
             ASSERT(CONTAINING_RECORD(IoGetCurrentIrpStackLocation(Irp)->DeviceObject,
-                                     VOLUME_DEVICE_OBJECT,
+                                     struct VOLUME_DEVICE_OBJECT,
                                      DeviceObject)->OverflowQueueCount == 0);
 
             {
@@ -148,7 +148,7 @@ UDFCommonShutdown(
             }
 
             ASSERT(CONTAINING_RECORD(IoGetCurrentIrpStackLocation(Irp)->DeviceObject,
-                                     VOLUME_DEVICE_OBJECT,
+                                     struct VOLUME_DEVICE_OBJECT,
                                      DeviceObject)->OverflowQueueCount == 0);
 
             SetFlag(Vcb->VcbState, VCB_STATE_SHUTDOWN);

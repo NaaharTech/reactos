@@ -41,7 +41,7 @@ UDFQueueClose(
     );
 
 #define UDFCreateIrpContextLite(IC)  \
-    ExAllocatePoolWithTag(NonPagedPool, sizeof(IRP_CONTEXT_LITE), TAG_IRP_CONTEXT_LITE)
+    ExAllocatePoolWithTag(NonPagedPool, sizeof(struct IRP_CONTEXT_LITE), TAG_IRP_CONTEXT_LITE)
 
 #define UDFFreeIrpContextLite(ICL)  \
     {                               \
@@ -285,7 +285,7 @@ Return Value:
         // Extract the IrpContext.
 
         NextIrpContext = CONTAINING_RECORD(Entry,
-                                           IRP_CONTEXT,
+                                           struct IRP_CONTEXT,
                                            WorkQueueItem.List);
 
         // If no Vcb was specified or this Vcb is for our volume
@@ -323,7 +323,7 @@ Return Value:
             // Extract the IrpContext.
 
             NextIrpContextLite = CONTAINING_RECORD( Entry,
-                                                    IRP_CONTEXT_LITE,
+                                                    struct IRP_CONTEXT_LITE,
                                                     DelayedCloseLinks );
 
             //  If no Vcb was specified or this Vcb is for our volume
@@ -393,12 +393,12 @@ Return Value:
 
     // Zero and then initialize the structure.
 
-    RtlZeroMemory( IrpContext, sizeof( IRP_CONTEXT ));
+    RtlZeroMemory( IrpContext, sizeof( struct IRP_CONTEXT ));
 
     // Set the proper node type code and node byte size
 
     IrpContext->NodeIdentifier.NodeTypeCode = UDF_NODE_TYPE_IRP_CONTEXT;
-    IrpContext->NodeIdentifier.NodeByteSize = sizeof(IRP_CONTEXT);
+    IrpContext->NodeIdentifier.NodeByteSize = sizeof(struct IRP_CONTEXT);
 
     // Note that this is from the stack.
 
@@ -555,9 +555,9 @@ Return Value:
 
 {
     PIRP_CONTEXT IrpContext;
-    IRP_CONTEXT StackIrpContext = {0};
+    struct IRP_CONTEXT StackIrpContext = {0};
 
-    THREAD_CONTEXT ThreadContext = {0};
+    struct THREAD_CONTEXT ThreadContext = {0};
 
     PFCB Fcb;
     ULONG UserReference;
@@ -774,7 +774,7 @@ UDFQueueClose(
         // Initialize the IrpContextLite.
 
         IrpContextLite->NodeIdentifier.NodeTypeCode = UDF_NODE_TYPE_IRP_CONTEXT_LITE;
-        IrpContextLite->NodeIdentifier.NodeByteSize = sizeof(IRP_CONTEXT_LITE);
+        IrpContextLite->NodeIdentifier.NodeByteSize = sizeof(struct IRP_CONTEXT_LITE);
         IrpContextLite->Fcb = Fcb;
         IrpContextLite->UserReference = UserReference;
         IrpContextLite->RealDevice = IrpContext->RealDevice;

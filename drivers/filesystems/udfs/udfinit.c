@@ -137,7 +137,7 @@ DriverEntry(
                                             NULL,
                                             NULL,
                                             POOL_NX_ALLOCATION | POOL_RAISE_IF_ALLOCATION_FAILURE,
-                                            sizeof(IRP_CONTEXT),
+                                            sizeof(struct IRP_CONTEXT),
                                             TAG_IRP_CONTEXT,
                                             0);
 
@@ -146,7 +146,7 @@ DriverEntry(
                                             NULL,
                                             NULL,
                                             POOL_NX_ALLOCATION | POOL_RAISE_IF_ALLOCATION_FAILURE,
-                                            sizeof(UDFObjectName),
+                                            sizeof(struct UDFObjectName),
                                             TAG_OBJECT_NAME,
                                             0);
 
@@ -154,7 +154,7 @@ DriverEntry(
                                             NULL,
                                             NULL,
                                             POOL_NX_ALLOCATION | POOL_RAISE_IF_ALLOCATION_FAILURE,
-                                            sizeof(FCB),
+                                            sizeof(struct FCB),
                                             TAG_FCB_NONPAGED,
                                             0);
 
@@ -162,7 +162,7 @@ DriverEntry(
                                             NULL,
                                             NULL,
                                             POOL_NX_ALLOCATION | POOL_RAISE_IF_ALLOCATION_FAILURE,
-                                            sizeof(FCB_NONPAGED),
+                                            sizeof(struct FCB_NONPAGED),
                                             TAG_FCB_NONPAGED,
                                             0);
 
@@ -170,7 +170,7 @@ DriverEntry(
                                            NULL,
                                            NULL,
                                            POOL_NX_ALLOCATION | POOL_RAISE_IF_ALLOCATION_FAILURE,
-                                           sizeof(FCB), //TODO:
+                                           sizeof(struct FCB), //TODO:
                                            TAG_FCB_NONPAGED,
                                            0);
 
@@ -178,7 +178,7 @@ DriverEntry(
                                            NULL,
                                            NULL,
                                            POOL_NX_ALLOCATION | POOL_RAISE_IF_ALLOCATION_FAILURE,
-                                           sizeof(FCB), //TODO:
+                                           sizeof(struct FCB), //TODO:
                                            TAG_FCB_NONPAGED,
                                            0);
 
@@ -186,7 +186,7 @@ DriverEntry(
                                             NULL,
                                             NULL,
                                             POOL_NX_ALLOCATION | POOL_RAISE_IF_ALLOCATION_FAILURE,
-                                            sizeof(CCB),
+                                            sizeof(struct CCB),
                                             TAG_CCB,
                                             0);
 

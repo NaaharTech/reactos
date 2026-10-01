@@ -74,7 +74,7 @@ Return Value:
 --*/
 
 {
-    THREAD_CONTEXT ThreadContext = {0};
+    struct THREAD_CONTEXT ThreadContext = {0};
     PIRP_CONTEXT IrpContext = NULL;
     BOOLEAN Wait;
 

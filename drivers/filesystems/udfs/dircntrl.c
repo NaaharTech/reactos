@@ -841,7 +841,7 @@ UDFNotifyReportChange(
             if (!IsListEmpty(&Fcb->ParentLcbQueue)) {
                 PLIST_ENTRY ListEntry = Fcb->ParentLcbQueue.Flink;
                 while (ListEntry != &Fcb->ParentLcbQueue) {
-                    PLCB CandidateLcb = CONTAINING_RECORD(ListEntry, LCB, ChildFcbLinks);
+                    PLCB CandidateLcb = CONTAINING_RECORD(ListEntry, struct LCB, ChildFcbLinks);
                     if (!(CandidateLcb->Flags & UDF_LCB_FLAG_LINK_DELETED)) {
                         Lcb = CandidateLcb;
                         break;

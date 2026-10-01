@@ -1900,7 +1900,7 @@ UDFCheckDirOpenHandles(
 
         // Process all children at current level
         while (CheckLink != &CheckFcb->ChildLcbQueue) {
-            PLCB ChildLcb = CONTAINING_RECORD(CheckLink, LCB, ParentFcbLinks);
+            PLCB ChildLcb = CONTAINING_RECORD(CheckLink, struct LCB, ParentFcbLinks);
             PFCB ChildFcb = ChildLcb->ChildFcb;
             CheckLink = CheckLink->Flink;
 

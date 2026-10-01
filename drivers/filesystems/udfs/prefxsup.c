@@ -164,8 +164,8 @@ UdfInsertNameLinks(
     // Exact case tree (keyed by FileName)
     if (Lcb->FileName.Buffer && Lcb->FileName.Length > 0) {
         if (UdfInsertNameLink(&ParentFcb->ExactCaseRoot, Lcb,
-                              FIELD_OFFSET(LCB, ExactCaseLinks),
-                              FIELD_OFFSET(LCB, FileName))) {
+                              FIELD_OFFSET(struct LCB, ExactCaseLinks),
+                              FIELD_OFFSET(struct LCB, FileName))) {
             SetFlag(Lcb->Flags, UDF_LCB_FLAG_EXACT_CASE_IN_TREE);
         }
     }
@@ -173,8 +173,8 @@ UdfInsertNameLinks(
     // Ignore case tree (keyed by IgnoreCaseLinkName)
     if (Lcb->IgnoreCaseLinkName.Buffer && Lcb->IgnoreCaseLinkName.Length > 0) {
         if (UdfInsertNameLink(&ParentFcb->IgnoreCaseRoot, Lcb,
-                              FIELD_OFFSET(LCB, IgnoreCaseLinks),
-                              FIELD_OFFSET(LCB, IgnoreCaseLinkName))) {
+                              FIELD_OFFSET(struct LCB, IgnoreCaseLinks),
+                              FIELD_OFFSET(struct LCB, IgnoreCaseLinkName))) {
             SetFlag(Lcb->Flags, UDF_LCB_FLAG_IGNORE_CASE_IN_TREE);
         }
     }
@@ -182,8 +182,8 @@ UdfInsertNameLinks(
     // Short name tree (keyed by ShortName)
     if (Lcb->ShortName.Buffer && Lcb->ShortName.Length > 0) {
         if (UdfInsertNameLink(&ParentFcb->ShortNameRoot, Lcb,
-                              FIELD_OFFSET(LCB, ShortNameLinks),
-                              FIELD_OFFSET(LCB, ShortName))) {
+                              FIELD_OFFSET(struct LCB, ShortNameLinks),
+                              FIELD_OFFSET(struct LCB, ShortName))) {
             SetFlag(Lcb->Flags, UDF_LCB_FLAG_SHORT_NAME_IN_TREE);
         }
     }
@@ -515,7 +515,7 @@ UDFFindPrefix(
          ListEntry != &ChildFcb->ParentLcbQueue;
          ListEntry = ListEntry->Flink) {
 
-        Lcb = CONTAINING_RECORD(ListEntry, LCB, ChildFcbLinks);
+        Lcb = CONTAINING_RECORD(ListEntry, struct LCB, ChildFcbLinks);
 
         ASSERT(Lcb->NodeIdentifier.NodeTypeCode == UDF_NODE_TYPE_LCB);
 
@@ -741,7 +741,7 @@ UDFBuildFullPathFromLcb(
             // Find parent LCB
             if (!IsListEmpty(&CurrentFcb->ParentLcbQueue)) {
                 PLIST_ENTRY ListEntry = CurrentFcb->ParentLcbQueue.Flink;
-                CurrentLcb = CONTAINING_RECORD(ListEntry, LCB, ChildFcbLinks);
+                CurrentLcb = CONTAINING_RECORD(ListEntry, struct LCB, ChildFcbLinks);
             } else {
                 break;
             }
@@ -798,7 +798,7 @@ UDFBuildFullPathFromLcb(
             // Find parent LCB
             if (!IsListEmpty(&CurrentFcb->ParentLcbQueue)) {
                 PLIST_ENTRY ListEntry = CurrentFcb->ParentLcbQueue.Flink;
-                CurrentLcb = CONTAINING_RECORD(ListEntry, LCB, ChildFcbLinks);
+                CurrentLcb = CONTAINING_RECORD(ListEntry, struct LCB, ChildFcbLinks);
             } else {
                 break;
             }
@@ -1074,14 +1074,14 @@ UDFFindPathPrefix(
 
                 MatchLcb = UdfFindNameLink(&(*CurrentFcb)->IgnoreCaseRoot,
                                             &UpcaseName,
-                                            FIELD_OFFSET(LCB, IgnoreCaseLinks),
-                                            FIELD_OFFSET(LCB, IgnoreCaseLinkName));
+                                            FIELD_OFFSET(struct LCB, IgnoreCaseLinks),
+                                            FIELD_OFFSET(struct LCB, IgnoreCaseLinkName));
             }
         } else if (!IgnoreCase && (*CurrentFcb)->ExactCaseRoot != NULL) {
             MatchLcb = UdfFindNameLink(&(*CurrentFcb)->ExactCaseRoot,
                                         &ComponentName,
-                                        FIELD_OFFSET(LCB, ExactCaseLinks),
-                                        FIELD_OFFSET(LCB, FileName));
+                                        FIELD_OFFSET(struct LCB, ExactCaseLinks),
+                                        FIELD_OFFSET(struct LCB, FileName));
         }
 
         // Try short name splay tree if no match yet
@@ -1095,8 +1095,8 @@ UDFFindPathPrefix(
 
                 MatchLcb = UdfFindNameLink(&(*CurrentFcb)->ShortNameRoot,
                                             &UpcaseName,
-                                            FIELD_OFFSET(LCB, ShortNameLinks),
-                                            FIELD_OFFSET(LCB, ShortName));
+                                            FIELD_OFFSET(struct LCB, ShortNameLinks),
+                                            FIELD_OFFSET(struct LCB, ShortName));
                 if (MatchLcb) {
                     *ShortNameMatch = TRUE;
                 }
@@ -1110,7 +1110,7 @@ UDFFindPathPrefix(
                  ListEntry != &(*CurrentFcb)->ChildLcbQueue;
                  ListEntry = ListEntry->Flink) {
 
-                PLCB Lcb = CONTAINING_RECORD(ListEntry, LCB, ParentFcbLinks);
+                PLCB Lcb = CONTAINING_RECORD(ListEntry, struct LCB, ParentFcbLinks);
 
                 ASSERT(Lcb->NodeIdentifier.NodeTypeCode == UDF_NODE_TYPE_LCB);
                 ASSERT(Lcb->ParentFcb == *CurrentFcb);

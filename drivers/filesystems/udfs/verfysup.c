@@ -347,10 +347,10 @@ UDFVerifyVolume(
 
             UDFPrint(("UDFVerifyVolume: compare\n"));
 
-            NewVcb = (PVCB)MyAllocatePool__(NonPagedPool,sizeof(VCB));
+            NewVcb = (PVCB)MyAllocatePool__(NonPagedPool,sizeof(struct VCB));
             if (!NewVcb)
                 try_return(Status = STATUS_INSUFFICIENT_RESOURCES);
-            RtlZeroMemory(NewVcb, sizeof(VCB));
+            RtlZeroMemory(NewVcb, sizeof(struct VCB));
 
             NewVcb->TargetDeviceObject = Vcb->TargetDeviceObject;
             NewVcb->Vpb = Vpb;
@@ -501,7 +501,7 @@ UDFPerformVerify(
     IrpSp = IoGetCurrentIrpStackLocation(Irp);
 
     Vcb = &CONTAINING_RECORD(IrpSp->DeviceObject,
-                             VOLUME_DEVICE_OBJECT,
+                             struct VOLUME_DEVICE_OBJECT,
                              DeviceObject)->Vcb;
 
     ASSERT_VCB(Vcb);
