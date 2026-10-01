@@ -1149,6 +1149,7 @@ UDFGetPartFreeSpace(
     uint32 s=0;
 
     if (Vcb->BitmapFcb) {
+        // Even the readers should be exclusive because the pinned page is shared state.
         UDFAcquireResourceExclusive(&(Vcb->BitMapResource1),TRUE);
         // Per-page: iterate pinned pages, count free (set) bits via RTL_BITMAP
         ULONG pos = 0;
