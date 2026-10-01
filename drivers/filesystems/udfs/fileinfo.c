@@ -1926,7 +1926,7 @@ UDFCheckDirOpenHandles(
         for (ParentLink = CheckFcb->ParentLcbQueue.Flink;
              ParentLink != &CheckFcb->ParentLcbQueue;
              ParentLink = ParentLink->Flink) {
-            PLCB ParentLcb = CONTAINING_RECORD(ParentLink, LCB, ChildFcbLinks);
+            PLCB ParentLcb = CONTAINING_RECORD(ParentLink, struct LCB, ChildFcbLinks);
             if (ParentLcb->ParentFcb) {
                 CheckFcb = ParentLcb->ParentFcb;
                 CheckLink = ParentLcb->ParentFcbLinks.Flink;
@@ -2209,7 +2209,7 @@ UDFSetRenameInfo(
                                 for (Link = TargetParentFcb->ChildLcbQueue.Flink;
                                      Link != &TargetParentFcb->ChildLcbQueue;
                                      Link = Link->Flink) {
-                                    PLCB TestLcb = CONTAINING_RECORD(Link, LCB, ParentFcbLinks);
+                                    PLCB TestLcb = CONTAINING_RECORD(Link, struct LCB, ParentFcbLinks);
                                     if (TestLcb != Ccb->Lcb &&
                                         !(TestLcb->Flags & UDF_LCB_FLAG_LINK_DELETED) &&
                                         TestLcb->ChildFcb == TargetFileFcb) {

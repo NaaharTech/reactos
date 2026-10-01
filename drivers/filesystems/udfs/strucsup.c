@@ -75,7 +75,7 @@ PFCB
 UDFAllocateFcb(
 )
 {
-    return (PFCB)ExAllocatePoolWithTag(NonPagedPool, sizeof(FCB), TAG_FCB);
+    return (PFCB)ExAllocatePoolWithTag(NonPagedPool, sizeof(struct FCB), TAG_FCB);
 }
 
 inline
@@ -137,10 +137,10 @@ Return Value:
 
     FcbNonpaged = UDFAllocateFcbNonpaged();
 
-    RtlZeroMemory(FcbNonpaged, sizeof(FCB_NONPAGED));
+    RtlZeroMemory(FcbNonpaged, sizeof(struct FCB_NONPAGED));
 
     FcbNonpaged->NodeTypeCode = UDF_NODE_TYPE_FCB_NONPAGED;
-    FcbNonpaged->NodeByteSize = sizeof(FCB_NONPAGED);
+    FcbNonpaged->NodeByteSize = sizeof(struct FCB_NONPAGED);
 
     ExInitializeResourceLite(&FcbNonpaged->FcbPagingIoResource);
     ExInitializeResourceLite(&FcbNonpaged->FcbResource);
@@ -376,7 +376,7 @@ UDFTeardownStructures(
             for (ListLinks = CurrentFcb->ParentLcbQueue.Flink;
                  ListLinks != &CurrentFcb->ParentLcbQueue; ) {
 
-                Lcb = CONTAINING_RECORD(ListLinks, LCB, ChildFcbLinks);
+                Lcb = CONTAINING_RECORD(ListLinks, struct LCB, ChildFcbLinks);
 
                 ASSERT(Lcb->NodeIdentifier.NodeTypeCode == UDF_NODE_TYPE_LCB);
 
@@ -1068,12 +1068,12 @@ UDFInitializeVCB(
     // We start by first zeroing out all of the VCB, this will guarantee
     // that any stale data is wiped clean.
 
-    RtlZeroMemory(Vcb, sizeof(VCB));
+    RtlZeroMemory(Vcb, sizeof(struct VCB));
 
     // Set the proper node type code and node byte size.
 
     Vcb->NodeIdentifier.NodeTypeCode = UDF_NODE_TYPE_VCB;
-    Vcb->NodeIdentifier.NodeByteSize = sizeof(VCB);
+    Vcb->NodeIdentifier.NodeByteSize = sizeof(struct VCB);
 
     // Initialize the notify sync mutex. FsRtlNotifyInitializeSync can raise.
 
@@ -1103,7 +1103,7 @@ UDFInitializeVCB(
         // off of the storage stack on demand.  This can raise - if it does,  
         // uninitialize the notify structures before returning.
 
-        Vcb->SwapVpb = (PVPB)FsRtlAllocatePoolWithTag(NonPagedPoolNx, sizeof(VPB), TAG_VPB);
+        Vcb->SwapVpb = (PVPB)FsRtlAllocatePoolWithTag(NonPagedPoolNx, sizeof( VPB), TAG_VPB);
 
         RtlZeroMemory(Vcb->SwapVpb, sizeof(VPB));
 
@@ -1191,7 +1191,8 @@ UDFCompleteMount(
     UNICODE_STRING LocalPath;
     ULONG LastSector = 0;
     BOOLEAN UnlockVcb = FALSE;
-    FILE_ID FileId{};
+    FILE_ID FileId;
+    RtlZeroMemory(&FileId, sizeof(FILE_ID));
 
     PAGED_CODE();
 
@@ -1311,7 +1312,7 @@ UDFCompleteMount(
         // Open Unallocatable space stream
         // Generally, it should be placed in SystemStreamDirectory, but some
         // stupid apps think that RootDirectory is much better place.... :((
-        LocalPath = RTL_CONSTANT_STRING(UDF_FN_NON_ALLOCATABLE);
+        RtlInitUnicodeString(&LocalPath, UDF_FN_NON_ALLOCATABLE);
         Status = UDFOpenFile__(IrpContext, Vcb, FALSE, TRUE, &LocalPath, Vcb->RootIndexFcb->FileInfo, &Vcb->NonAllocFileInfo, NULL);
 
         if (!NT_SUCCESS(Status) && (Status != STATUS_OBJECT_NAME_NOT_FOUND)) {
@@ -1334,7 +1335,7 @@ UDFCompleteMount(
             UDFDirIndex(UDFGetDirIndexByFileInfo(Vcb->NonAllocFileInfo), Vcb->NonAllocFileInfo->Index)->FI_Flags |= UDF_FI_FLAG_FI_INTERNAL;
         } else {
             /* try to read Non-allocatable from alternate locations */
-            LocalPath = RTL_CONSTANT_STRING(UDF_FN_NON_ALLOCATABLE_2);
+            RtlInitUnicodeString(&LocalPath, UDF_FN_NON_ALLOCATABLE_2);
             Status = UDFOpenFile__(IrpContext, Vcb, FALSE, TRUE, &LocalPath, Vcb->RootIndexFcb->FileInfo, &(Vcb->NonAllocFileInfo), NULL);
             if (!NT_SUCCESS(Status) && (Status != STATUS_OBJECT_NAME_NOT_FOUND)) {
                 goto unwind_1;
@@ -1344,7 +1345,7 @@ UDFCompleteMount(
                 UDFDirIndex(UDFGetDirIndexByFileInfo(Vcb->NonAllocFileInfo), Vcb->NonAllocFileInfo->Index)->FI_Flags |= UDF_FI_FLAG_FI_INTERNAL;
             } else
             if (Vcb->SysSDirFileInfo) {
-                LocalPath = RTL_CONSTANT_STRING(UDF_SN_NON_ALLOCATABLE);
+                RtlInitUnicodeString(&LocalPath, UDF_SN_NON_ALLOCATABLE);
                 Status = UDFOpenFile__(IrpContext, Vcb, FALSE, TRUE, &LocalPath, Vcb->SysSDirFileInfo , &(Vcb->NonAllocFileInfo), NULL);
                 if (!NT_SUCCESS(Status) && (Status != STATUS_OBJECT_NAME_NOT_FOUND)) {
                     goto unwind_1;
@@ -1363,7 +1364,7 @@ UDFCompleteMount(
         /* Read SN UID mapping */
         if (Vcb->SysSDirFileInfo) {
 
-            LocalPath = RTL_CONSTANT_STRING(UDF_SN_UID_MAPPING);
+            RtlInitUnicodeString(&LocalPath, UDF_SN_UID_MAPPING);
 
             Status = UDFOpenFile__(IrpContext, Vcb, FALSE, TRUE, &LocalPath, Vcb->SysSDirFileInfo , &Vcb->UniqueIDMapFileInfo, NULL);
 
@@ -1576,15 +1577,15 @@ UDFCreateBitmapStream(
     if (!Fcb) {
         return STATUS_INSUFFICIENT_RESOURCES;
     }
-    RtlZeroMemory(Fcb, sizeof(FCB));
+    RtlZeroMemory(Fcb, sizeof(struct FCB));
 
     // Initialize nonpaged data (inline in VCB to avoid extra allocation)
 
     FcbNonpaged = &Vcb->BitmapNonpaged;
-    RtlZeroMemory(FcbNonpaged, sizeof(FCB_NONPAGED));
+    RtlZeroMemory(FcbNonpaged, sizeof(struct FCB_NONPAGED));
 
     FcbNonpaged->NodeTypeCode = UDF_NODE_TYPE_FCB_NONPAGED;
-    FcbNonpaged->NodeByteSize = sizeof(FCB_NONPAGED);
+    FcbNonpaged->NodeByteSize = sizeof(struct FCB_NONPAGED);
 
     ExInitializeResourceLite(&FcbNonpaged->FcbResource);
     ExInitializeResourceLite(&FcbNonpaged->FcbPagingIoResource);
@@ -1595,7 +1596,7 @@ UDFCreateBitmapStream(
     // Initialize the FCB header
 
     Fcb->NodeIdentifier.NodeTypeCode = UDF_NODE_TYPE_DATA;
-    Fcb->NodeIdentifier.NodeByteSize = sizeof(FCB);
+    Fcb->NodeIdentifier.NodeByteSize = sizeof(struct FCB);
     Fcb->FcbNonpaged = FcbNonpaged;
     Fcb->Vcb = Vcb;
 

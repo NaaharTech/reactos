@@ -405,10 +405,10 @@ struct FCB {
 typedef struct FCB* PFCB;
 
 #define SIZEOF_FCB_DATA     \
-    (FIELD_OFFSET(FCB, FcbType) + sizeof(FCB_DATA))
+    (FIELD_OFFSET(struct FCB, FcbType) + sizeof(struct FCB_DATA))
 
 #define SIZEOF_FCB_INDEX    \
-    (FIELD_OFFSET(FCB, FcbType) + sizeof(FCB_INDEX))
+    (FIELD_OFFSET(struct FCB, FcbType) + sizeof(struct FCB_INDEX))
 
 /**************************************************************************
     the following FCBFlags values are relevant. These flag

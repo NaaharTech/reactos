@@ -1390,7 +1390,7 @@ UDFInitializeStackIrpContextFromLite(
     )
 {
     ASSERT(IrpContextLite->NodeIdentifier.NodeTypeCode == UDF_NODE_TYPE_IRP_CONTEXT_LITE);
-    ASSERT(IrpContextLite->NodeIdentifier.NodeByteSize == sizeof(IRP_CONTEXT_LITE));
+    ASSERT(IrpContextLite->NodeIdentifier.NodeByteSize == sizeof(struct IRP_CONTEXT_LITE));
 
     // Zero and then initialize the structure.
     RtlZeroMemory(IrpContext, sizeof(struct IRP_CONTEXT));
