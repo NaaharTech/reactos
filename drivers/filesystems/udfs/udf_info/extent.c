@@ -307,6 +307,10 @@ UDFShortAllocDescToMapping(
 
         if (type == EXTENT_NEXT_EXTENT_ALLOCDESC) {
 
+            // record information about this frag
+            locAddr.logicalBlockNum = AllocDesc->extPosition;
+            AllocExt.extLength = ALIGN_UP_BY(len, Vcb->SectorSize);
+            AllocExt.extLocation = UDFPartLbaToPhys(Vcb, &locAddr);
             ExtentNext[AllocDescsIndex].extLength = 0;
             ExtentNext[AllocDescsIndex].extLocation = 0;
 
@@ -335,10 +339,6 @@ UDFShortAllocDescToMapping(
                 return NULL;
             }
 
-            // record information about this frag
-            locAddr.logicalBlockNum = AllocDesc->extPosition;
-            AllocExt.extLength = ALIGN_UP_BY(len, Vcb->SectorSize);
-            AllocExt.extLocation = UDFPartLbaToPhys(Vcb, &locAddr);
             if (AllocExt.extLocation == LBA_OUT_OF_EXTENT) {
                 UDFPrint(("bad address\n"));
                 MyFreePool__(NextAllocDesc);
