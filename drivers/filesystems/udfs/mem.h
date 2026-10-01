@@ -37,7 +37,7 @@ BOOLEAN inline MyAllocInit(VOID) {return TRUE;}
 #pragma GCC diagnostic ignored "-Wstringop-overflow"
 #endif
 
-ULONG inline MyReallocPool__(PCHAR addr, ULONG len, PCHAR *pnewaddr, ULONG newlen) {
+static __inline ULONG MyReallocPool__(PCHAR addr, ULONG len, PCHAR *pnewaddr, ULONG newlen) {
     ULONG _len, _newlen;
     _newlen = MyAlignSize__(newlen);
     _len = MyAlignSize__(len);

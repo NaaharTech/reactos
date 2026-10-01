@@ -3030,8 +3030,8 @@ CreateUndel:
             d = (d+3) & ~((uint32)3);
 
             uint32 IUl, FIl;
-            if (!MyReallocPool__((int8*)(FileInfo->FileIdent), l,
-                         (int8**)&(FileInfo->FileIdent), (l+d+3) & ~((uint32)(3)) ))
+            if (!MyReallocPool__((PCHAR)(FileInfo->FileIdent), l,
+                         (PCHAR*)&(FileInfo->FileIdent), (l+d+3) & ~((uint32)(3)) ))
                 try_return (status = STATUS_INSUFFICIENT_RESOURCES);
             l += d;
             IUl = FileInfo->FileIdent->lengthOfImpUse;

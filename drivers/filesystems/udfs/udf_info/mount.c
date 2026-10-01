@@ -2449,21 +2449,23 @@ UDFReadVDS(
                 }
                 break;
             case TID_VOL_DESC_PTR: // ISO 13346 3/10.3
-                struct VolDescPtr* pVDP;
-                if (vdsn >= vds[VDS_POS_VOL_DESC_PTR].volDescSeqNum)
                 {
-                    vds[VDS_POS_VOL_DESC_PTR].volDescSeqNum = vdsn;
-                    vds[VDS_POS_VOL_DESC_PTR].block = block;
-                    vds[VDS_POS_RECURSION_COUNTER].volDescSeqNum++;
-                    if (vds[VDS_POS_RECURSION_COUNTER].volDescSeqNum > MAX_VDS_PARTS) {
-                       UDFPrint(("too long multipart VDS -> abort\n"));
-                        return STATUS_DISK_CORRUPT_ERROR;
+                    struct VolDescPtr* pVDP;
+                    if (vdsn >= vds[VDS_POS_VOL_DESC_PTR].volDescSeqNum)
+                    {
+                        vds[VDS_POS_VOL_DESC_PTR].volDescSeqNum = vdsn;
+                        vds[VDS_POS_VOL_DESC_PTR].block = block;
+                        vds[VDS_POS_RECURSION_COUNTER].volDescSeqNum++;
+                        if (vds[VDS_POS_RECURSION_COUNTER].volDescSeqNum > MAX_VDS_PARTS) {
+                           UDFPrint(("too long multipart VDS -> abort\n"));
+                            return STATUS_DISK_CORRUPT_ERROR;
+                        }
+                        pVDP = (struct VolDescPtr*)Buf;
+                        UDFPrint(("multipart VDS...\n"));
+                        return UDFReadVDS(IrpContext, Vcb, pVDP->nextVolDescSeqExt.extLocation,
+                                             pVDP->nextVolDescSeqExt.extLocation + (pVDP->nextVolDescSeqExt.extLocation >> Vcb->SectorShift),
+                                             vds, Buf);
                     }
-                    pVDP = (struct VolDescPtr*)Buf;
-                    UDFPrint(("multipart VDS...\n"));
-                    return UDFReadVDS(IrpContext, Vcb, pVDP->nextVolDescSeqExt.extLocation,
-                                         pVDP->nextVolDescSeqExt.extLocation + (pVDP->nextVolDescSeqExt.extLocation >> Vcb->SectorShift),
-                                         vds, Buf);
                 }
                 break;
             case TID_IMP_USE_VOL_DESC: // ISO 13346 3/10.4

@@ -656,11 +656,11 @@ UDFBuildFullPathFromLcb(
     PFCB Fcb;
     USHORT TotalLength = 0;
     USHORT ComponentLength;
-    PWCHAR Buffer = NULL;
+    _SEH2_VOLATILE PWCHAR Buffer = NULL;
     PWCHAR CurrentPosition;
     PKTHREAD CurrentThread;
-    BOOLEAN CacheLockAcquired = FALSE;
-    NTSTATUS Status = STATUS_SUCCESS;
+    _SEH2_VOLATILE BOOLEAN CacheLockAcquired = FALSE;
+    _SEH2_VOLATILE NTSTATUS Status = STATUS_SUCCESS;
 
     if (!Lcb) {
         return STATUS_INVALID_PARAMETER;
@@ -673,7 +673,7 @@ UDFBuildFullPathFromLcb(
 
     Fcb = CurrentFcb;
 
-    __try {
+    _SEH2_TRY {
 
         // Check if path is already cached in this LCB
         CurrentThread = KeGetCurrentThread();
@@ -697,11 +697,11 @@ UDFBuildFullPathFromLcb(
                                                              TAG_FILE_NAME);
             if (!FullPath->Buffer) {
                 Status = STATUS_INSUFFICIENT_RESOURCES;
-                __leave;
+                _SEH2_LEAVE;
             }
 
             RtlCopyMemory(FullPath->Buffer, Lcb->FileName.Buffer, Lcb->FileName.Length);
-            __leave;
+            _SEH2_LEAVE;
         }
 
         // Release cache lock before building path
@@ -756,7 +756,7 @@ UDFBuildFullPathFromLcb(
         Buffer = (PWCHAR)ExAllocatePoolWithTag(PagedPool, TotalLength + sizeof(WCHAR), TAG_FILE_NAME);
         if (!Buffer) {
             Status = STATUS_INSUFFICIENT_RESOURCES;
-            __leave;
+            _SEH2_LEAVE;
         }
 
         // Build path backwards (from end to beginning)
@@ -852,7 +852,7 @@ UDFBuildFullPathFromLcb(
             }
         }
 
-    } __finally {
+    } _SEH2_FINALLY {
 
         if (CacheLockAcquired) {
             Fcb->FcbLockCount--;
@@ -868,7 +868,7 @@ UDFBuildFullPathFromLcb(
             FullPath->Length = 0;
             FullPath->MaximumLength = 0;
         }
-    }
+    } _SEH2_END;
 
     return Status;
 } // end UDFBuildFullPathFromLcb()

@@ -1348,7 +1348,7 @@ UDFGetVolumeBitmap(
 
         // Fill in the fixed part of the output buffer
 
-        __try {
+        _SEH2_TRY {
 
             // StartingLcn in output = aligned starting block
 
@@ -1358,10 +1358,10 @@ UDFGetVolumeBitmap(
 
             OutputBuffer->BitmapSize.QuadPart = DesiredClusters;
 
-        } __except (EXCEPTION_EXECUTE_HANDLER) {
+        } _SEH2_EXCEPT (EXCEPTION_EXECUTE_HANDLER) {
 
             try_return(Status = STATUS_INVALID_USER_BUFFER);
-        }
+        } _SEH2_END;
 
         OutputBufferLength -= FIELD_OFFSET(VOLUME_BITMAP_BUFFER, Buffer);
 
