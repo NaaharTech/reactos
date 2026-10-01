@@ -1032,7 +1032,7 @@ UDFFlushFile__(
     IN PIRP_CONTEXT IrpContext,
     IN PVCB Vcb,
     IN PUDF_FILE_INFO FileInfo,
-    IN ULONG FlushFlags = 0
+    IN ULONG FlushFlags
     );
 
 // check if the file is flushed

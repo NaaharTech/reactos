@@ -9,7 +9,7 @@ list(APPEND SOURCE
     udf_info/physical.cpp
     udf_info/remap.cpp
     udf_info/udf_info.cpp
-    cleanup.cpp
+    cleanup.c
     close.cpp
     create.cpp
     devcntrl.cpp
@@ -37,7 +37,8 @@ list(APPEND SOURCE
     strucsup.cpp
     filobsup.cpp
     udfdata.cpp
-    udffs.h)
+    udffs.h
+)
 
 add_library(udfs MODULE ${SOURCE} udffs.rc)
 

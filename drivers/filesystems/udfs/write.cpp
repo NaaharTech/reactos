@@ -278,7 +278,7 @@ UDFCommonWrite(
             // I dislike the idea of writing to mounted media too, but M$ has another point of view...
             if (Vcb->VcbCondition == VcbMounted) {
                 // flush system cache
-                UDFFlushVolume(IrpContext, Vcb);
+                UDFFlushVolume(IrpContext, Vcb, 0);
             }
 
             // Forward the request to the lower level driver

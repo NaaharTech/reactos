@@ -2055,7 +2055,7 @@ UDFCommonCreate(
                                 if ((Status != STATUS_FILE_IS_A_DIRECTORY) &&
                                    (Status != STATUS_NOT_A_DIRECTORY) &&
                                    (Status != STATUS_ACCESS_DENIED)) {
-                                    UDFFlushFile__(IrpContext, Vcb, NewFileInfo);
+                                    UDFFlushFile__(IrpContext, Vcb, NewFileInfo, 0);
                                     UDFUnlinkFile__(IrpContext, Vcb, NewFileInfo, TRUE);
                                 }
                                 // UDFCloseFile__ is handled by the finally block.
@@ -2134,7 +2134,7 @@ UDFCommonCreate(
                     (Status != STATUS_FILE_IS_A_DIRECTORY) &&
                     (Status != STATUS_NOT_A_DIRECTORY) &&
                     (Status != STATUS_ACCESS_DENIED)) {
-                    UDFFlushFile__(IrpContext, Vcb, NewFileInfo);
+                    UDFFlushFile__(IrpContext, Vcb, NewFileInfo, 0);
                     UDFUnlinkFile__(IrpContext, Vcb, NewFileInfo, TRUE);
                 }
                 try_return(Status);
@@ -2244,7 +2244,7 @@ UDFCommonCreate(
                     if ((Status != STATUS_FILE_IS_A_DIRECTORY) &&
                        (Status != STATUS_NOT_A_DIRECTORY) &&
                        (Status != STATUS_ACCESS_DENIED)) {
-                        UDFFlushFile__(IrpContext, Vcb, NewFileInfo);
+                        UDFFlushFile__(IrpContext, Vcb, NewFileInfo, 0);
                         UDFUnlinkFile__(IrpContext, Vcb, NewFileInfo, TRUE);
                     }
                     UDFCloseFile__(IrpContext, Vcb, NewFileInfo);
@@ -2356,7 +2356,7 @@ UDFCommonCreate(
                     (Status != STATUS_FILE_IS_A_DIRECTORY) &&
                     (Status != STATUS_NOT_A_DIRECTORY) &&
                     (Status != STATUS_ACCESS_DENIED)) {
-                    UDFFlushFile__(IrpContext, Vcb, NewFileInfo);
+                    UDFFlushFile__(IrpContext, Vcb, NewFileInfo, 0);
                     UDFUnlinkFile__(IrpContext, Vcb, NewFileInfo, TRUE);
                 }
                 if (NewFileInfo) {
@@ -2892,7 +2892,7 @@ UDFCompleteFcbOpen(
         // Flush the volume and make sure all of the user references
         // are gone.
 
-        Status = UDFFlushVolume(IrpContext, Vcb);
+        Status = UDFFlushVolume(IrpContext, Vcb, 0);
 
         if (!NT_SUCCESS(Status)) {
 

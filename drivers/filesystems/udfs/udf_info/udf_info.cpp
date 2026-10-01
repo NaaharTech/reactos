@@ -1764,7 +1764,7 @@ UDFUnlinkFile__(
 cleanup_SDir:
                     UDFCleanUpFile__(Vcb, SFileInfo);
                     if (SFileInfo) MyFreePool__(SFileInfo);
-                    UDFFlushFile__(IrpContext, Vcb, FileInfo);
+                    UDFFlushFile__(IrpContext, Vcb, FileInfo, 0);
                     return status;
                 }
             }
@@ -1779,7 +1779,7 @@ cleanup_SDir:
                 goto cleanup_SDir;
             }
             // delete SDir
-            UDFFlushFile__(IrpContext, Vcb, SDirInfo);
+            UDFFlushFile__(IrpContext, Vcb, SDirInfo, 0);
             AdPrint(("  "));
             UDFUnlinkFile__(IrpContext, Vcb, SDirInfo, TRUE);
             // Mark SDir FCB as deleted so delayed close skips re-unlink
@@ -1804,7 +1804,7 @@ cleanup_SDir:
             // do deltree for Streams
             status = UDFUnlinkAllFilesInDir(IrpContext, Vcb, FileInfo);
             if (!NT_SUCCESS(status)) {
-                UDFFlushFile__(IrpContext, Vcb, FileInfo);
+                UDFFlushFile__(IrpContext, Vcb, FileInfo, 0);
                 return status;
             }
             // update parent FileInfo
@@ -1816,7 +1816,7 @@ cleanup_SDir:
             FileInfo->Dloc->FE_Flags |= UDF_FE_FLAG_IS_DEL_SDIR;
         }
         // flush file
-        UDFFlushFile__(IrpContext, Vcb, FileInfo);
+        UDFFlushFile__(IrpContext, Vcb, FileInfo, 0);
 
         if ((Dloc->FE_Flags & UDF_FE_FLAG_FREE_DEFERRED) || Dloc->CommonFcb) {
 
@@ -1897,7 +1897,7 @@ UDFDeleteAllStreams(
     // SDir runs the deltree of its streams and clears the base file's HAS_SDIR /
     // streamDirectoryICB (its IsSDir branch). Data blocks are freed there (or
     // deferred while an FCB still owns the Dloc).
-    UDFFlushFile__(IrpContext, Vcb, SDirInfo);
+    UDFFlushFile__(IrpContext, Vcb, SDirInfo, 0);
     status = UDFUnlinkFile__(IrpContext, Vcb, SDirInfo, TRUE);
     if (!NT_SUCCESS(status)) {
         UDFCloseFile__(IrpContext, Vcb, SDirInfo);
@@ -1950,7 +1950,7 @@ UDFDeleteAllStreams(
     Dloc->SDirInfo = NULL;
     Dloc->FE_Flags |= UDF_FE_FLAG_FE_MODIFIED;
 
-    UDFFlushFile__(IrpContext, Vcb, FileInfo);
+    UDFFlushFile__(IrpContext, Vcb, FileInfo, 0);
     return STATUS_SUCCESS;
 } // end UDFDeleteAllStreams()
 
@@ -2001,7 +2001,7 @@ err_del_stream:
             return status;
         }
 
-        UDFFlushFile__(IrpContext, Vcb, FileInfo);
+        UDFFlushFile__(IrpContext, Vcb, FileInfo, 0);
         AdPrint(("    "));
         UDFUnlinkFile__(IrpContext, Vcb, FileInfo, TRUE);
         // Mark stream FCB as deleted so delayed close skips re-unlink/flush
@@ -3569,7 +3569,7 @@ cleanup_and_abort_rename:
     // unlink source FileIdent
     if (!NT_SUCCESS(status = UDFUnlinkFile__(IrpContext, Vcb, FileInfo, FALSE))) {
         // kill newly created entry
-        UDFFlushFile__(IrpContext, Vcb, FileInfo2);
+        UDFFlushFile__(IrpContext, Vcb, FileInfo2, 0);
         UDFUnlinkFile__(IrpContext, Vcb, FileInfo2, TRUE);
         UDFCloseFile__(IrpContext, Vcb, FileInfo2);
         UDFCleanUpFile__(Vcb, FileInfo2);
@@ -5320,7 +5320,7 @@ UDFRecordVAT(
             UDFPhysLbaToPart(Vcb, PartNum, VatFileInfo->Dloc->DataLoc.Mapping[0].extLocation);
         // record data
         if (NT_SUCCESS(status = UDFWriteFile__(IrpContext, Vcb, VatFileInfo, 0, VatLen + hdrLen, FALSE, New, &WrittenBytes))) {
-            status = UDFFlushFile__(IrpContext, Vcb, VatFileInfo);
+            status = UDFFlushFile__(IrpContext, Vcb, VatFileInfo, 0);
         }
         return status;
     }
@@ -5426,7 +5426,7 @@ UDFRecordVAT(
         UDFPhysLbaToPart(Vcb, PartNum, VatFileInfo->Dloc->FELoc.Mapping[0].extLocation);
     VatFileInfo->Dloc->DataLoc.Modified = TRUE;
 
-    status = UDFFlushFile__(IrpContext, Vcb, VatFileInfo);
+    status = UDFFlushFile__(IrpContext, Vcb, VatFileInfo, 0);
     if (!NT_SUCCESS(status))
         return status;
 

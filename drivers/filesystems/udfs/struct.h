@@ -82,7 +82,7 @@ struct UDF_IO_RUN {
 
     PIRP SavedIrp;
 };
-using PIO_RUN = UDF_IO_RUN*;
+typedef struct UDF_IO_RUN* PIO_RUN;
 
 /**************************************************************************
     I/O context used to synchronize non-cached I/O completion.
@@ -115,10 +115,11 @@ struct UDF_IO_CONTEXT {
         KEVENT SyncEvent;
     };
 };
-using PUDF_IO_CONTEXT = UDF_IO_CONTEXT*;
+typedef struct UDF_IO_CONTEXT* PUDF_IO_CONTEXT;
 
 //  Keep the old name for IRP_CONTEXT compatibility.
-using IO_CONTEXT = UDF_IO_CONTEXT;
+typedef struct UDF_IO_CONTEXT IO_CONTEXT;
+typedef IO_CONTEXT* PIO_CONTEXT;
 
 struct LCB;
 
@@ -132,8 +133,7 @@ struct UDFIdentifier {
     NODE_BYTE_SIZE NodeByteSize;           // computed as sizeof(structure)
 };
 
-static_assert(sizeof(UDFIdentifier) == offsetof(FSRTL_ADVANCED_FCB_HEADER, Flags),
-    "UDFIdentifier size mismatch with NodeTypeCode and NodeByteSize in FSRTL_ADVANCED_FCB_HEADER");
+C_ASSERT(sizeof(struct UDFIdentifier) == offsetof(FSRTL_ADVANCED_FCB_HEADER, Flags));
 
 /**************************************************************************
     Every open on-disk object must have a name associated with it
@@ -147,12 +147,12 @@ static_assert(sizeof(UDFIdentifier) == offsetof(FSRTL_ADVANCED_FCB_HEADER, Flags
     This structure must be quad-word aligned because it is zone allocated.
 **************************************************************************/
 struct UDFObjectName {
-    UDFIdentifier                       NodeIdentifier;
+    struct UDFIdentifier                       NodeIdentifier;
     uint32                              ObjectNameFlags;
     // an absolute pathname of the object is stored below
     UNICODE_STRING                      ObjectName;
 };
-using PtrUDFObjectName = UDFObjectName*;
+typedef struct UDFObjectName* PtrUDFObjectName;
 
 /**************************************************************************
     Each file open instance is represented by a context control block.
@@ -164,15 +164,15 @@ using PtrUDFObjectName = UDFObjectName*;
     This structure must be quad-word aligned because it is zone allocated.
 **************************************************************************/
 struct CCB {
-    UDFIdentifier                       NodeIdentifier;
+    struct UDFIdentifier                       NodeIdentifier;
 
     // Fcb for the file being opened.
 
-    FCB* Fcb;
+    struct FCB* Fcb;
 
     // Lcb for the file being opened.
 
-    LCB* Lcb;
+    struct LCB* Lcb;
 
     // each CCB is associated with a file object
     PFILE_OBJECT                        FileObject;
@@ -191,7 +191,7 @@ struct CCB {
     UNICODE_STRING                      SearchExpression;
     HASH_ENTRY                          hashes;
 };
-using PCCB = CCB*;
+typedef struct CCB* PCCB;
 
 #define CCB_FLAG_IGNORE_CASE                    (0x00000004)
 // the CCB has had an IRP_MJ_CLEANUP issued on it.
@@ -255,7 +255,7 @@ struct FCB_NONPAGED {
     FAST_MUTEX FcbFastMutex;
 
 };
-using PFCB_NONPAGED = FCB_NONPAGED*;
+typedef struct FCB_NONPAGED* PFCB_NONPAGED;
 
 /**************************************************************************
     each open file/directory/volume is represented by a file control block.
@@ -296,18 +296,18 @@ using PFCB_NONPAGED = FCB_NONPAGED*;
 /***************************************************/
 
 struct FCB_DATA {
-
+    ULONG Reserved;
 };
 
 struct FCB_INDEX {
-
+    ULONG Reserved;
 };
 
 struct FCB {
 
     union {
 
-        UDFIdentifier NodeIdentifier;
+        struct UDFIdentifier NodeIdentifier;
         FSRTL_ADVANCED_FCB_HEADER Header;
     };
 
@@ -371,7 +371,7 @@ struct FCB {
 
     PVOID LazyWriteThread;
 
-    FCB* ParentFcb;
+    struct FCB* ParentFcb;
 
     // LCB queues for parent-child relationships
     // ParentLcbQueue - LCBs linking this FCB to parent directories (for hardlinks, usually 1)
@@ -387,7 +387,7 @@ struct FCB {
     PRTL_SPLAY_LINKS ShortNameRoot;
 
     // Pointer to IrpContextLite in delayed queue.
-    IRP_CONTEXT_LITE* IrpContextLite;
+    struct IRP_CONTEXT_LITE* IrpContextLite;
 
     //  The following field is used by the filelock module
     //  to maintain current byte range locking information.
@@ -398,11 +398,11 @@ struct FCB {
     union{
 
         ULONG FcbType;
-        FCB_DATA FcbData;
-        FCB_INDEX FcbIndex;
+        struct FCB_DATA FcbData;
+        struct FCB_INDEX FcbIndex;
     };
 };
-using PFCB = FCB*;
+typedef struct FCB* PFCB;
 
 #define SIZEOF_FCB_DATA     \
     (FIELD_OFFSET(FCB, FcbType) + sizeof(FCB_DATA))
@@ -468,7 +468,7 @@ enum UDFFSD_MEDIA_TYPE {
     This prevents partial creates from being visible in directory lookups.
 */
 struct LCB {
-    UDFIdentifier NodeIdentifier;      // +0x00 Node type = UDFS_NTC_LCB
+    struct UDFIdentifier NodeIdentifier;      // +0x00 Node type = UDFS_NTC_LCB
 
     UCHAR Reserved1[4];                // +0x04 Padding for alignment
 
@@ -529,7 +529,7 @@ struct LCB {
     UNICODE_STRING FileName;           // +0xE8 File name
 };
 
-using PLCB = LCB*;
+typedef struct LCB* PLCB;
 
 // LCB Flags
 #define UDF_LCB_FLAG_POOL_ALLOCATED         0x00000001  // Allocated from pool (not lookaside)
@@ -566,10 +566,10 @@ enum VCB_CONDITION {
 
 struct VCB {
 
-    UDFIdentifier NodeIdentifier;
+    struct UDFIdentifier NodeIdentifier;
 
     // Condition flag for the Vcb.
-    VCB_CONDITION VcbCondition;
+    enum VCB_CONDITION VcbCondition;
 
     ULONG                               VcbCleanup;
     ULONG                               VcbReference;
@@ -601,8 +601,8 @@ struct VCB {
     PDEVICE_OBJECT                      TargetDeviceObject;
 
     // the volume structure contains a pointer to the root directory FCB
-    FCB* RootIndexFcb;
-    FCB* VolumeDasdFcb;
+    struct FCB* RootIndexFcb;
+    struct FCB* VolumeDasdFcb;
     // the complete name of the user visible drive letter we serve
     PUCHAR                              PtrVolumePath;
     // Pointer to a stream file object created for the volume information
@@ -722,7 +722,7 @@ struct VCB {
     USHORT          PartitionMaps;
     // Pointer to partition structures
     PUDFPartMap     Partitions;
-    LogicalVolIntegrityDesc* LVid;
+    struct LogicalVolIntegrityDesc* LVid;
     uint32          IntegrityType;
     uint32          origIntegrityType;
     extent_ad       LVid_loc;
@@ -769,7 +769,7 @@ struct VCB {
     // Bitmap cache stream (per-page CcPinRead)
     PFCB                BitmapFcb;              // FCB for bitmap internal stream
     PFILE_OBJECT        BitmapStreamFileObject;  // Internal FileObject for bitmap
-    FCB_NONPAGED        BitmapNonpaged;          // Nonpaged data (inline in VCB)
+    struct FCB_NONPAGED        BitmapNonpaged;          // Nonpaged data (inline in VCB)
     LARGE_MCB           BitmapMcb;               // VBN -> PSN mapping for bitmap extents
     PVOID               BitmapBcb;               // BCB of currently pinned page (NULL = none)
     PUCHAR              BitmapPinnedData;        // Pointer to raw data of pinned region
@@ -806,7 +806,7 @@ struct VCB {
     ULONG           DlocCount;
     // FS compatibility
     BOOLEAN         LowFreeSpace;
-    UDFFSD_MEDIA_TYPE MediaTypeEx;
+    enum UDFFSD_MEDIA_TYPE MediaTypeEx;
     ULONG           DefaultAttr;      // Default file attributes (NT-style)
 
     BOOLEAN         NoFreeRelocationSpaceVolumeAction;
@@ -828,7 +828,7 @@ struct VCB {
     PVPB SwapVpb;
 };
 
-using PVCB = VCB*;
+typedef struct VCB* PVCB;
 
 // One for root
 #define UDFS_BASE_RESIDUAL_REFERENCE                (4)//(6)
@@ -878,9 +878,9 @@ struct VOLUME_DEVICE_OBJECT {
 
     // This is the file system specific volume control block.
 
-    VCB Vcb;
+    struct VCB Vcb;
 };
-typedef VOLUME_DEVICE_OBJECT* PVOLUME_DEVICE_OBJECT;
+typedef struct VOLUME_DEVICE_OBJECT* PVOLUME_DEVICE_OBJECT;
 
 //  Following structure is used to track the top level request.  Each Udfs
 //  Fsd and Fsp entry point will examine the top level irp location in the
@@ -900,9 +900,9 @@ struct THREAD_CONTEXT {
 
     //  Top level Udfs IrpContext.  Initial Udfs entry point on stack
     //  will store the IrpContext for the request in this stack location.
-    IRP_CONTEXT* TopLevelIrpContext;
+    struct IRP_CONTEXT* TopLevelIrpContext;
 };
-using PTHREAD_CONTEXT = THREAD_CONTEXT*;
+typedef struct THREAD_CONTEXT* PTHREAD_CONTEXT;
 
 /**************************************************************************
     The IRP context encapsulates the current request. This structure is
@@ -911,7 +911,7 @@ using PTHREAD_CONTEXT = THREAD_CONTEXT*;
     of a system worker thread.
 **************************************************************************/
 struct IRP_CONTEXT {
-    UDFIdentifier                   NodeIdentifier;
+    struct UDFIdentifier                   NodeIdentifier;
     ULONG                           Flags;
     // copied from the IRP
     UCHAR                           MajorFunction;
@@ -926,27 +926,27 @@ struct IRP_CONTEXT {
     // if an exception occurs, we will store the code here
     NTSTATUS                        ExceptionStatus;
     // For queued close operation we save Fcb
-    FCB*                            Fcb;
+    PFCB                            Fcb;
 
     // Io context for a read request.
     // Address of Fcb for teardown oplock in create case.
 
     union {
 
-        IO_CONTEXT* IoContext;
+        PIO_CONTEXT IoContext;
         PFCB* TeardownFcb;
     };
 
     // Top level irp context for this thread.
-    IRP_CONTEXT* TopLevel;
+    struct IRP_CONTEXT* TopLevel;
 
     //  Pointer to the top-level context if this IrpContext is responsible
     //  for cleaning it up.
-    THREAD_CONTEXT* ThreadContext;
+    PTHREAD_CONTEXT ThreadContext;
 
-    VCB*      Vcb;
+    PVCB      Vcb;
 };
-using PIRP_CONTEXT = IRP_CONTEXT*;
+typedef struct IRP_CONTEXT* PIRP_CONTEXT;
 
 #define IRP_CONTEXT_FLAG_ON_STACK               (0x00000001)
 #define IRP_CONTEXT_FLAG_MORE_PROCESSING        (0x00000002)
@@ -1000,9 +1000,9 @@ using PIRP_CONTEXT = IRP_CONTEXT*;
     This structure should be the minimum block allocation size.
 **************************************************************************/
 struct IRP_CONTEXT_LITE {
-    UDFIdentifier                   NodeIdentifier;
+    struct UDFIdentifier                   NodeIdentifier;
     //  Fcb for the file object being closed.
-    FCB*                            Fcb;
+    PFCB                            Fcb;
     //  List entry to attach to delayed close queue.
     LIST_ENTRY                      DelayedCloseLinks;
     //  User reference count for the file object being closed.
@@ -1010,7 +1010,7 @@ struct IRP_CONTEXT_LITE {
     //  Real device object.  This represents the physical device closest to the media.
     PDEVICE_OBJECT                  RealDevice;
 };
-using PIRP_CONTEXT_LITE = IRP_CONTEXT_LITE*;
+typedef struct IRP_CONTEXT_LITE* PIRP_CONTEXT_LITE;
 
 /**************************************************************************
     we will store all of our global variables in one structure.
@@ -1020,7 +1020,7 @@ using PIRP_CONTEXT_LITE = IRP_CONTEXT_LITE*;
 **************************************************************************/
 typedef struct _UDFData {
 
-    UDFIdentifier               NodeIdentifier;
+    struct UDFIdentifier               NodeIdentifier;
     // the fields in this list are protected by the following resource
     ERESOURCE                   GlobalDataResource;
     // each driver has a driver object created for it by the NT I/O Mgr.

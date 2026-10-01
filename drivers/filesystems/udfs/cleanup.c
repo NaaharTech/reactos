@@ -272,7 +272,7 @@ UDFCommonCleanup(
                 }
 
                 // Flush file. It is required by UDFUnlinkFile__()
-                RC = UDFFlushFile__(IrpContext, Vcb, NextFileInfo);
+                RC = UDFFlushFile__(IrpContext, Vcb, NextFileInfo, 0);
                 if (!NT_SUCCESS(RC)) {
                     AdPrint(("Error flushing file !!!\n"));
                 }
@@ -526,7 +526,7 @@ UDFCommonCleanup(
             !(Fcb->FcbState & UDF_FCB_DELETED) &&
             !(Vcb->VcbState & VCB_STATE_VOLUME_READ_ONLY) &&
             NextFileInfo) {
-            UDFFlushFile__(IrpContext, Vcb, NextFileInfo);
+            UDFFlushFile__(IrpContext, Vcb, NextFileInfo, 0);
         }
 
         if (!(Fcb->FcbState & UDF_FCB_DIRECTORY) &&

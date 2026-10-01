@@ -240,7 +240,7 @@ typedef struct _UDF_DATALOC_INFO {
     NT-specific field. As soon as NT supports HardLink concept it
     has own structure describing the file's actual data.
 */
-	FCB* CommonFcb; // pointer to corresponding FCB
+	struct FCB* CommonFcb; // pointer to corresponding FCB
 /**
     Describes on-disk location of  user  data.  If  the  file  is
     recorded using IN_ICB method this  structure  points  to  the
@@ -305,7 +305,9 @@ typedef struct _UDF_DATALOC_INFO {
     StreamDirectory this field must bu NULL.
 */
     struct _UDF_FILE_INFO* SDirInfo;
-} UDF_DATALOC_INFO, *PUDF_DATALOC_INFO;
+} UDF_DATALOC_INFO;
+
+typedef UDF_DATALOC_INFO* PUDF_DATALOC_INFO;
 
 /// Was modified & should be flushed
 #define UDF_FE_FLAG_FE_MODIFIED  (0x01)

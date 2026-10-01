@@ -479,7 +479,7 @@ UDFTeardownStructures(
             if (!Delete &&
                 CurrentFcb->FileInfo &&
                 !(CurrentFcb->FcbState & UDF_FCB_DELETED)) {
-                UDFFlushFile__(IrpContext, Vcb, CurrentFcb->FileInfo);
+                UDFFlushFile__(IrpContext, Vcb, CurrentFcb->FileInfo, 0);
             }
 
             //
@@ -521,7 +521,7 @@ UDFTeardownStructures(
                 // no more references... current file/dir MUST DIE!!!
                 if (Delete) {
                     UDFReferenceFile__(CurrentFcb->FileInfo);
-                    UDFFlushFile__(IrpContext, Vcb, CurrentFcb->FileInfo);
+                    UDFFlushFile__(IrpContext, Vcb, CurrentFcb->FileInfo, 0);
                     UDFUnlinkFile__(IrpContext, Vcb, CurrentFcb->FileInfo, TRUE);
                     UDFCloseFile__(IrpContext, Vcb, CurrentFcb->FileInfo);
                     CurrentFcb->FcbState |= UDF_FCB_DELETED;
