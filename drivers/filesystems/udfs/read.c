@@ -256,6 +256,14 @@ UDFCommonRead(
                 UDFAcquireFcbShared(IrpContext, Fcb, FALSE);
                 FcbAcquired = TRUE;
             }
+
+            if (NonCachedIo) {
+                if (!UDFAcquireResourceShared(&Fcb->FcbNonpaged->FcbPagingIoResource, Wait)) {
+                    try_return(Status = STATUS_CANT_WAIT);
+                } else {
+                    PagingIoResourceAcquired = TRUE;
+                }
+            }
         }
 
         // Verify the Fcb.  Allow reads if this is a DASD handle that is 
