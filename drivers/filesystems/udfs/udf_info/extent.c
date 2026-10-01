@@ -422,7 +422,6 @@ UDFShortAllocDescToMapping(
                 // this case
                 ASSERT(AllocDescsIndex>=(AllocDescsCount-1));
                 ASSERT(!ExtentNext[AllocDescsIndex].extLength);
-                Extent[AllocDescsIndex].extLocation = 0;
                 break;
             }
             ExtentNext[AllocDescsIndex].extLength |= (type << 30);
