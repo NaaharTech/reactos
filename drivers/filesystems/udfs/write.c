@@ -388,6 +388,8 @@ UDFCommonWrite(
             // For PagingIo: FcbResource already acquired by UDFAcqLazyWrite/UDFFastIoAcqModWrite
             // callback before this function is called
 
+            Wait = TRUE;
+
             if (Fcb->FcbState & UDF_FCB_EMBEDDED_DATA) {
                 ASSERT_EXCLUSIVE_FCB(Fcb);
             }

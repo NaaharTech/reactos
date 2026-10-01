@@ -210,6 +210,7 @@ UDFCommonRead(
 
         if (PagingIo) {
 
+            Wait = TRUE;
             UDFAcquireFcbSharedStarveExclusive(IrpContext, Fcb, FALSE);
             FcbAcquired = TRUE;
 
