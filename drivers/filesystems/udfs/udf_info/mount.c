@@ -2463,7 +2463,7 @@ UDFReadVDS(
                         pVDP = (struct VolDescPtr*)Buf;
                         UDFPrint(("multipart VDS...\n"));
                         return UDFReadVDS(IrpContext, Vcb, pVDP->nextVolDescSeqExt.extLocation,
-                                             pVDP->nextVolDescSeqExt.extLocation + (pVDP->nextVolDescSeqExt.extLocation >> Vcb->SectorShift),
+                                             pVDP->nextVolDescSeqExt.extLocation + (pVDP->nextVolDescSeqExt.extLength >> Vcb->SectorShift),
                                              vds, Buf);
                     }
                 }
