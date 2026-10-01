@@ -1156,7 +1156,7 @@ UDFGetPartFreeSpace(
             ULONG bits = Vcb->BitmapPageBitCount;
             ULONG startLbn = Vcb->BitmapPageStartLbn;
             ULONG bufWords = (bits + 31) / 32;
-            ULONG dataBytes = (Vcb->BitmapRtl.SizeOfBitMap + 7) / 8;
+            // ULONG dataBytes = (Vcb->BitmapRtl.SizeOfBitMap + 7) / 8;
             if (bufWords * 4 > Vcb->BitmapPinnedLength) {
                 UDFPrint(("UDF BM: FreeSpace OVERFLOW pos=%x bits=%x need=%x pinLen=%x pinOff=%x\n",
                     pos, bits, bufWords * 4, Vcb->BitmapPinnedLength, Vcb->BitmapPinnedOffset));

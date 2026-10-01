@@ -13,4 +13,5 @@ modules/[Aa][Hh][Kk]_[Tt]ests
 .settings
 .vs
 .vscode
+.ianotes
 sdk/tools/winesync/winesync.cfg

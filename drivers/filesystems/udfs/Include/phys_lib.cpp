@@ -838,7 +838,7 @@ UDFPrepareForReadOperation(
         Vcb->VcbState &= ~UDF_VCB_LAST_WRITE;
         return STATUS_SUCCESS;
     }
-    uint32 i = Vcb->LastReadTrack;
+    // uint32 i = Vcb->LastReadTrack;
 
     if (Vcb->BSBM_Bitmap) {
         ULONG i;
