@@ -2228,7 +2228,9 @@ UDFSetRenameInfo(
                                 // Acquire target FCB to serialize with cleanup
                                 if (StaleFcb) {
                                     UDF_CHECK_PAGING_IO_RESOURCE(StaleFcb);
-                                    UDFAcquireFcbExclusive(IrpContext, StaleFcb, TRUE);
+                                    if (!UDFAcquireFcbExclusive(IrpContext, StaleFcb, TRUE)) {
+                                        try_return(RC = STATUS_ACCESS_DENIED);
+                                    }
                                     StaleFcbAcquired = TRUE;
                                 }
 
