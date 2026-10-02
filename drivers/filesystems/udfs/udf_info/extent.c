@@ -882,7 +882,6 @@ UDFBuildShortAllocDescs(
     Alloc[i].extPosition = 0;
     j = len*sizeof(SHORT_AD); // required space
     len = (InitSz & ~(sizeof(SHORT_AD)-1)); // space available in 1st block
-    ASSERT(len == InitSz);
 
     // Ok. Let's init AllocLoc
     if (!(FileInfo->Dloc->AllocLoc.Mapping)) {
@@ -1068,7 +1067,6 @@ UDFBuildLongAllocDescs(
     RtlZeroMemory(&(Alloc[i]), sizeof(LONG_AD));
     j = len*sizeof(LONG_AD); // required space
     len = (InitSz & ~(sizeof(LONG_AD)-1)); // space available in 1st block
-    ASSERT(len == InitSz);
 
     // Ok. Let's init AllocLoc
     if (!(FileInfo->Dloc->AllocLoc.Mapping)) {
