@@ -362,7 +362,6 @@ UDFIllegalFcbAccess(
 #define ASSERT_FCB(F)                   { NOTHING; }
 #define ASSERT_OPTIONAL_FCB(F)          { NOTHING; }
 #define ASSERT_FCB_NONPAGED(FN)         { NOTHING; }
-#define ASSERT_OPTIONAL_FCB(FN)         { NOTHING; }
 #define ASSERT_CCB(C)                   { NOTHING; }
 #define ASSERT_OPTIONAL_CCB(C)          { NOTHING; }
 #define ASSERT_IRP_CONTEXT(IC)          { NOTHING; }
