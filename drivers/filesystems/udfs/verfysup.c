@@ -642,7 +642,6 @@ UDFCheckForDismount(
 
     // Acquire and lock this Vcb to check the dismount state.
 
-    ASSERT(ExIsResourceAcquiredSharedLite(&Vcb->VcbResource) == FALSE);
     UDFAcquireVcbExclusive(IrpContext, Vcb, FALSE);
 
     // Lets get rid of any pending closes for this volume.
