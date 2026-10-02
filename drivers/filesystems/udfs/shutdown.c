@@ -109,7 +109,18 @@ UDFCommonShutdown(
 
             UDFAcquireVcbExclusive(IrpContext, Vcb, FALSE);
 
-            UDFFlushVolume(IrpContext, Vcb, 0);
+            {
+            _SEH2_TRY {
+
+                UDFFlushVolume(IrpContext, Vcb, 0);
+
+            } _SEH2_EXCEPT(EXCEPTION_EXECUTE_HANDLER) {
+
+                IrpContext->ExceptionStatus = STATUS_SUCCESS;
+                UDFPrint(("UDF: exception %08lx\n", _SEH2_GetExceptionCode()));
+
+            } _SEH2_END;
+            }
 
             ASSERT(CONTAINING_RECORD(IoGetCurrentIrpStackLocation(Irp)->DeviceObject,
                                      struct VOLUME_DEVICE_OBJECT,
@@ -166,8 +177,6 @@ UDFCommonShutdown(
     } _SEH2_FINALLY {
 
         UDFReleaseUdfData(IrpContext);
-
-        ExDeleteResourceLite(&UdfData.GlobalDataResource);
 
         // Now, delete any device objects, etc. we may have created
         IoUnregisterFileSystem(UdfData.UDFDeviceObject_CD);
