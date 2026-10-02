@@ -3667,7 +3667,7 @@ UDFRecordDirectory__(
     uint32 PartNum;
     SIZE_T WrittenBytes;
     PDIR_INDEX_ITEM CurDirNdx;
-    uint32 lba;
+    uint32 lba, ParentLBA, TagLoc;
 
     // validate DirInfo
     ValidateFileInfo(DirInfo);
@@ -3697,8 +3697,12 @@ UDFRecordDirectory__(
     lba = DirInfo->Dloc->FELoc.Mapping[0].extLocation;
     ASSERT(lba);
     PartNum = UDFGetRefPartNumByPhysLba(Vcb, lba);
+    TagLoc = UDFPhysLbaToPart(Vcb, PartNum, lba);
+    ParentLBA = DirInfo->ParentFile->Dloc->FELoc.Mapping[0].extLocation;
+    ASSERT(ParentLBA);
+    PartNum = UDFGetRefPartNumByPhysLba(Vcb, ParentLBA);
     FEicb.extLength = Vcb->SectorSize;
-    FEicb.extLocation.logicalBlockNum = UDFPhysLbaToPart(Vcb, PartNum, lba);
+    FEicb.extLocation.logicalBlockNum = UDFPhysLbaToPart(Vcb, PartNum, ParentLBA);
     FEicb.extLocation.partitionReferenceNum = (uint16)PartNum;
     RtlZeroMemory(&(FEicb.impUse), sizeof(FEicb.impUse));
     PName.Buffer = (PWCH)L"";
@@ -3712,7 +3716,7 @@ UDFRecordDirectory__(
     UDFIncDirCounter(Vcb);
     // init structure
     UDFSetUpTag(
-        Vcb, &(FileInfo.FileIdent->descTag), (uint16)(FileInfo.FileIdentLen), FEicb.extLocation.logicalBlockNum, 0);
+        Vcb, &(FileInfo.FileIdent->descTag), (uint16)(FileInfo.FileIdentLen), TagLoc, 0);
     FileInfo.Dloc->DataLoc.Flags |= EXTENT_FLAG_VERIFY; // for metadata
     // flush
     status = UDFWriteFile__(IrpContext, Vcb, DirInfo, 0, FileInfo.FileIdentLen, FALSE, (int8*)(FileInfo.FileIdent), &WrittenBytes);
