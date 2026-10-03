@@ -1722,6 +1722,16 @@ UDFUnlinkFile__(
         FileInfo->FileIdent->fileCharacteristics |= FILE_DELETED;
         hDirNdx->DelCount++;
         UDFChangeFileCounter(Vcb, !UDFIsADirectory(FileInfo), FALSE);
+        if (UDFIsADirectory(FileInfo) && FileInfo->ParentFile) {
+            
+            // FID of subdir parent counts as a link to the parent
+            UDFDecFileLinkCount(FileInfo->ParentFile);
+        }
+    } else { // FID of stream dir parent link to owning file
+        if (FileInfo->ParentFile) {
+
+            UDFDecFileLinkCount(FileInfo->ParentFile);
+        }
     }
     lc = UDFGetFileLinkCount(FileInfo);
 
@@ -3682,6 +3692,8 @@ UDFRecordDirectory__(
     if (DirInfo->Dloc->DirIndex) return STATUS_FILE_IS_A_DIRECTORY;
     // create empty DirIndex
     if (DirInfo->FileIdent) DirInfo->FileIdent->fileCharacteristics |= FILE_DIRECTORY;
+    // FID of subdir parent counts as a link to the parent
+    UDFIncFileLinkCount(DirInfo->ParentFile);
     if ((CurDirNdx = UDFDirIndex(UDFGetDirIndexByFileInfo(DirInfo),DirInfo->Index)))
         CurDirNdx->FileCharacteristics |= FILE_DIRECTORY;
     ((icbtag*)(DirInfo->Dloc->FileEntry+1))->fileType = UDF_FILE_TYPE_DIRECTORY;
