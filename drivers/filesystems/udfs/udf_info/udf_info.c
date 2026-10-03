@@ -3627,6 +3627,14 @@ cleanup_and_abort_rename:
 
     UDFIncFileLinkCount(FileInfo); // increase to 1
 
+    // UDFCreateFile__ counts every new entry like a file but,
+    // UDFUnlinkFile__ removes dir and old parent link
+    if (UDFIsADirectory(FileInfo)) {
+        UDFDecFileCounter(Vcb);
+        UDFIncDirCounter(Vcb);
+        UDFIncFileLinkCount(DirInfo2);
+    }
+
 //    UDFUpdateModifyTime(Vcb, FileInfo);
 
     // PHASE 4
