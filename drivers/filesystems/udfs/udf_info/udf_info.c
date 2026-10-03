@@ -4241,6 +4241,44 @@ UDFIsDirEmpty(
 } // end UDFIsDirEmpty()
 
 /*
+    Calc logicalBlocksRecorded from recorded extents of mapping (zero for in ICB data)
+*/
+static
+void
+UDFSetRecordedBlocks(
+    IN PVCB Vcb,
+    IN PUDF_FILE_INFO FileInfo
+    )
+{
+    uint64 Total = 0;
+    uint16 AllocMode;
+    PFILE_ENTRY FE = NULL;
+    PEXTENDED_FILE_ENTRY EFE = NULL;
+    PEXTENT_MAP Extent = NULL;
+    
+    FE = (PFILE_ENTRY)(FileInfo->Dloc->FileEntry);
+
+    AllocMode = FE->icbTag.flags & ICB_FLAG_ALLOC_MASK;
+
+    Extent = FileInfo->Dloc->DataLoc.Mapping;
+
+    if (Extent && AllocMode != ICB_FLAG_AD_IN_ICB) {
+        while (Extent->extLength) {
+            Total += ((Extent->extLength >> 30) == EXTENT_RECORDED_ALLOCATED) *
+                (((Extent->extLength & UDF_EXTENT_LENGTH_MASK) + Vcb->SectorSize - 1) >> Vcb->SectorShift);
+            Extent++;
+        }
+    }
+
+    if (FileInfo->Dloc->FileEntry->tagIdent == TID_FILE_ENTRY) {
+        FE->logicalBlocksRecorded = Total;
+    } else if (FileInfo->Dloc->FileEntry->tagIdent == TID_EXTENDED_FILE_ENTRY) {
+        EFE = (PEXTENDED_FILE_ENTRY)(FileInfo->Dloc->FileEntry);
+        EFE->logicalBlocksRecorded = Total;
+    }
+}
+
+/*
  */
 NTSTATUS
 UDFFlushFE(
@@ -4337,6 +4375,7 @@ retry_flush_FE:
         }
         // update lengthAllocDescs in FE
         UDFSetAllocDescLen(Vcb, FileInfo);
+        UDFSetRecordedBlocks(Vcb, FileInfo);
 /*        ASSERT( FileInfo->Dloc->FileEntry->tagLocation ==
                (FileInfo->Dloc->FELoc.Mapping[0].extLocation - 0x580));*/
         // flush FileEntry
