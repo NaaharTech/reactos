@@ -3423,6 +3423,64 @@ UDFCloseFile__(
 } // end UDFCloseFile__()
 
 /*
+    Helper function to handle parent FID updates
+*/
+static
+NTSTATUS
+UDFUpdateParentFID(
+    IN PIRP_CONTEXT IrpContext,
+    IN PVCB Vcb,
+    IN PUDF_FILE_INFO DirInfo
+    )
+{
+    NTSTATUS status = STATUS_SUCCESS;
+    PFILE_IDENT_DESC fid = NULL;
+    PDIR_INDEX_ITEM DirNdx;
+    int8* Buf = NULL;
+    uint32 PartNum, ParentLBA;
+    SIZE_T WrittenBytes = 0;
+
+    DirNdx = UDFDirIndex(DirInfo->Dloc->DirIndex, 1);
+    if (!DirNdx)
+        return STATUS_FILE_CORRUPT_ERROR;
+
+    Buf = (int8*)MyAllocatePool__(NonPagedPool, DirNdx->Length);
+    if (!Buf)
+        return STATUS_INSUFFICIENT_RESOURCES;
+
+    status = UDFReadFile__(IrpContext, Vcb, DirInfo, DirNdx->Offset, DirNdx->Length, FALSE, Buf);
+    if (!NT_SUCCESS(status))
+        goto cleanup;
+
+    fid = (PFILE_IDENT_DESC)Buf;
+    if (!(fid->fileCharacteristics & FILE_PARENT)) {
+        status = STATUS_FILE_CORRUPT_ERROR;
+        goto cleanup;
+    }
+    
+    ParentLBA = DirInfo->ParentFile->Dloc->FELoc.Mapping[0].extLocation;
+    ASSERT(ParentLBA);
+    PartNum = UDFGetRefPartNumByPhysLba(Vcb, ParentLBA);
+    fid->icb.extLength = Vcb->SectorSize;
+    fid->icb.extLocation.logicalBlockNum = UDFPhysLbaToPart(Vcb, PartNum, ParentLBA);
+    fid->icb.extLocation.partitionReferenceNum = (uint16)PartNum;
+    RtlZeroMemory(&(fid->icb.impUse), sizeof(fid->icb.impUse));
+
+    UDFSetUpTag(Vcb, &fid->descTag, (uint16)DirNdx->Length, fid->descTag.tagLocation, 0);
+
+    status = UDFWriteFile__(IrpContext, Vcb, DirInfo, DirNdx->Offset, DirNdx->Length, FALSE, Buf, &WrittenBytes);
+    if (!NT_SUCCESS(status))
+        goto cleanup;
+
+    DirNdx->FileInfo = DirInfo->ParentFile;
+    DirNdx->FileEntryLoc = fid->icb.extLocation;
+
+cleanup:
+    MyFreePool__(Buf);
+    return status;
+}
+
+/*
     This routine moves file from DirInfo1 to DirInfo2 & renames it to fn
  */
 NTSTATUS
@@ -3633,6 +3691,14 @@ cleanup_and_abort_rename:
         UDFDecFileCounter(Vcb);
         UDFIncDirCounter(Vcb);
         UDFIncFileLinkCount(DirInfo2);
+
+        if (DirInfo1 != DirInfo2) {
+            status = UDFUpdateParentFID(IrpContext, Vcb, FileInfo);
+            if(!NT_SUCCESS(status)) {
+                
+                UDFPrint(("UDFRenameMoveFile__: Updating parent FID failed: %08lx\n", status));
+            }
+        }
     }
 
 //    UDFUpdateModifyTime(Vcb, FileInfo);
