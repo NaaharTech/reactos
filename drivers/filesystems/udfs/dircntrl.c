@@ -506,6 +506,11 @@ UDFQueryDirectory(
                 NextMatch++;
             }
 
+            if ((NextMatch < 2)
+                && (Fcb->FcbState & UDF_FCB_ROOT_DIRECTORY)) {
+                    NextMatch = 2;
+            }
+
             // We call UDFFindNextMatch to look down the next matching dirent.
 
             Status = UDFFindNextMatch(Vcb, hDirIndex,&NextMatch,PtrSearchPattern, Ccb->Flags, cur_hashes, &DirNdx);
