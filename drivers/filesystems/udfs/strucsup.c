@@ -1455,7 +1455,7 @@ UDFCompleteMount(
         }
 
         if ((Vcb->SessionEndLba + 1 > LastSector) 
-            && (Vcb->CDR_Mode == NULL)
+            && !Vcb->CDR_Mode
         ) {
             LastSector = Vcb->SessionEndLba + 1;
         }
