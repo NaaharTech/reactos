@@ -717,14 +717,18 @@ UDFGetBlockSize(
 {
     NTSTATUS        RC = STATUS_SUCCESS;
     DISK_GEOMETRY_EX DiskGeometryEx;
+    GET_LENGTH_INFORMATION LengthInfo;
 
     if (DeviceObject->DeviceType == FILE_DEVICE_DISK) {
 
         UDFPrint(("UDFGetBlockSize: HDD\n"));
-        RC = UDFPerformDevIoCtrl(IOCTL_DISK_GET_DRIVE_GEOMETRY_EX,DeviceObject,
-            NULL,0,
-            &DiskGeometryEx,sizeof(DISK_GEOMETRY_EX),
-            TRUE,NULL );
+        RC = UDFPerformDevIoCtrl(IOCTL_DISK_GET_LENGTH_INFO, DeviceObject,
+            NULL,
+            0,
+            &LengthInfo, 
+            sizeof(GET_LENGTH_INFORMATION),
+            TRUE,
+            NULL);
 
         if (!NT_SUCCESS(RC))
             try_return(RC);
@@ -743,7 +747,7 @@ UDFGetBlockSize(
 
     if (DeviceObject->DeviceType == FILE_DEVICE_DISK ||
         FALSE) {
-        Vcb->SessionEndLba = (uint32)(DiskGeometryEx.DiskSize.QuadPart >> Vcb->SectorShift) - 1;
+        Vcb->SessionEndLba = (uint32)(LengthInfo.Length.QuadPart >> Vcb->SectorShift) - 1;
     } else {
         if (NT_SUCCESS(RC)) {
             Vcb->SessionEndLba = (uint32)(DiskGeometryEx.Geometry.Cylinders.QuadPart *

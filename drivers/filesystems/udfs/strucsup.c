@@ -1454,6 +1454,12 @@ UDFCompleteMount(
             }
         }
 
+        if ((Vcb->SessionEndLba + 1 > LastSector) 
+            && (Vcb->CDR_Mode == NULL)
+        ) {
+            LastSector = Vcb->SessionEndLba + 1;
+        }
+
         Vcb->VolumeDasdFcb->Header.FileSize.QuadPart = LlBytesFromSectors(Vcb, LastSector);
 
         Vcb->VolumeDasdFcb->Header.AllocationSize.QuadPart =
