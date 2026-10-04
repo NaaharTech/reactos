@@ -1820,6 +1820,7 @@ UDFCommonCreate(
                                 }
                                 NewFileInfo = LastGoodFileInfo;
                                 PtrNewFcb = NewFileInfo->Fcb;
+                                UDFReferenceFile__(NewFileInfo);
                                 Status = UDFCheckAccessRights(FileObject, AccessState, PtrNewFcb, NULL, DesiredAccess, ShareAccess);
                                 if (!NT_SUCCESS(Status)) {
                                     try_return(Status);
@@ -1863,6 +1864,8 @@ UDFCommonCreate(
                                 if (StreamOpen && RemainingName.Length &&
                                     RemainingName.Buffer[0] == L':') {
                                     StreamBaseFileInfo = NewFileInfo;
+                                } else {
+                                    UDFDereferenceFile__(NewFileInfo);
                                 }
                             }
                         }
@@ -1951,6 +1954,7 @@ UDFCommonCreate(
                     }
                     NewFileInfo = LastGoodFileInfo;
                     PtrNewFcb = NewFileInfo->Fcb;
+                    UDFReferenceFile__(NewFileInfo);
                     Status = UDFCheckAccessRights(FileObject, AccessState, PtrNewFcb, NULL, DesiredAccess, ShareAccess);
                     if (!NT_SUCCESS(Status)) {
                         try_return(Status);
