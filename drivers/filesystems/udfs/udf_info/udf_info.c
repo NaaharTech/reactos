@@ -3044,12 +3044,7 @@ CreateUndel:
             ImpUseLen = FileInfo->FileIdent->lengthOfImpUse;
             DirNdx->FileCharacteristics = 0;
         }
-        // init 'parentICBLocation' & so on in FE
-        ((icbtag*)(FileInfo->Dloc->FileEntry+1))->parentICBLocation.logicalBlockNum =
-             UDFPhysLbaToPart(Vcb, PartNum, DirInfo->Dloc->FELoc.Mapping[0].extLocation);
-        ((icbtag*)(FileInfo->Dloc->FileEntry+1))->parentICBLocation.partitionReferenceNum = (uint16)PartNum;
-    //    ((icbtag*)(FileInfo->Dloc->FileEntry+1))->strategyType = 4;
-    //    ((icbtag*)(FileInfo->Dloc->FileEntry+1))->numEntries = 1;
+
         // try to find suitable unused FileIdent in DirIndex
         l = FileInfo->FileIdentLen;
         if (undel) goto CrF__2;
@@ -3417,19 +3412,6 @@ UDFCloseFile__(
         }
     }
 #endif // UDF_CHECK_DISK_ALLOCATION
-    // check if we should update parentICBLocation
-    if ( !((icbtag*)(FileInfo->Dloc->FileEntry+1))->parentICBLocation.logicalBlockNum &&
-        !((icbtag*)(FileInfo->Dloc->FileEntry+1))->parentICBLocation.partitionReferenceNum &&
-        DirInfo &&
-        !Vcb->CDR_Mode &&
-        Vcb->Modified &&
-        UDFGetFileLinkCount(FileInfo) ) {
-        ASSERT(DirInfo->Dloc->FELoc.Mapping[0].extLocation);
-        ((icbtag*)(FileInfo->Dloc->FileEntry+1))->parentICBLocation.logicalBlockNum =
-             UDFPhysLbaToPart(Vcb, PartNum, DirInfo->Dloc->FELoc.Mapping[0].extLocation);
-        ((icbtag*)(FileInfo->Dloc->FileEntry+1))->parentICBLocation.partitionReferenceNum = (uint16)PartNum;
-        FileInfo->Dloc->FE_Flags |= UDF_FE_FLAG_FE_MODIFIED;
-    }
 
     // we needn't flushing FE & Allocs untill all links are closed...
     if (!FileInfo->Dloc->LinkRefCount) {
