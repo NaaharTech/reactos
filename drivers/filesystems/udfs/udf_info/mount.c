@@ -415,9 +415,7 @@ UDFUpdateLogicalVolInt(
     LVID_iUse->numFiles = Vcb->numFiles;
     LVID_iUse->numDirs  = Vcb->numDirs;
 
-#if 0
     UDFSetEntityID_imp(&(LVID_iUse->impIdent), UDF_ID_DEVELOPER);
-#endif
 
     if (Close){
         UDFPrint(("UDF: Opening LVID\n"));

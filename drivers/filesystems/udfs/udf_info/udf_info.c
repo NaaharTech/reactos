@@ -874,7 +874,7 @@ UDFBuildFileEntry(
 {
     PFILE_ENTRY FileEntry;
     NTSTATUS status;
-//    EntityID* eID;
+    EntityID* eID;
     uint32 l;
     EXTENT_INFO _FEExtInfo;
     uint16* lcp;
@@ -927,23 +927,16 @@ UDFBuildFileEntry(
     FileEntry->gid = -1;
 
     if (Extended) {
-//        eID = &(((PEXTENDED_FILE_ENTRY)FileEntry)->impIdent);
+        eID = &(((PEXTENDED_FILE_ENTRY)FileEntry)->impIdent);
         lcp = &(((PEXTENDED_FILE_ENTRY)FileEntry)->fileLinkCount);
         ((PEXTENDED_FILE_ENTRY)FileEntry)->checkpoint = 1;
     } else {
-//        eID = &(FileEntry->impIdent);
+        eID = &(FileEntry->impIdent);
         lcp = &(FileEntry->fileLinkCount);
         ((PFILE_ENTRY)FileEntry)->checkpoint = 1;
     }
 
-#if 0
     UDFSetEntityID_imp(eID, UDF_ID_DEVELOPER);
-#endif
-
-    /*RtlCopyMemory((int8*)&(eID->ident), UDF_ID_DEVELOPER, sizeof(UDF_ID_DEVELOPER) );
-    iis = (impIdentSuffix*)&(eID->identSuffix);
-    iis->OSClass = UDF_OS_CLASS_WINNT;
-    iis->OSIdent = UDF_OS_ID_WINNT;*/
 
     *lcp = 0;
 
@@ -1479,7 +1472,9 @@ UDFSetEntityID_imp_(
 {
     impIdentSuffix* iis;
 
-    RtlCopyMemory( (int8*)&(eID->ident), Str, Len );
+    RtlZeroMemory(eID, sizeof(EntityID));
+    RtlCopyMemory( (int8*)&(eID->ident), Str, min(Len, sizeof(eID->ident)) );
+    
     iis = (impIdentSuffix*)&(eID->identSuffix);
     iis->OSClass = UDF_OS_CLASS_WINNT;
     iis->OSIdent = UDF_OS_ID_WINNT;
