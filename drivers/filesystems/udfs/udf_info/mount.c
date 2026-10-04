@@ -384,6 +384,7 @@ UDFUpdateLogicalVolInt(
     struct LogicalVolHeaderDesc* LVID_hd;
     uint32*     partFreeSpace;
     BOOLEAN     equal = FALSE;
+    LONGLONG NtTime;
 
     if (Vcb->CDR_Mode)
         return STATUS_SUCCESS;
@@ -445,6 +446,9 @@ UDFUpdateLogicalVolInt(
         UDFPrint(("UDF: equal Ids\n"));
         return STATUS_SUCCESS;
     }
+
+    KeQuerySystemTime((PLARGE_INTEGER)&NtTime);
+    UDFTimeToUDF(NtTime, &(lvid->recordingDateAndTime));
 
     PTag = &(lvid->descTag);
     lvid->lengthOfImpUse =
