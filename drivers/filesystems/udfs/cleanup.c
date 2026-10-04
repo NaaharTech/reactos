@@ -552,7 +552,24 @@ UDFCommonCleanup(
         // Parent FileInfo references are now handled by LCB mechanism in UDFTeardownStructures
         ASSERT(AcquiredVcb);
         if (NextFileInfo) {
+            PUDF_FILE_INFO DirInfo = NextFileInfo->ParentFile;
             UDFCloseFile__(IrpContext, Vcb, NextFileInfo);
+            if (DirInfo && 
+                DirInfo->Dloc && 
+                DirInfo->Fcb &&
+                !(Vcb->VcbState & VCB_STATE_VOLUME_READ_ONLY) &&
+                (
+                    (DirInfo->Dloc->FE_Flags & UDF_FE_FLAG_FE_MODIFIED) ||
+                    DirInfo->Dloc->AllocLoc.Modified ||
+                    DirInfo->Dloc->DataLoc.Modified ||
+                    DirInfo->Dloc->FELoc.Modified
+                )
+                ) {
+                UDF_CHECK_PAGING_IO_RESOURCE(DirInfo->Fcb);
+                UDFAcquireFcbExclusive(IrpContext, DirInfo->Fcb, FALSE);
+                UDFFlushFile__(IrpContext, Vcb, DirInfo, UDF_FLUSH_FLAGS_LITE);
+                UDFReleaseFcb(IrpContext, DirInfo->Fcb);
+            }
         }
 
         Ccb->Flags |= UDF_CCB_CLEANED;
