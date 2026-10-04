@@ -963,6 +963,63 @@ UDFLockVolume(
     return Status;
 } // end UDFLockVolume()
 
+static
+NTSTATUS
+UDFPurgeVolume (
+    _In_ PIRP_CONTEXT IrpContext,
+    _In_ PVCB Vcb
+    )
+{
+    NTSTATUS Status = STATUS_SUCCESS;
+    BOOLEAN RemovedFcb;
+    PVOID RestartKey = NULL;
+    PFCB NextFcb = NULL, ThisFcb = NULL;
+
+    ASSERT_EXCLUSIVE_VCB(Vcb);
+    UDFFspClose(Vcb);
+
+    while (1) {
+        UDFLockFcbTable(IrpContext, Vcb);
+        UDFLockVcb(IrpContext, Vcb);
+        NextFcb = UDFGetNextFcb(IrpContext, Vcb, &RestartKey);
+        if (NextFcb) {
+            NextFcb->FcbReference += 1;
+        }
+
+        if (!ThisFcb) {
+            UDFUnlockVcb(IrpContext, Vcb);
+            UDFUnlockFcbTable(IrpContext, Vcb);
+        } else {
+            ThisFcb->FcbReference -= 1;
+            UDFUnlockVcb(IrpContext, Vcb);
+            UDFUnlockFcbTable(IrpContext, Vcb);
+
+            UDF_CHECK_PAGING_IO_RESOURCE(ThisFcb);
+            UDFAcquireFcbExclusive(IrpContext, ThisFcb, FALSE);
+            UDFTeardownStructures(IrpContext, ThisFcb, FALSE, &RemovedFcb);
+            if (!RemovedFcb) {
+                UDFReleaseFcb(IrpContext, ThisFcb);
+            }
+        }
+
+        if (!NextFcb)
+            break;
+        ThisFcb = NextFcb;
+
+        if (ThisFcb->FcbNonpaged->SegmentObject.ImageSectionObject) {
+            MmFlushImageSection(&ThisFcb->FcbNonpaged->SegmentObject, MmFlushForWrite);
+        }
+
+        if ((Status == STATUS_SUCCESS) &&
+            ThisFcb->FcbNonpaged->SegmentObject.DataSectionObject &&
+            !CcPurgeCacheSection(&ThisFcb->FcbNonpaged->SegmentObject, NULL, 0, FALSE)) {
+            Status = STATUS_UNABLE_TO_DELETE_SECTION;
+        }
+    }
+
+    return Status;
+}
+
 _Requires_lock_held_(_Global_critical_region_)
 _Requires_lock_held_(Vcb->VcbResource)
 NTSTATUS
@@ -1013,7 +1070,7 @@ Return Value:
     //
 
     UDFFlushVolume(IrpContext, Vcb, 0);
-    //CdPurgeVolume( IrpContext, Vcb, FALSE );
+    UDFPurgeVolume(IrpContext, Vcb);
 
     //
     //  Now back out of our synchronization and wait for the lazy writer

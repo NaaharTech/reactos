@@ -685,7 +685,7 @@ Return Value:
 }
 
 PFCB
-CdGetNextFcb (
+UDFGetNextFcb  (
     _In_ PIRP_CONTEXT IrpContext,
     _In_ PVCB Vcb,
     _In_ PVOID *RestartKey
