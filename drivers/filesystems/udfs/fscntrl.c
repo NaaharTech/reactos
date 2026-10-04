@@ -485,6 +485,15 @@ UDFMountVolume(
             }
         }
 
+        if ((Vcb->TargetDeviceObject->DeviceType == FILE_DEVICE_DISK) &&
+                (
+                    UDFPerformDevIoCtrl(IOCTL_DISK_IS_WRITABLE, Vcb->TargetDeviceObject,
+                                    NULL, 0, NULL, 0, TRUE, NULL) == STATUS_MEDIA_WRITE_PROTECTED
+                )
+            ) {
+            Vcb->VcbState |= VCB_STATE_MEDIA_WRITE_PROTECT;
+        }
+
         if ((Vcb->VcbState & VCB_STATE_MEDIA_WRITE_PROTECT)) {
             UDFPrint(("UDFMountVolume: RO mount\n"));
             Vcb->VcbState |= VCB_STATE_VOLUME_READ_ONLY;
