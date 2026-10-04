@@ -488,6 +488,7 @@ typedef struct {
 #define ICB_FLAG_SYSTEM         0x0400U
 #define ICB_FLAG_TRANSFORMED    0x0800U
 #define ICB_FLAG_MULTIVERSIONS  0x1000U
+#define ICB_FLAG_STREAM         0x2000U
 
 /* ICB Flags Allocation type(ECMA 167 4/14.6.8) */
 #define ICB_FLAG_AD_SHORT    0

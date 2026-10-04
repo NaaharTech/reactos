@@ -1051,6 +1051,28 @@ UDFBuildFileIdent(
     return STATUS_SUCCESS;
 } // end UDFBuildFileIdent()
 
+static
+void
+UDFAddToStreamOwnerSize(
+    IN PUDF_FILE_INFO StreamInfo,
+    IN int64 Delta
+)
+{
+    if (!Delta || 
+        !UDFIsAStream(StreamInfo) || 
+        !StreamInfo->ParentFile->ParentFile
+     )
+        return;
+
+    PUDF_DATALOC_INFO OwnerDloc = StreamInfo->ParentFile->ParentFile->Dloc;
+    if (OwnerDloc && OwnerDloc->FileEntry &&
+        (OwnerDloc->FileEntry->tagIdent == TID_EXTENDED_FILE_ENTRY))
+    {
+        ((PEXTENDED_FILE_ENTRY)(OwnerDloc->FileEntry))->objectSize += Delta;
+        OwnerDloc->FE_Flags |= UDF_FE_FLAG_FE_MODIFIED;
+    }
+}
+
 /*
     This routine sets informationLength field in (Ext)FileEntry
  */
@@ -1060,6 +1082,7 @@ UDFSetFileSize(
     IN int64 Size
     )
 {
+    int64 StreamsSize;
     uint16 Ident;
 //    PDIR_INDEX_ITEM DirIndex;
 
@@ -1079,8 +1102,11 @@ UDFSetFileSize(
         PEXTENDED_FILE_ENTRY fe = (PEXTENDED_FILE_ENTRY)(FileInfo->Dloc->FileEntry);
         //AdPrint(("  ext-fe %x\n", fe));
         UDFPrint(("informationLength %x objectSize %x\n", Size, fe->objectSize));
-        fe->informationLength = fe->objectSize = Size;
-        // fe->informationLength = Size;
+        StreamsSize = (fe->objectSize > fe->informationLength) ?
+                            (fe->objectSize - fe->informationLength) : 0;
+        UDFAddToStreamOwnerSize(FileInfo, Size - fe->informationLength);
+        fe->informationLength = Size;
+        fe->objectSize = fe->informationLength + StreamsSize;
     }
 /*    if (DirIndex = UDFDirIndex(UDFGetDirIndexByFileInfo(FileInfo),FileInfo->Index) ) {
         DirIndex->FileSize = Size;
@@ -1741,7 +1767,10 @@ UDFUnlinkFile__(
         DirNdx->FileCharacteristics |= FILE_DELETED;
         FileInfo->FileIdent->fileCharacteristics |= FILE_DELETED;
         hDirNdx->DelCount++;
-        UDFChangeFileCounter(Vcb, !UDFIsADirectory(FileInfo), FALSE);
+        if (!UDFIsAStream(FileInfo))
+            UDFChangeFileCounter(Vcb, !UDFIsADirectory(FileInfo), FALSE);
+        else if (FreeSpace)
+            UDFAddToStreamOwnerSize(FileInfo, -UDFGetFileSize(FileInfo));
         if (UDFIsADirectory(FileInfo) && FileInfo->ParentFile) {
             
             // FID of subdir parent counts as a link to the parent
@@ -3109,6 +3138,8 @@ CrF__2:
         UDFSetFileUID(Vcb, FileInfo);
         UDFSetFileSize(FileInfo, 0);
         UDFIncFileLinkCount(FileInfo); // increase to 1
+        if (UDFIsAStreamDir(DirInfo))
+            ((icbtag*)(FileInfo->Dloc->FileEntry+1))->flags |= ICB_FLAG_STREAM;
         UDFUpdateCreateTime(Vcb, FileInfo);
         UDFAttributesToUDF(UDFDirIndex(UDFGetDirIndexByFileInfo(FileInfo),FileInfo->Index),
                              FileInfo->Dloc->FileEntry, Vcb->DefaultAttr);
@@ -3149,7 +3180,8 @@ CrF__2:
         if (undel)
             hDirNdx->DelCount--;
         UDFReleaseDloc(Vcb, FileInfo->Dloc);
-        UDFIncFileCounter(Vcb);
+        if (!UDFIsAStreamDir(DirInfo))
+            UDFIncFileCounter(Vcb);
 
         UDFCheckSpaceAllocation(Vcb, 0, FileInfo->Dloc->DataLoc.Mapping, AS_USED); // check if used
 
@@ -3818,7 +3850,10 @@ UDFRecordDirectory__(
         UDFBuildFileIdent(Vcb, &PName, &FEicb, 0,
                 &(FileInfo.FileIdent), &(FileInfo.FileIdentLen)) ))
         return status;
-    FileInfo.FileIdent->fileCharacteristics |= (FILE_PARENT | FILE_DIRECTORY);
+    FileInfo.FileIdent->fileCharacteristics |= FILE_PARENT;
+    if (!UDFIsAStreamDir(DirInfo)) {
+        FileInfo.FileIdent->fileCharacteristics |= FILE_DIRECTORY;
+    }
     UDFDecFileCounter(Vcb);
     UDFIncDirCounter(Vcb);
     // init structure
@@ -5182,7 +5217,7 @@ UDFCreateStreamDir__(
 
     uint32 PartNum = UDFGetRefPartNumByPhysLba(Vcb, FileInfo->Dloc->FELoc.Mapping[0].extLocation);
     // create stream directory file
-    if (!NT_SUCCESS(status = UDFCreateRootFile__(IrpContext, Vcb, PartNum, 0,0,FALSE, &SDirInfo)))
+    if (!NT_SUCCESS(status = UDFCreateRootFile__(IrpContext, Vcb, PartNum, 0,0, TRUE, &SDirInfo)))
         return status;
     // link objects
     SDirInfo->ParentFile = FileInfo;
@@ -5190,6 +5225,7 @@ UDFCreateStreamDir__(
     SDirInfo->Dloc->FE_Flags |= (UDF_FE_FLAG_FE_MODIFIED | UDF_FE_FLAG_IS_SDIR);
 
     status = UDFRecordDirectory__(IrpContext, Vcb, SDirInfo);
+    UDFIncFileCounter(Vcb);
     UDFDecDirCounter(Vcb);
 
     InterlockedIncrement((PLONG)&FileInfo->OpenCount);
@@ -5221,6 +5257,7 @@ UDFCreateStreamDir__(
             ((PEXTENDED_FILE_ENTRY)(FileInfo->Dloc->FileEntry))->uniqueID;
     }
 
+    UDFDecFileLinkCount(SDirInfo);
     FileInfo->Dloc->FE_Flags |= (UDF_FE_FLAG_FE_MODIFIED | UDF_FE_FLAG_HAS_SDIR);
     // open & finalize linkage
     FileInfo->Dloc->SDirInfo = SDirInfo;
