@@ -84,30 +84,27 @@ UDFTimeToUDF(
     )
 {
     if (!NtTime) return;
-    LONGLONG LocalTime;
 
+    LONG Zone;
+    LONGLONG LocalTime;
     TIME_FIELDS TimeFields;
 
     ExSystemTimeToLocalTime( (PLARGE_INTEGER)&NtTime, (PLARGE_INTEGER)&LocalTime );
     RtlTimeToTimeFields( (PLARGE_INTEGER)&LocalTime, &TimeFields );
 
-    LocalTime /= 10; // microseconds
-    UdfTime->microseconds = (UCHAR)(NtTime % 100);
-    LocalTime /= 100; // hundreds of microseconds
-    UdfTime->hundredsOfMicroseconds = (UCHAR)(NtTime % 100);
-    LocalTime /= 100; // centiseconds
-    UdfTime->centiseconds = (UCHAR)(TimeFields.Milliseconds / 10);
+    UdfTime->hundredsOfMicroseconds = (UCHAR)((LocalTime / 1000) % 100);
+    UdfTime->centiseconds = (UCHAR)((LocalTime / (100 * 1000)) % 100);
+    UdfTime->microseconds = (UCHAR)((LocalTime / 10) % 100);
+
     UdfTime->second = (UCHAR)(TimeFields.Second);
     UdfTime->minute = (UCHAR)(TimeFields.Minute);
     UdfTime->hour = (UCHAR)(TimeFields.Hour);
     UdfTime->day = (UCHAR)(TimeFields.Day);
     UdfTime->month = (UCHAR)(TimeFields.Month);
     UdfTime->year = (USHORT)(TimeFields.Year);
-    // Type occupies bits 12-15 of typeAndTimezone (timezone offset is bits 0-11,
-    // see ECMA-167 / TIMESTAMP_OFFSET_MASK). It must be written at bit 12 so the
-    // reader (UDFTimeToNT), which extracts ((field >> 12) & 0xF), gets TYPE_LOCAL
-    // instead of a bogus type 4 that would make it reject the timestamp as 0.
-    UdfTime->typeAndTimezone = (TIMESTAMP_TYPE_LOCAL << 12);
+
+    Zone = (LONG)((LocalTime - NtTime) / (600 * 1000 * 1000));
+    UdfTime->typeAndTimezone = (USHORT)((TIMESTAMP_TYPE_LOCAL << 12) | (Zone & 0x0FFF));
 } // end UDFTimeToUDF()
 
 /*
