@@ -4607,11 +4607,6 @@ retry_flush_FE:
         if (PartNum == (uint32)(-1) || PartNum == (uint32)(-2)) {
             UDFPrint(("  bad PartNum: %d\n", PartNum));
         }
-        // update lengthAllocDescs in FE
-        UDFSetAllocDescLen(Vcb, FileInfo);
-        UDFSetRecordedBlocks(Vcb, FileInfo);
-/*        ASSERT( FileInfo->Dloc->FileEntry->tagLocation ==
-               (FileInfo->Dloc->FELoc.Mapping[0].extLocation - 0x580));*/
         // flush FileEntry
 
         // if FE is located in remapped block, place it to reliable space
@@ -4626,55 +4621,22 @@ retry_flush_FE:
         AdPrint(("  setup tag: @%x\n", lba));
         ASSERT( lba );
         UDFPrint(("FELoc.Length = %x\n", FileInfo->Dloc->FELoc.Length));
-        // FileInfo->Dloc->FileEntryLen += UDFGetFileSize(FileInfo);
-        UDFSetUpTag(
-            Vcb, FileInfo->Dloc->FileEntry, (uint16)(FileInfo->Dloc->FileEntryLen), UDFPhysLbaToPart(Vcb, PartNum, lba),
-            0);
-        // FileInfo->Dloc->FileEntry->descCRCLength += (uint16)UDFGetFileSize(FileInfo);
-        // FileInfo->Dloc->FELoc.Length += UDFGetFileSize(FileInfo);
-        // FileInfo->Dloc->FELoc.Length = FileInfo->Dloc->FileEntry->descCRCLength + sizeof(tag);
-        UDFPrint(("descCRCLength %x\n", FileInfo->Dloc->FileEntry->descCRCLength));
-        {
-            int64 _infoLen = (FileInfo->Dloc->FileEntry->tagIdent == TID_FILE_ENTRY) ?
-                ((PFILE_ENTRY)(FileInfo->Dloc->FileEntry))->informationLength :
-                ((PEXTENDED_FILE_ENTRY)(FileInfo->Dloc->FileEntry))->informationLength;
-            if (_infoLen != FileInfo->Dloc->DataLoc.Length) {
 
-                // Safety-net: correct informationLength from DataLoc.Length
-                UDFSetFileSize(FileInfo, FileInfo->Dloc->DataLoc.Length);
-                // Re-compute CRC after changing FE content
-                UDFSetUpTag(
-                    Vcb, FileInfo->Dloc->FileEntry, (uint16)(FileInfo->Dloc->FileEntryLen),
-                    UDFPhysLbaToPart(Vcb, PartNum, lba), 0);
-            }
-        }
-        // Determine write length: for in-ICB mode write full sector
-        // to prevent stale data from previous block occupant leaking
-        // into the in-ICB area (sub-sector RMW would preserve old tail).
-        // Re-read AllocMode since UDFBuildAllocDescs may have changed it.
-        AllocMode = ((PFILE_ENTRY)(FileInfo->Dloc->FileEntry))->icbTag.flags & ICB_FLAG_ALLOC_MASK;
-        uint32 feWriteLen;
+        AllocMode = 
+            ((PFILE_ENTRY)(FileInfo->Dloc->FileEntry))->icbTag.flags & 
+            ICB_FLAG_ALLOC_MASK;
         if (AllocMode == ICB_FLAG_AD_IN_ICB) {
-            feWriteLen = Vcb->SectorSize;
-            int8* feBuffer = (int8*)FileInfo->Dloc->FileEntry;
-            uint32 feLen = FileInfo->Dloc->FileEntryLen;
-            // Clear in-ICB area in buffer
-            RtlZeroMemory(feBuffer + feLen, Vcb->SectorSize - feLen);
-            // Sync current in-ICB data from disk into buffer
-            if (FileInfo->Dloc->DataLoc.Length > 0) {
-                UDFReadExtent(IrpContext, Vcb, &FileInfo->Dloc->DataLoc,
-                              0, (uint32)FileInfo->Dloc->DataLoc.Length, FALSE,
-                              feBuffer + feLen);
+
+            status = UDFSyncInIcbData(IrpContext, Vcb, FileInfo);
+
+            if (!NT_SUCCESS(status)) {
+                UDFPrint(("  FlushFE: UDFSyncInIcbData failed with : %x\n", status));
+                return status;
             }
-        } else if (UDFAllocDescsInFEBlock(Vcb, FileInfo)) {
-            feWriteLen = Vcb->SectorSize;
-        } else {
-            feWriteLen = (uint32)(FileInfo->Dloc->FELoc.Length);
+
         }
-        status = UDFWriteExtent(
-            IrpContext,
-            Vcb, &FileInfo->Dloc->FELoc, 0, feWriteLen, FALSE,
-            (int8 *)(FileInfo->Dloc->FileEntry), &WrittenBytes);
+        status = UDFWriteFEBlock(IrpContext, Vcb, FileInfo, PartNum);
+
         if (!NT_SUCCESS(status)) {
             UDFPrint(("  FlushFE: UDFWriteExtent(2) failed (%x)\n", status));
             if (status == STATUS_DEVICE_DATA_ERROR) {
