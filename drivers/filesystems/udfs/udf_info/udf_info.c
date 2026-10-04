@@ -1269,6 +1269,26 @@ UDFGetFileLinkCount(
     return UDF_INVALID_LINK_COUNT;
 } // end UDFGetFileLinkCount()
 
+uint16
+UDFGetFileNameLinkCount(
+    IN PUDF_FILE_INFO FileInfo
+)
+{
+    uint16 LinkCount;
+    
+    LinkCount = UDFGetFileLinkCount(FileInfo);
+
+    if (LinkCount && (LinkCount != UDF_INVALID_LINK_COUNT) &&
+        !UDFIsAStreamDir(FileInfo) && 
+        UDFHasAStreamDir(FileInfo) &&
+        !UDFIsSDirDeleted(FileInfo->Dloc->SDirInfo)
+      ) {
+        LinkCount--;
+    }
+
+    return LinkCount;
+}
+
 #ifdef UDF_CHECK_UTIL
 /*
     This routine sets fileLinkCount field in (Ext)FileEntry
@@ -1741,6 +1761,14 @@ UDFUnlinkFile__(
         lc--;
     }
 
+    if (!IsSDir && 
+        (lc == 1) && 
+        UDFHasAStreamDir(FileInfo) && 
+        !UDFIsSDirDeleted(Dloc->SDirInfo)
+    ) {
+        lc = 0;
+    }
+
     if (DirNdx && FreeSpace) {
         // FileIdent marked as 'deleted' should have an empty ICB
         // We shall do it only if object has parent Dir
@@ -1993,18 +2021,11 @@ UDFUnlinkAllFilesInDir(
 
         // try to open Stream
         status = UDFOpenFile__(IrpContext, Vcb, FALSE, TRUE, NULL, DirInfo, &FileInfo, &i);
+
         if (status == STATUS_FILE_DELETED) {
-            // we should not release on-disk allocation for
-            // deleted streams twice
-            if (CurDirNdx->FileInfo) {
-                BrutePoint();
-                goto err_del_stream;
-            }
             goto skip_del_stream;
-        } else
-        if (!NT_SUCCESS(status)) {
+        } else if (!NT_SUCCESS(status)) {
             // Error :(((
-err_del_stream:
             UDFCleanUpFile__(Vcb, FileInfo);
             if (FileInfo)
                 MyFreePool__(FileInfo);

@@ -683,6 +683,7 @@ void     UDFSetEntityID_imp_(IN EntityID* eID,
 
 // get fileLinkCount field from (Ext)FileEntry
 uint16   UDFGetFileLinkCount(IN PUDF_FILE_INFO FileInfo);
+uint16   UDFGetFileNameLinkCount(IN PUDF_FILE_INFO FileInfo);
 #ifdef UDF_CHECK_UTIL
 // set fileLinkCount field in (Ext)FileEntry
 void
