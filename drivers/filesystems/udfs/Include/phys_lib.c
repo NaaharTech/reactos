@@ -140,7 +140,7 @@ UDFSendSectorIoChunk(
 
     SetFlag(IrpSp->Flags, SL_OVERRIDE_VERIFY_VOLUME);
 
-    if (!IsWrite && FlagOn(IrpContext->Flags, IRP_CONTEXT_FLAG_WRITE_THROUGH)) {
+    if (IsWrite && FlagOn(IrpContext->Flags, IRP_CONTEXT_FLAG_WRITE_THROUGH)) {
         SetFlag(IrpSp->Flags, SL_WRITE_THROUGH);
     }
 
