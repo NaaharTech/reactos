@@ -4334,6 +4334,23 @@ UDFSetRecordedBlocks(
     }
 }
 
+static
+BOOLEAN
+UDFAllocDescsInFEBlock(
+    IN PVCB Vcb,
+    IN PUDF_FILE_INFO FileInfo
+)
+{
+    uint16 AllocMode;
+    
+    AllocMode = ((PFILE_ENTRY)(FileInfo->Dloc->FileEntry))->icbTag.flags & ICB_FLAG_ALLOC_MASK;
+
+    return FileInfo->Dloc->AllocLoc.Mapping &&
+        (AllocMode != ICB_FLAG_AD_IN_ICB) &&
+           (FileInfo->Dloc->AllocLoc.Mapping[0].extLocation == FileInfo->Dloc->FELoc.Mapping[0].extLocation) &&
+           (FileInfo->Dloc->AllocLoc.Offset + FileInfo->Dloc->AllocLoc.Length <= Vcb->SectorSize);
+}
+
 /*
  */
 NTSTATUS
@@ -4384,7 +4401,19 @@ retry_flush_FE:
 #endif // UDF_DBG
         // initiate update of lengthAllocDescs
         FileInfo->Dloc->FE_Flags |= UDF_FE_FLAG_FE_MODIFIED;
-        if (NewAllocDescs) {
+        if (NewAllocDescs && UDFAllocDescsInFEBlock(Vcb, FileInfo)) {
+            int8* feBuffer;
+
+            feBuffer = (int8*)FileInfo->Dloc->FileEntry;
+            
+            RtlCopyMemory(feBuffer + FileInfo->Dloc->AllocLoc.Offset, NewAllocDescs, (uint32)(FileInfo->Dloc->AllocLoc.Length));
+            RtlZeroMemory(
+                feBuffer + (FileInfo->Dloc->AllocLoc.Offset + (uint32)(FileInfo->Dloc->AllocLoc.Length)), 
+                Vcb->SectorSize - (FileInfo->Dloc->AllocLoc.Offset + (uint32)(FileInfo->Dloc->AllocLoc.Length))
+            );
+            
+            MyFreePool__(NewAllocDescs);
+        } else if (NewAllocDescs) {
             ASSERT(AllocMode != ICB_FLAG_AD_IN_ICB);
             status = UDFPadLastSector(IrpContext, Vcb, &FileInfo->Dloc->AllocLoc);
             // ... and flush it
@@ -4488,6 +4517,8 @@ retry_flush_FE:
                               0, (uint32)FileInfo->Dloc->DataLoc.Length, FALSE,
                               feBuffer + feLen);
             }
+        } else if (UDFAllocDescsInFEBlock(Vcb, FileInfo)) {
+            feWriteLen = Vcb->SectorSize;
         } else {
             feWriteLen = (uint32)(FileInfo->Dloc->FELoc.Length);
         }
