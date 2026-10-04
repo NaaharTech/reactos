@@ -266,6 +266,30 @@ UDFGetCachedBitmapLen(
     return totalLen;
 }
 
+static
+ULONG
+UDFCountFreeBits(
+    IN PRTL_BITMAP Bitmap,
+    IN ULONG Start,
+    IN ULONG Count
+)
+{
+    ULONG i = 0, n = 0;
+
+    if (RtlAreBitsClear(Bitmap, Start, Count))
+        return 0;
+
+    if (RtlAreBitsSet(Bitmap, Start, Count)) 
+        return Count;
+    
+    for (i = 0; i < Count; i++) {
+        if (RtlCheckBit(Bitmap, Start + i)) 
+            n++;
+    }
+
+    return n;
+}
+
 /*
     This routine converts physical address to logical in specified partition
  */
@@ -841,6 +865,7 @@ UDFMarkBadSpaceAsUsed(
                     ULONG byteOff = (j * BIT_C - Vcb->BitmapPageStartLbn) / 8;
                     // Access raw pinned data for bad-block masking
                     PUCHAR rawData = (PUCHAR)Vcb->BitmapRtl.Buffer;
+                    Vcb->FreeAllocUnits -= bit_count_tab[rawData[byteOff] & (UCHAR)Vcb->BSBM_Bitmap[j]];
                     rawData[byteOff] &= ~Vcb->BSBM_Bitmap[j];
                     UDFDirtyBitmapPage(Vcb);
                 }
@@ -940,6 +965,7 @@ UDFMarkSpaceAsXXXNoProtect_(
                     UDFPinBitmapPage(Vcb, pos);
                     ULONG localIdx = pos - Vcb->BitmapPageStartLbn;
                     ULONG bitsInPage = min(remaining, Vcb->BitmapPageBitCount - localIdx);
+                    Vcb->FreeAllocUnits -= UDFCountFreeBits(&Vcb->BitmapRtl, localIdx, bitsInPage);
                     RtlClearBits(&Vcb->BitmapRtl, localIdx, bitsInPage);
                     UDFDirtyBitmapPage(Vcb);
                     pos += bitsInPage;
@@ -968,6 +994,7 @@ UDFMarkSpaceAsXXXNoProtect_(
                     UDFPinBitmapPage(Vcb, pos);
                     ULONG localIdx = pos - Vcb->BitmapPageStartLbn;
                     ULONG bitsInPage = min(remaining, Vcb->BitmapPageBitCount - localIdx);
+                    Vcb->FreeAllocUnits += bitsInPage - UDFCountFreeBits(&Vcb->BitmapRtl, localIdx, bitsInPage);
                     RtlSetBits(&Vcb->BitmapRtl, localIdx, bitsInPage);
                     UDFDirtyBitmapPage(Vcb);
                     pos += bitsInPage;

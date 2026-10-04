@@ -1486,7 +1486,12 @@ UDFSetAllocationInfo(
 
             // Yes. Do the FSD specific stuff i.e. increase reserved
             // space on disk.
-            if (((LONGLONG)UDFGetFreeSpace(Vcb) << Vcb->SectorShift) < Buffer->AllocationSize.QuadPart) {
+            if (
+                ( (Vcb->BitmapFcb ? Vcb->FreeAllocUnits : (LONGLONG)UDFGetFreeSpace(Vcb))
+                    << Vcb->SectorShift
+                ) 
+                    < Buffer->AllocationSize.QuadPart
+            ) {
                 try_return(RC = STATUS_DISK_FULL);
             }
 //          RC = STATUS_SUCCESS;
