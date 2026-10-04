@@ -2686,6 +2686,24 @@ try_exit: NOTHING;
     return RC;
 } // end UDFVerifySequence()
 
+static
+ULONG
+GetPhSerialNum(
+    IN PFILE_SET_DESC  fset
+)
+{
+    UCHAR Sum[4];
+    ULONG Count = sizeof(FILE_SET_DESC);
+    UCHAR* Byte = (UCHAR*)fset;
+    
+    RtlZeroMemory(Sum, sizeof(Sum));
+
+    while (Count--)
+        Sum[Count & 0b11] += *(Byte++);
+
+    return ((ULONG)Sum[0] << 24) | ((ULONG)Sum[1] << 16) | ((ULONG)Sum[2] << 8) | (Sum[3] << 0);
+}
+
 /*
     remember some useful info about FileSet & RootDir location
  */
@@ -2699,6 +2717,7 @@ UDFLoadFileset(
 {
     *root = fset->rootDirectoryICB.extLocation;
     Vcb->SerialNumber = fset->descTag.tagSerialNum;
+    Vcb->PhSerialNumber = GetPhSerialNum(fset);
     UDFPrint(("Rootdir at block=%x, partition=%d\n",
         root->logicalBlockNum, root->partitionReferenceNum));
     if (sysstream) {
