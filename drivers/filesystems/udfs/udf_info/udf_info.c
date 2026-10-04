@@ -1474,7 +1474,7 @@ UDFSetEntityID_imp_(
 
     RtlZeroMemory(eID, sizeof(EntityID));
     RtlCopyMemory( (int8*)&(eID->ident), Str, min(Len, sizeof(eID->ident)) );
-    
+
     iis = (impIdentSuffix*)&(eID->identSuffix);
     iis->OSClass = UDF_OS_CLASS_WINNT;
     iis->OSIdent = UDF_OS_ID_WINNT;
@@ -1522,6 +1522,19 @@ UDFReadEntityID_Domain(
 
 } // end UDFReadEntityID_Domain()
 
+static
+NTSTATUS
+UDFWriteFileData(
+    IN PIRP_CONTEXT IrpContext,
+    IN PVCB Vcb,
+    IN PUDF_FILE_INFO FileInfo,
+    IN int64 Offset,
+    IN SIZE_T Length,
+    IN BOOLEAN Direct,
+    IN int8* Buffer,
+    OUT PSIZE_T WrittenBytes
+);
+
 /*
     This routine writes data to file & increases it if necessary.
     In case of increasing AllocDescs will be rebuilt & flushed to disc
@@ -1565,7 +1578,7 @@ UDFWriteFile__(
     if (t <= Dloc->DataLoc.Length) {
         // write Alloc-Rec area
         ExtPrint(("  WAlloc-Rec: %I64x <= %I64x\n", t, Dloc->DataLoc.Length));
-        status = UDFWriteExtent(IrpContext, Vcb, &Dloc->DataLoc, Offset, Length, Direct, Buffer, WrittenBytes);
+        status = UDFWriteFileData(IrpContext, Vcb, FileInfo, Offset, Length, Direct, Buffer, WrittenBytes);
         return status;
     }
     elen = UDFGetExtentLength(Dloc->DataLoc.Mapping);
@@ -1580,7 +1593,7 @@ UDFWriteFile__(
         UDFSetFileSize(FileInfo, t);
         Dloc->DataLoc.Modified = TRUE;
         Dloc->DataLoc.Length = t;
-        return UDFWriteExtent(IrpContext, Vcb, &Dloc->DataLoc, Offset, Length, Direct, Buffer, WrittenBytes);
+        return UDFWriteFile__(IrpContext, Vcb, FileInfo, Offset, Length, Direct, Buffer, WrittenBytes);
     }
     // We should not get here if Direct=TRUE
     if (Direct) return STATUS_INVALID_PARAMETER;
@@ -1630,7 +1643,7 @@ UDFWriteFile__(
             }
         }
         if (OldInIcb) {
-            UDFWriteExtent(IrpContext, Vcb, &Dloc->DataLoc, 0, (uint32)OldLen, FALSE, OldInIcb, &_WrittenBytes);
+            UDFWriteFileData(IrpContext, Vcb, FileInfo, 0, (uint32)OldLen, FALSE, OldInIcb, &_WrittenBytes);
             MyFreePool__(OldInIcb);
         }
         if ((int64)OldLen != Dloc->DataLoc.Length) {
@@ -1645,7 +1658,7 @@ UDFWriteFile__(
     if (OldInIcb) {
         // replace data from ICB (if any) & free buffer
         ExtPrint(("  write old in-icd data\n"));
-        status = UDFWriteExtent(IrpContext, Vcb, &Dloc->DataLoc, 0, (uint32)OldLen, FALSE, OldInIcb, &_WrittenBytes);
+        status = UDFWriteFileData(IrpContext, Vcb, FileInfo, 0, (uint32)OldLen, FALSE, OldInIcb, &_WrittenBytes);
         MyFreePool__(OldInIcb);
         if (!NT_SUCCESS(status))
             return status;
@@ -1654,7 +1667,7 @@ UDFWriteFile__(
     // & now we'll write out data to well prepared extent...
     // ... like all normal people do...
     ExtPrint(("  write user data\n"));
-    if (!NT_SUCCESS(status = UDFWriteExtent(IrpContext, Vcb, &(Dloc->DataLoc), Offset, Length, FALSE, Buffer, WrittenBytes)))
+    if (!NT_SUCCESS(status = UDFWriteFile__(IrpContext, Vcb, FileInfo, Offset, Length, FALSE, Buffer, WrittenBytes)))
         return status;
     UDFSetFileSize(FileInfo, t);
     Dloc->DataLoc.Modified = TRUE;
@@ -3961,7 +3974,7 @@ mark_data_map_0:
             FileInfo->Dloc->DataLoc.Offset = FileInfo->Dloc->FileEntryLen;
             // write data to new location
             if (OldInIcb) {
-                status = UDFWriteExtent(IrpContext, Vcb, &FileInfo->Dloc->DataLoc, 0, (uint32)NewLength, FALSE, OldInIcb, &WrittenBytes);
+                status = UDFResizeFile__(IrpContext, Vcb, FileInfo, NewLength);
             } else {
                 status = STATUS_SUCCESS;
             }
@@ -4320,7 +4333,7 @@ UDFSetRecordedBlocks(
 
 static
 BOOLEAN
-UDFAllocDescsInFEBlock(
+UDFAllocDescsStartInFEBlock(
     IN PVCB Vcb,
     IN PUDF_FILE_INFO FileInfo
 )
@@ -4329,10 +4342,153 @@ UDFAllocDescsInFEBlock(
     
     AllocMode = ((PFILE_ENTRY)(FileInfo->Dloc->FileEntry))->icbTag.flags & ICB_FLAG_ALLOC_MASK;
 
-    return FileInfo->Dloc->AllocLoc.Mapping &&
-        (AllocMode != ICB_FLAG_AD_IN_ICB) &&
+    return (
+        FileInfo->Dloc->AllocLoc.Mapping &&
+        AllocMode != ICB_FLAG_AD_IN_ICB) &&
            (FileInfo->Dloc->AllocLoc.Mapping[0].extLocation == FileInfo->Dloc->FELoc.Mapping[0].extLocation) &&
-           (FileInfo->Dloc->AllocLoc.Offset + FileInfo->Dloc->AllocLoc.Length <= Vcb->SectorSize);
+           (FileInfo->Dloc->AllocLoc.Offset == FileInfo->Dloc->FileEntryLen) &&
+           (FileInfo->Dloc->AllocLoc.Offset < Vcb->SectorSize
+    );
+} 
+
+static
+BOOLEAN
+UDFAllocDescsInFEBlock(
+    IN PVCB Vcb,
+    IN PUDF_FILE_INFO FileInfo
+)
+{
+    return UDFAllocDescsStartInFEBlock(Vcb, FileInfo) &&
+           ((FileInfo->Dloc->AllocLoc.Offset + FileInfo->Dloc->AllocLoc.Length) <= Vcb->SectorSize);
+}
+
+static
+NTSTATUS
+UDFSyncInIcbData(
+    IN PIRP_CONTEXT IrpContext,
+    IN PVCB Vcb,
+    IN PUDF_FILE_INFO FileInfo
+)
+{
+    uint32 FELen = FileInfo->Dloc->FileEntryLen;
+    int8* FEBuf = (int8*)(FileInfo->Dloc->FileEntry);
+
+    if (FELen + FileInfo->Dloc->DataLoc.Length 
+        > Vcb->SectorSize)
+        return STATUS_FILE_CORRUPT_ERROR;
+
+    RtlZeroMemory(FEBuf + FELen, Vcb->SectorSize - FELen);
+    if (!FileInfo->Dloc->DataLoc.Length)
+        return STATUS_SUCCESS;
+
+    return UDFReadExtent(IrpContext, Vcb, 
+        &FileInfo->Dloc->DataLoc, 0, 
+        (uint32)(FileInfo->Dloc->DataLoc.Length), 
+        FALSE, FEBuf + FELen
+    );
+}
+
+static
+NTSTATUS
+UDFWriteFEBlock(
+    IN PIRP_CONTEXT IrpContext,
+    IN PVCB Vcb,
+    IN PUDF_FILE_INFO FileInfo,
+    IN uint32 PartNum
+)
+{
+    PUDF_DATALOC_INFO Dloc = FileInfo->Dloc;
+
+    uint32 FELen = Dloc->FileEntryLen;
+    int8* FEBuf = (int8*)(Dloc->FileEntry);
+    
+    uint16 AllocMode;
+    uint32 TailLen, WriteLen;
+    int64 InfoLen;
+    SIZE_T WrittenBytes;
+    uint32 lba = Dloc->FELoc.Mapping[0].extLocation;
+
+    UDFSetAllocDescLen(Vcb, FileInfo);
+    UDFSetRecordedBlocks(Vcb, FileInfo);
+
+    if (Dloc->FileEntry->tagIdent == TID_FILE_ENTRY)
+        InfoLen = ((PFILE_ENTRY)(Dloc->FileEntry))->informationLength;
+    else
+        InfoLen = ((PEXTENDED_FILE_ENTRY)(Dloc->FileEntry))->informationLength;
+
+    if (InfoLen != Dloc->DataLoc.Length)
+        UDFSetFileSize(FileInfo, Dloc->DataLoc.Length);
+
+    if (Dloc->FileEntry->tagIdent == TID_FILE_ENTRY)
+        TailLen = ((PFILE_ENTRY)(Dloc->FileEntry))->lengthAllocDescs;
+    else
+        TailLen = ((PEXTENDED_FILE_ENTRY)(Dloc->FileEntry))->lengthAllocDescs;
+
+    AllocMode = ((PFILE_ENTRY)(Dloc->FileEntry))->icbTag.flags & ICB_FLAG_ALLOC_MASK;
+
+    if (
+        (
+            (AllocMode == ICB_FLAG_AD_IN_ICB) || 
+            UDFAllocDescsStartInFEBlock(Vcb, FileInfo)
+        ) &&
+        (FELen + TailLen <= Vcb->SectorSize)
+    ) {
+        RtlZeroMemory(FEBuf + FELen + TailLen, Vcb->SectorSize - FELen - TailLen);
+        WriteLen = Vcb->SectorSize;
+    } else {
+        TailLen = 0;
+        WriteLen = (uint32)(Dloc->FELoc.Length);
+    }
+
+    UDFSetUpTag(Vcb, Dloc->FileEntry, (uint16)(FELen + TailLen), UDFPhysLbaToPart(Vcb, PartNum, lba), 0);
+    UDFPrint(("Desc CRC Len %x\n", Dloc->FileEntry->descCRCLength));
+
+    return UDFWriteExtent(IrpContext, Vcb, &Dloc->FELoc, 
+        0, WriteLen, FALSE, 
+        FEBuf, &WrittenBytes
+    );
+} 
+
+static
+NTSTATUS
+UDFWriteFileData(
+    IN PIRP_CONTEXT IrpContext,
+    IN PVCB Vcb,
+    IN PUDF_FILE_INFO FileInfo,
+    IN int64 Offset,
+    IN SIZE_T Length,
+    IN BOOLEAN Direct,
+    IN int8* Buffer,
+    OUT PSIZE_T WrittenBytes
+)
+{
+    NTSTATUS status;
+    uint32 PartNum;
+    PUDF_DATALOC_INFO Dloc = FileInfo->Dloc;
+
+    if (
+        ((((PFILE_ENTRY)(Dloc->FileEntry))->icbTag.flags & ICB_FLAG_ALLOC_MASK) != ICB_FLAG_AD_IN_ICB) ||
+        (Dloc->DataLoc.Offset != Dloc->FileEntryLen) ||
+        (Offset + (int64)Length > Dloc->DataLoc.Length) ||
+        ((PartNum = UDFGetRefPartNumByPhysLba(Vcb, Dloc->FELoc.Mapping[0].extLocation)) == (uint32)-1)
+    )
+        return UDFWriteExtent(IrpContext, Vcb, &Dloc->DataLoc, Offset, Length, Direct, Buffer, WrittenBytes);
+
+    *WrittenBytes = 0;
+
+    status = UDFSyncInIcbData(IrpContext, Vcb, FileInfo);
+    
+    if (!NT_SUCCESS(status))
+        return status;
+    
+    RtlCopyMemory((int8*)(Dloc->FileEntry) + Dloc->FileEntryLen + (uint32)Offset, Buffer, Length);
+
+    status = UDFWriteFEBlock(IrpContext, Vcb, FileInfo, PartNum);
+
+    if (NT_SUCCESS(status))
+        *WrittenBytes = Length;
+    
+    return status;
 }
 
 /*
