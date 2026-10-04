@@ -565,7 +565,16 @@ UDFFindMinSuitableExtent(
         ULONG CurrentRunStart = 0;
         ULONG CurrentRunLength = 0;
         ULONG CurrentLbn = (ULONG)lbnStart;
+        BOOLEAN IsFromHint = FALSE;
 
+        if ((Vcb->BitmapNextFreeHint > lbnStart) && 
+            (Vcb->BitmapNextFreeHint < lbnLim) &&
+            !Vcb->CDR_Mode
+            ) {
+            CurrentLbn = Vcb->BitmapNextFreeHint;
+            IsFromHint = TRUE;
+        }
+rescan:
         while (CurrentLbn < lbnLim) {
             UDFPinBitmapPage(Vcb, CurrentLbn);
 
@@ -612,8 +621,11 @@ UDFFindMinSuitableExtent(
                 }
             }
 
-            // Check early exit
-            if (best_len == Length) break;
+            if (CurrentRunLength >= Length) {
+                best_len = CurrentRunLength;
+                best_lba = CurrentRunStart;
+                break;
+            }
 
             // Advance to next position
             if (runLen == 0) {
@@ -637,6 +649,14 @@ UDFFindMinSuitableExtent(
                 max_lba = CurrentRunStart;
                 max_len = CurrentRunLength;
             }
+        }
+
+        if (IsFromHint && !best_len) {
+            CurrentRunLength = 0;
+            CurrentLbn = (ULONG)lbnStart;
+            IsFromHint = FALSE;
+
+            goto rescan;
         }
     } else {
     // Legacy in-memory bitmap path
@@ -1097,6 +1117,7 @@ no_free_space_err:
             }
         }
 
+        Vcb->BitmapNextFreeHint = Ext.extLocation + (Ext.extLength >> BSh) - Vcb->Partitions[0].PartitionRoot;
         Ext.extLength |= EXTENT_NOT_RECORDED_ALLOCATED << 30;
         if (!(ExtInfo->Mapping)) {
             // create new
