@@ -2663,15 +2663,12 @@ UDFVerifySequence(
                         RC = UDFReadTagged(IrpContext, Vcb, Buf2, j, j, &ident);
                         if (!NT_SUCCESS(RC)) try_return(RC);
 
-//                        gd = (struct GenericDesc *)Buf2;
+                        // gd = (struct GenericDesc *)Buf2;
                         if (ident == TID_PARTITION_DESC) {
                             RC = UDFVerifyPartDesc(IrpContext, Vcb, Buf2);
-                            if (!NT_SUCCESS(RC)) try_return(RC);
-                        } else if (ident == TID_UNALLOC_SPACE_DESC) {
-                            RC = UDFVerifyFreeSpaceBitmap(IrpContext, Vcb, 0, NULL, j);
-                            Vcb->Modified = FALSE;
-                            if (!NT_SUCCESS(RC))
+                            if (!NT_SUCCESS(RC)) {
                                 try_return(RC);
+                            }
                         }
                     }
                     MyFreePool__(Buf2);
