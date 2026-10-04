@@ -504,7 +504,7 @@ UDFCommonWrite(
                         UDFZeroData(Vcb,
                                     FileObject,
                                     OldVDL,
-                                    Fcb->Header.FileSize.QuadPart - OldVDL,
+                                    StartingOffset - OldVDL,
                                     Wait);
 #ifdef UDF_DBG
                         ZeroBlockDone = TRUE;
@@ -541,7 +541,7 @@ UDFCommonWrite(
                 UDFZeroData(Vcb,
                             FileObject,
                             OldVDL,
-                            StartingOffset + TruncatedLength - OldVDL,
+                            StartingOffset - OldVDL,
                             Wait);
                 if (StartingOffset & (PAGE_SIZE-1)) {
                 }
