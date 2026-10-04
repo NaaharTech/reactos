@@ -186,11 +186,52 @@ UDFCommonDevControl(PIRP_CONTEXT IrpContext, PIRP Irp)
     }
 
     switch (IoControlCode) {
-    case IOCTL_VOLSNAP_FLUSH_AND_HOLD_WRITES:
+    case IOCTL_VOLSNAP_FLUSH_AND_HOLD_WRITES: 
+    {
+        KEVENT EvWait;
 
-        UDFCompleteRequest(IrpContext, Irp, STATUS_NOT_SUPPORTED);
-        UDFPrint(("UDFCommonDevControl -> %08lx\n", STATUS_NOT_SUPPORTED));
-        return STATUS_NOT_SUPPORTED;
+        SetFlag(IrpContext->Flags, IRP_CONTEXT_FLAG_WAIT);
+
+        UDFFspClose(Vcb);
+
+        UDFAcquireVcbExclusive(IrpContext, Vcb, FALSE);
+
+        _SEH2_TRY {
+
+            if (!(Vcb->VcbState & VCB_STATE_VOLUME_READ_ONLY))
+                UDFFlushVolume(IrpContext, Vcb, 0);
+
+            KeInitializeEvent(&EvWait, NotificationEvent, FALSE);
+
+            IoCopyCurrentIrpStackLocationToNext(Irp);
+
+            IoSetCompletionRoutine(Irp, 
+                    UDFHijackCompletionRoutine, 
+                    &EvWait, 
+                    TRUE, TRUE, TRUE
+            );
+
+            Status = IoCallDriver(Vcb->TargetDeviceObject, Irp);
+
+            if (Status == STATUS_PENDING) {
+                KeWaitForSingleObject(&EvWait, Executive, 
+                    KernelMode, FALSE, NULL
+                );
+                Status = Irp->IoStatus.Status;
+            }
+
+        } _SEH2_FINALLY {
+
+            UDFReleaseVcb(IrpContext, Vcb);
+
+        } _SEH2_END;
+
+        UDFCompleteRequest(IrpContext, Irp, Status);
+
+        UDFPrint(("UDFCommonDevControl -> %08lx\n", Status));
+        
+        return Status;
+    }
 
     case IOCTL_CDROM_DISK_TYPE:
 
