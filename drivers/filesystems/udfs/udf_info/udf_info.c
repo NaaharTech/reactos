@@ -1593,7 +1593,7 @@ UDFWriteFile__(
         UDFSetFileSize(FileInfo, t);
         Dloc->DataLoc.Modified = TRUE;
         Dloc->DataLoc.Length = t;
-        return UDFWriteFile__(IrpContext, Vcb, FileInfo, Offset, Length, Direct, Buffer, WrittenBytes);
+        return UDFWriteFileData(IrpContext, Vcb, FileInfo, Offset, Length, Direct, Buffer, WrittenBytes);
     }
     // We should not get here if Direct=TRUE
     if (Direct) return STATUS_INVALID_PARAMETER;
@@ -1667,7 +1667,7 @@ UDFWriteFile__(
     // & now we'll write out data to well prepared extent...
     // ... like all normal people do...
     ExtPrint(("  write user data\n"));
-    if (!NT_SUCCESS(status = UDFWriteFile__(IrpContext, Vcb, FileInfo, Offset, Length, FALSE, Buffer, WrittenBytes)))
+    if (!NT_SUCCESS(status = UDFWriteFileData(IrpContext, Vcb, FileInfo, Offset, Length, FALSE, Buffer, WrittenBytes)))
         return status;
     UDFSetFileSize(FileInfo, t);
     Dloc->DataLoc.Modified = TRUE;
@@ -3974,7 +3974,7 @@ mark_data_map_0:
             FileInfo->Dloc->DataLoc.Offset = FileInfo->Dloc->FileEntryLen;
             // write data to new location
             if (OldInIcb) {
-                status = UDFResizeFile__(IrpContext, Vcb, FileInfo, NewLength);
+                status = UDFWriteFileData(IrpContext, Vcb, FileInfo, 0, (uint32)NewLength, FALSE, OldInIcb, &WrittenBytes);
             } else {
                 status = STATUS_SUCCESS;
             }
@@ -4558,6 +4558,15 @@ retry_flush_FE:
             status = UDFPadLastSector(IrpContext, Vcb, &FileInfo->Dloc->AllocLoc);
             // ... and flush it
             status = UDFWriteExtent(IrpContext, Vcb, &FileInfo->Dloc->AllocLoc, 0, (uint32)(FileInfo->Dloc->AllocLoc.Length), FALSE, NewAllocDescs, &WrittenBytes);
+            if (UDFAllocDescsStartInFEBlock(Vcb, FileInfo)) {
+                RtlCopyMemory((int8*)(FileInfo->Dloc->FileEntry) + FileInfo->Dloc->AllocLoc.Offset, 
+                                NewAllocDescs,
+                                min(
+                                 (uint32)(FileInfo->Dloc->AllocLoc.Length),
+                                 Vcb->SectorSize - FileInfo->Dloc->AllocLoc.Offset
+                                )
+                );
+            }
             MyFreePool__(NewAllocDescs);
             if (!NT_SUCCESS(status)) {
                 UDFPrint(("  FlushFE: UDFWriteExtent() faliled (%x)\n", status));
