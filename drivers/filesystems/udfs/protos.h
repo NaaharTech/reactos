@@ -137,6 +137,12 @@ UDFTeardownStructures(
     _Out_ PBOOLEAN RemovedStartingFcb
     );
 
+NTSTATUS
+UDFPurgeVolume (
+    _In_ PIRP_CONTEXT IrpContext,
+    _In_ PVCB Vcb
+    );
+
 PFCB
 UDFGetNextFcb (
     _In_ PIRP_CONTEXT IrpContext,

@@ -112,6 +112,7 @@ UDFCommonShutdown(
             {
             _SEH2_TRY {
 
+                UDFPurgeVolume(IrpContext, Vcb);
                 UDFFlushVolume(IrpContext, Vcb, 0);
 
             } _SEH2_EXCEPT(EXCEPTION_EXECUTE_HANDLER) {

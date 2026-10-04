@@ -963,7 +963,6 @@ UDFLockVolume(
     return Status;
 } // end UDFLockVolume()
 
-static
 NTSTATUS
 UDFPurgeVolume (
     _In_ PIRP_CONTEXT IrpContext,
