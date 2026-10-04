@@ -1085,7 +1085,8 @@ no_free_space_err:
         ASSERT(!(Ext.extLength >> 30));
         ASSERT(Ext.extLocation);
 
-        if (AllocFlags & EXTENT_FLAG_VERIFY) {
+        if ((Vcb->TargetDeviceObject->DeviceType != FILE_DEVICE_DISK) &&
+            (AllocFlags & EXTENT_FLAG_VERIFY)) {
             if (!UDFCheckArea(IrpContext, Vcb, Ext.extLocation, Ext.extLength >> BSh)) {
                 AdPrint(("newly allocated extent contains BB\n"));
                 UDFMarkSpaceAsXXXNoProtect(Vcb, 0, ExtInfo->Mapping, AS_DISCARDED); // free
