@@ -766,8 +766,8 @@ UDFUpdateVDS(
                 DbgFreePool(Buf2);
 //                continue;
             } else
-            // update Vol Ident Desc
-            if (i == VDS_POS_LOGICAL_VOL_DESC) {
+            // update Vol Ident Desc when volume label was changed
+            if (Vcb->VolIdentChanged && (i == VDS_POS_LOGICAL_VOL_DESC)) {
                 status = UDFUpdateLogicalVol(IrpContext, Vcb, vds[VDS_POS_LOGICAL_VOL_DESC], &Vcb->VolIdent);
                 if (!NT_SUCCESS(status))
                     continue;
@@ -979,15 +979,17 @@ UDFUmount__(
     UDFAcquireResourceExclusive(&(Vcb->BitMapResource1),TRUE);
 
     // RAM mode
+    if (Vcb->VolIdentChanged) {
 #ifdef UDF_DBG
-    if (!NT_SUCCESS(UDFUpdateVolIdent(IrpContext, Vcb, Vcb->PVolDescAddr, &Vcb->VolIdent)))
-        UDFPrint(("Error updating VolIdent (1)\n"));
-    if (!NT_SUCCESS(UDFUpdateVolIdent(IrpContext, Vcb, Vcb->PVolDescAddr2, &Vcb->VolIdent)))
-        UDFPrint(("Error updating VolIdent (2)\n"));
+        if (!NT_SUCCESS(UDFUpdateVolIdent(IrpContext, Vcb, Vcb->PVolDescAddr, &Vcb->VolIdent)))
+            UDFPrint(("Error updating VolIdent (1)\n"));
+        if (!NT_SUCCESS(UDFUpdateVolIdent(IrpContext, Vcb, Vcb->PVolDescAddr2, &Vcb->VolIdent)))
+            UDFPrint(("Error updating VolIdent (2)\n"));
 #else
-    UDFUpdateVolIdent(IrpContext, Vcb, Vcb->PVolDescAddr, &Vcb->VolIdent);
-    UDFUpdateVolIdent(IrpContext, Vcb, Vcb->PVolDescAddr2, &Vcb->VolIdent);
+        UDFUpdateVolIdent(IrpContext, Vcb, Vcb->PVolDescAddr, &Vcb->VolIdent);
+        UDFUpdateVolIdent(IrpContext, Vcb, Vcb->PVolDescAddr2, &Vcb->VolIdent);
 #endif // UDF_DBG
+    }
 
     UDF_CHECK_BITMAP_RESOURCE(Vcb);
     // check if we should update BM
@@ -1015,6 +1017,8 @@ UDFUmount__(
     UDFUpdateVDS(IrpContext, Vcb, Vcb->VDS1, Vcb->VDS1 + Vcb->VDS1_Len, flags);
     UDFUpdateVDS(IrpContext, Vcb, Vcb->VDS2, Vcb->VDS2 + Vcb->VDS2_Len, flags);
 #endif // UDF_DBG
+
+    Vcb->VolIdentChanged = FALSE;
 
     // Update Integrity Desc if any
     if (Vcb->LVid && Vcb->origIntegrityType == INTEGRITY_TYPE_CLOSE) {

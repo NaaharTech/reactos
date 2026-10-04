@@ -583,6 +583,7 @@ UDFSetLabelInfo (
     Vcb->VolIdent.MaximumLength = (USHORT)Buffer->VolumeLabelLength+sizeof(WCHAR);
     RtlCopyMemory(Vcb->VolIdent.Buffer, &(Buffer->VolumeLabel), Buffer->VolumeLabelLength);
     Vcb->VolIdent.Buffer[Buffer->VolumeLabelLength/sizeof(WCHAR)] = 0;
+    Vcb->VolIdentChanged = TRUE;
     UDFSetModified(Vcb);
 
     UDFPrint(("  UDFSetLabelInfo: OK\n"));

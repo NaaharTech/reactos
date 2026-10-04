@@ -712,6 +712,7 @@ struct VCB {
     ULONG           Anchor[MAX_ANCHOR_LOCATIONS];
     // Volume label
     UNICODE_STRING  VolIdent;
+    BOOLEAN         VolIdentChanged;
     // Volume creation time
     int64           VolCreationTime;
     // Root & SystemStream lb_addr
