@@ -1373,10 +1373,17 @@ UDFAssingNewFUID(
     IN PVCB Vcb
     )
 {
-    Vcb->NextUniqueId++;
+    int64 uid = 0;
+
+    if ((uint32)(Vcb->NextUniqueId) < 16)
+        Vcb->NextUniqueId += 16 - (uint32)(Vcb->NextUniqueId);
+    
+    uid = Vcb->NextUniqueId++;
+
     if (!((uint32)(Vcb->NextUniqueId)))
         Vcb->NextUniqueId += 16;
-    return Vcb->NextUniqueId;
+
+    return uid;
 }
 
 void
