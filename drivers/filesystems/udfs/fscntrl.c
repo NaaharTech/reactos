@@ -490,6 +490,12 @@ UDFMountVolume(
             Vcb->VcbState |= VCB_STATE_VOLUME_READ_ONLY;
         }
 
+        if ((Vcb->origIntegrityType == INTEGRITY_TYPE_OPEN) && (Vcb->CDR_Mode == 0)) {
+            UDFPrint(("UDFMountVolume: volume is dirty, Read Only mount\n"));
+            Vcb->VcbState |= VCB_STATE_MOUNTED_DIRTY
+                | VCB_STATE_VOLUME_READ_ONLY;
+        }
+
         Vcb->Vpb->SerialNumber = Vcb->PhSerialNumber;
         Vcb->Vpb->VolumeLabelLength = Vcb->VolIdent.Length;
         RtlCopyMemory( Vcb->Vpb->VolumeLabel,
