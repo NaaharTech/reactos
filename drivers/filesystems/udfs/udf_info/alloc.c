@@ -703,7 +703,7 @@ UDFFindMinSuitableExtent(
     
     if (!best_len && !max_len) {
         UDFPrint(("UDFFindMinSuitableExtent: Couldn't find free space lbnStart=%x lbnLim=%x Length=%x BitCount=%x\n",
-            (ULONG)lbnStart, (ULONG)lbnLim, Length, Vcb->FSBM_BitCount));
+            (ULONG)lbnStart, (ULONG)lbnLim, LengthInBlocks, Vcb->FSBM_BitCount));
     }
 
     if (best_len) {
