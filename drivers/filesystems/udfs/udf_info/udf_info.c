@@ -3101,18 +3101,29 @@ CreateUndel:
             // this opearation will help us to avoid glitches
             d = (d+3) & ~((uint32)3);
 
-            uint32 IUl, FIl;
-            if (!MyReallocPool__((PCHAR)(FileInfo->FileIdent), l,
-                         (PCHAR*)&(FileInfo->FileIdent), (l+d+3) & ~((uint32)(3)) ))
+            uint32 IUl = FileInfo->FileIdent->lengthOfImpUse;
+            uint32 FIl = FileInfo->FileIdent->lengthFileIdent;
+            uint32 NewIUl = max(IUl + d, 32);
+            d = NewIUl - IUl;
+            if (!MyReallocPool__((PCHAR)(FileInfo->FileIdent), l, (PCHAR*)&(FileInfo->FileIdent), l+d )) {
                 try_return (status = STATUS_INSUFFICIENT_RESOURCES);
+            }
+
             l += d;
-            IUl = FileInfo->FileIdent->lengthOfImpUse;
-            FIl = FileInfo->FileIdent->lengthFileIdent;
-            // move filename to higher addr
-            RtlMoveMemory(((int8*)(FileInfo->FileIdent+1))+IUl+d,
+            
+            RtlMoveMemory(((int8*)(FileInfo->FileIdent+1))+NewIUl,
                           ((int8*)(FileInfo->FileIdent+1))+IUl, FIl);
+
             RtlZeroMemory(((int8*)(FileInfo->FileIdent+1))+IUl, d);
-            FileInfo->FileIdent->lengthOfImpUse += (uint16)d;
+            
+            RtlZeroMemory(((int8*)(FileInfo->FileIdent+1))+NewIUl+FIl,
+                          l - sizeof(FILE_IDENT_DESC) - NewIUl - FIl);
+
+            if (!IUl) {
+                UDFSetEntityID_imp((EntityID*)(FileInfo->FileIdent+1), UDF_ID_DEVELOPER);
+            }
+
+            FileInfo->FileIdent->lengthOfImpUse = (uint16)NewIUl;
             FileInfo->FileIdentLen = l;
         }
         DirNdx->Length = l;
