@@ -83,7 +83,11 @@ UDFCommonQueryInfo(
         case UserDirectoryOpen:
         case UserFileOpen:
 
-            UDFAcquireFcbShared(IrpContext, Fcb, FALSE);
+            if (FileInformationClass == FileStreamInformation) {
+                UDFAcquireFcbExclusive(IrpContext, Fcb, FALSE);
+            } else {
+                UDFAcquireFcbShared(IrpContext, Fcb, FALSE);
+            }
             ReleaseFcb = TRUE;
 
             // Make sure the Fcb is in a usable condition.  This will raise
@@ -811,8 +815,8 @@ UDFGetFileStreamInformation(
 {
     NTSTATUS        RC = STATUS_SUCCESS;
     PUDF_FILE_INFO  FileInfo;
-    PUDF_FILE_INFO  SDirInfo;
-    PVCB            Vcb;
+    PUDF_FILE_INFO  SDirInfo = NULL;
+    PVCB            Vcb = Fcb->Vcb;
 
     uint_di         i;
     ULONG CurrentSize;
@@ -882,10 +886,21 @@ UDFGetFileStreamInformation(
         Previous = CurrentInfo;
         CurrentInfo = (PFILE_STREAM_INFORMATION)((ULONG_PTR)CurrentInfo + AlignedSize);
 
-        if (!(SDirInfo = FileInfo->Dloc->SDirInfo) ||
-             UDFIsSDirDeleted(SDirInfo) ) {
+        if (
+            UDFIsAStreamDir(FileInfo) ||
+            UDFIsAStream(FileInfo) || 
+            !UDFHasAStreamDir(FileInfo) ||
+            !NT_SUCCESS(UDFOpenStreamDir__(IrpContext, Vcb, FileInfo, &SDirInfo))
+        ) {
+            if (SDirInfo) {
+                UDFCleanUpFile__(Vcb, SDirInfo);
+
+                MyFreePool__(SDirInfo);
+                SDirInfo = NULL;
+            }
 
             *PtrReturnedLength = BufferLength - TotalBytesWritten;
+            
             try_return(RC = STATUS_SUCCESS);
         }
 
@@ -937,6 +952,11 @@ UDFGetFileStreamInformation(
 try_exit: NOTHING;
 
     } _SEH2_FINALLY {
+        if (SDirInfo) {
+            UDFCloseFile__(IrpContext, Vcb, SDirInfo);
+            if (UDFCleanUpFile__(Vcb, SDirInfo))
+                MyFreePool__(SDirInfo);
+        }
         if (NTFileInfo)
            MyFreePool__(NTFileInfo);
     } _SEH2_END;

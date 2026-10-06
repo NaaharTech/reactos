@@ -1849,6 +1849,8 @@ cleanup_SDir:
                     UDFFlushFile__(IrpContext, Vcb, FileInfo, 0);
                     return status;
                 }
+            }  else {
+                UDFReferenceFile__(Dloc->SDirInfo);
             }
             SDirInfo = Dloc->SDirInfo;
             // try to perform deltree for Streams

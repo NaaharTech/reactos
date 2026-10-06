@@ -1113,12 +1113,6 @@ UDFCommonCreate(
     PUDF_FILE_INFO RelatedFileInfo;
     PUDF_FILE_INFO OldRelatedFileInfo = NULL;
     PUDF_FILE_INFO NewFileInfo = NULL;
-    // Base file of a stream path, opened as an intermediate node. It carries an
-    // extra reference (from path traversal) that is normally absorbed by the
-    // stream directory linkage on success. If the stream operation fails before
-    // that linkage is established, this reference must be released explicitly,
-    // otherwise the base file leaks a reference and can no longer be deleted.
-    PUDF_FILE_INFO StreamBaseFileInfo = NULL;
     PUDF_FILE_INFO LastGoodFileInfo = NULL;
     BOOLEAN VolumeOpen = FALSE;
 
@@ -1856,17 +1850,7 @@ UDFCommonCreate(
                                 &NewFileInfo, &PtrNewFcb);
                             if (NT_SUCCESS(Status)) {
                                 LastGoodFileInfo = NewFileInfo;
-                                // If the remaining tail is a stream suffix, this
-                                // intermediate node is the base file of a stream
-                                // path. Remember it so its extra traversal
-                                // reference can be released if the stream
-                                // operation fails before the SDir linkage forms.
-                                if (StreamOpen && RemainingName.Length &&
-                                    RemainingName.Buffer[0] == L':') {
-                                    StreamBaseFileInfo = NewFileInfo;
-                                } else {
-                                    UDFDereferenceFile__(NewFileInfo);
-                                }
+                                UDFDereferenceFile__(NewFileInfo);
                             }
                         }
                     }
@@ -1923,12 +1907,7 @@ UDFCommonCreate(
                             &NewFileInfo, &PtrNewFcb);
                         if (NT_SUCCESS(Status)) {
                             LastGoodFileInfo = NewFileInfo;
-                            // The base file is now held by the stream directory
-                            // linkage (and will be released through it on
-                            // teardown). Its extra traversal reference is no
-                            // longer dangling, so stop tracking it for explicit
-                            // release.
-                            StreamBaseFileInfo = NULL;
+                            UDFDereferenceFile__(NewFileInfo);
                         } else {
                             // FCB setup failed — close stream dir and exit
                             UDFCloseFile__(IrpContext, Vcb, StreamDirInfo);
@@ -2299,8 +2278,11 @@ UDFCommonCreate(
                     FILE_ACTION_ADDED,
                     NULL, FileObject);
 
+                UDFDereferenceFile__(NewFileInfo);
+            
                 // PHASE 1: Create stream directory + open through unified path
                 RelatedFileInfo = NewFileInfo;
+                NewFileInfo = NULL;
                 PUDF_FILE_INFO StreamDirInfo = NULL;
                 Status = UDFCreateStreamDir__(IrpContext, Vcb, RelatedFileInfo, &StreamDirInfo);
                 if (!NT_SUCCESS(Status)) {
@@ -2326,9 +2308,12 @@ UDFCommonCreate(
                 }
                 LastGoodFileInfo = NewFileInfo;
 
+                UDFDereferenceFile__(NewFileInfo);
+
                 // PHASE 2: Create stream file in the stream directory.
                 // StreamName already holds the bare stream name (no leading ':').
                 RelatedFileInfo = NewFileInfo;
+                NewFileInfo = NULL;
                 Status = UDFCreateFile__(IrpContext, Vcb, IgnoreCase, &StreamName, 0, 0,
                          UdfIsExtendedFESupported(Vcb), (CreateDisposition == FILE_CREATE),
                          RelatedFileInfo, &NewFileInfo);
@@ -2477,16 +2462,6 @@ try_exit:   NOTHING;
 
         if (_SEH2_AbnormalTermination()) {
 
-            // Release the dangling reference on a stream path's base file.
-            // The stream operation raised before the SDir linkage was formed,
-            // so the base file's extra traversal reference would otherwise leak
-            // (teardown below stops at the base's non-zero FcbReference when it
-            // is held by a delayed close).
-            if (StreamBaseFileInfo) {
-                UDFCloseFile__(IrpContext, Vcb, StreamBaseFileInfo);
-                StreamBaseFileInfo = NULL;
-            }
-
             //
             //  In the error path we start by calling our teardown routine if we
             //  have a CurrentFcb.
@@ -2532,14 +2507,6 @@ try_exit:   NOTHING;
                          IrpSp->Parameters.Create.SecurityContext->DesiredAccess : 0));
 
             // Balance UDFReferenceFile__ from prefix match / path traversal.
-
-            // Release the dangling reference on a stream path's base file
-            // (stream operation failed before the SDir linkage was formed).
-            // Guard against double-close when the base also surfaced as NewFileInfo.
-            if (StreamBaseFileInfo && StreamBaseFileInfo != NewFileInfo) {
-                UDFCloseFile__(IrpContext, Vcb, StreamBaseFileInfo);
-            }
-            StreamBaseFileInfo = NULL;
 
             if (NewFileInfo) {
                 UDFCloseFile__(IrpContext, Vcb, NewFileInfo);
