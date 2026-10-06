@@ -1390,7 +1390,10 @@ UDFSetFileUID(
 
     ValidateFileInfo(FileInfo);
 
-    UID = UDFAssingNewFUID(Vcb);
+    if (FileInfo->ParentFile && UDFIsAStreamDir(FileInfo->ParentFile))
+        UID = UDFGetFileUID(FileInfo->ParentFile);
+    else 
+        UID = UDFAssingNewFUID(Vcb);
 
 /*    UID = FileInfo->Dloc->FELoc.Mapping[0].extLocation |
           ( FileInfo->ParentFile ? (((int64)(FileInfo->ParentFile->Dloc->FELoc.Mapping[0].extLocation)) << 32) : 0);*/
