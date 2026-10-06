@@ -779,7 +779,7 @@ struct VCB {
     RTL_BITMAP          BitmapRtl;               // RTL_BITMAP for current pinned page
     ULONG               BitmapPageStartLbn;      // First LBN covered by current RTL_BITMAP
     ULONG               BitmapPageBitCount;      // Number of valid bits in current RTL_BITMAP
-    ULONG               BitmapNextFreeHint;      // The LBN after last extent allocation (the next search should start from here)
+    ULONG               SectorHint;              // First LBN for free space search
 
     // pointers to Volume Descriptor Sequences
     ULONG VDS1;
