@@ -3115,7 +3115,7 @@ CreateUndel:
                           ((int8*)(FileInfo->FileIdent+1))+IUl, FIl);
 
             RtlZeroMemory(((int8*)(FileInfo->FileIdent+1))+IUl, d);
-            
+
             RtlZeroMemory(((int8*)(FileInfo->FileIdent+1))+NewIUl+FIl,
                           l - sizeof(FILE_IDENT_DESC) - NewIUl - FIl);
 
@@ -3529,6 +3529,9 @@ UDFUpdateParentFID(
     fid->icb.extLocation.partitionReferenceNum = (uint16)PartNum;
     RtlZeroMemory(&(fid->icb.impUse), sizeof(fid->icb.impUse));
 
+    ((struct FidADImpUse*)&(fid->icb.impUse))->uniqueID = 
+        (uint32)UDFGetFileUID(DirInfo->ParentFile);
+
     UDFSetUpTag(Vcb, &fid->descTag, (uint16)DirNdx->Length, fid->descTag.tagLocation, 0);
 
     status = UDFWriteFile__(IrpContext, Vcb, DirInfo, DirNdx->Offset, DirNdx->Length, FALSE, Buf, &WrittenBytes);
@@ -3854,6 +3857,8 @@ UDFRecordDirectory__(
     FEicb.extLocation.logicalBlockNum = UDFPhysLbaToPart(Vcb, PartNum, ParentLBA);
     FEicb.extLocation.partitionReferenceNum = (uint16)PartNum;
     RtlZeroMemory(&(FEicb.impUse), sizeof(FEicb.impUse));
+    ((struct FidADImpUse*)&(FEicb.impUse))->uniqueID 
+        = (uint32)UDFGetFileUID(DirInfo->ParentFile);
     PName.Buffer = (PWCH)L"";
     PName.Length = (PName.MaximumLength = sizeof(L"")) - sizeof(WCHAR);
     if (!NT_SUCCESS(status =
