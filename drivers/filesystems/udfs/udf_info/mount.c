@@ -2227,10 +2227,12 @@ UDFLoadPartDesc(
                 }
                 // Create bitmap cache stream and CcPinRead BEFORE building
                 // the in-memory bitmap. This loads bitmap data from disk into
-                // the cache, so UDFAddXSpaceBitmap can be skipped.
-                if (phd->unallocatedSpaceBitmap.extLength &&
-                    !(phd->unallocatedSpaceBitmap.extLength >> 30)) {
-
+                if (
+                    phd->unallocatedSpaceBitmap.extLength &&
+                    !(phd->unallocatedSpaceBitmap.extLength >> 30) &&
+                    !Vcb->BitmapFcb
+                ) 
+                {
                     lb_addr bmLocAddr;
                     bmLocAddr.partitionReferenceNum = (uint16)i;
                     bmLocAddr.logicalBlockNum = phd->unallocatedSpaceBitmap.extPosition;
