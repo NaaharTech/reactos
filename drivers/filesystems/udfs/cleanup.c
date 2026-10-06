@@ -539,6 +539,14 @@ UDFCommonCleanup(
             CcUninitializeCacheMap(FileObject, NULL, NULL);
         }
 
+        if (
+            !Fcb->FcbCleanup &&
+            !(Fcb->FcbState & (UDF_FCB_DELETE_ON_CLOSE | UDF_FCB_DELETED)) &&
+            !UDFIsAStream(NextFileInfo) &&
+            !UDFIsAStreamDir(NextFileInfo)
+        )
+            Fcb->FcbState |= UDF_FCB_DELAY_CLOSE;
+
         // release resources now.
         UDFReleaseFcb(IrpContext, Fcb);
         AcquiredFCB = FALSE;
