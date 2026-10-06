@@ -1129,20 +1129,19 @@ UDFFindVRS(
     )
 {
     struct VolStructDesc  *vsd = NULL;
-    uint32       offset;
-    uint32       retStat = 0;
-    uint32       BeginOffset = Vcb->SessionStartLba;
+    uint32       i, offset, retStat = 0;
+    uint32       Step = max(2048, Vcb->SectorSize) >> Vcb->SectorShift;
     NTSTATUS     RC;
     int8*        buffer = (int8*)MyAllocatePool__(NonPagedPool,Vcb->SectorSize);
 
     if (!buffer) return 0;
     // Relative to First LBA in Last Session
-    offset = Vcb->SessionStartLba + 0x10;
+    offset = Vcb->SessionStartLba + (32768 >> Vcb->SectorShift);
 
     UDFPrint(("UDFFindVRS:\n"));
 
     // Process the sequence (if applicable)
-    for (;(offset-BeginOffset <=0x20); offset ++) {
+    for (i = 0; i <= 0x10; i++, offset += Step) {
         // Read a block
         RC = UDFReadSectors(IrpContext, Vcb, FALSE, offset, 1, FALSE, buffer);
         if (!NT_SUCCESS(RC)) continue;
@@ -1204,6 +1203,43 @@ UDFFindVRS(
 
     return retStat;
 } // end UDFFindVRS()
+
+static
+BOOLEAN
+UDFHasOtherFsBootSector(
+    IN PIRP_CONTEXT IrpContext,
+    IN PVCB Vcb
+)
+{
+    uint8* Buf = NULL;
+    uint16 BytesPerSector = 0;
+    BOOLEAN HasOther = FALSE;
+
+    Buf = (uint8*)MyAllocatePool__(NonPagedPool, Vcb->SectorSize);
+    
+    if (!Buf) {
+        return FALSE;
+    }
+
+    if (
+        NT_SUCCESS(UDFReadSectors(IrpContext, Vcb, FALSE, Vcb->SessionStartLba, 1, FALSE, (int8*)Buf)) &&
+        ((Buf[0] == 0xEB) || (Buf[0] == 0xE9)) &&
+        (Buf[510] == 0x55) && (Buf[511] == 0xAA)
+    ) {
+        BytesPerSector = Buf[11] | (Buf[12] << 8);
+        HasOther = 
+                (RtlCompareMemory(Buf + 3, "EXFAT   ", 8) == 8) ||
+                (RtlCompareMemory(Buf + 3, "NTFS    ", 8) == 8) ||
+                ((BytesPerSector >= 512) && (BytesPerSector <= 4096) &&
+                 !(BytesPerSector & (BytesPerSector - 1)) &&
+                 Buf[13] && !(Buf[13] & (Buf[13] - 1)) &&
+                 ((Buf[16] == 1) || (Buf[16] == 2)));
+    }
+
+    MyFreePool__(Buf);
+
+    return HasOther;
+}
 
 /*
     process Primary volume descriptor
@@ -3065,6 +3101,14 @@ UDFGetDiskInfoAndVerify(
 
         if (!UDFFindAnchorVolumeDescriptor(IrpContext, Vcb)) {
 
+            try_return(RC = STATUS_UNRECOGNIZED_VOLUME);
+        }
+
+        if (
+            (DeviceObject->DeviceType == FILE_DEVICE_DISK) &&
+            (!(UDFFindVRS(IrpContext, Vcb) & (VRS_NSR02_FOUND | VRS_NSR03_FOUND)) ||
+            UDFHasOtherFsBootSector(IrpContext, Vcb))
+        ) {
             try_return(RC = STATUS_UNRECOGNIZED_VOLUME);
         }
 
