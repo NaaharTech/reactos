@@ -849,7 +849,7 @@ UDFBuildShortAllocDescs(
     uint32 TagLen = 0;
     tag* Tag = NULL;
     PSHORT_AD saved_Alloc;
-    uint32 TagLoc, prevTagLoc;
+    uint32 TagLoc;
     uint32 BufOffs;
     uint32 ExtOffs;
     uint32 saved_NewLen;
@@ -914,7 +914,7 @@ UDFBuildShortAllocDescs(
 #else //UDF_ALLOW_FRAG_AD
         AdPrint(("multi-block AllocDescs, j=%x\n",j));
         BufOffs = 0;
-        TagLoc = prevTagLoc = 0;
+        TagLoc = 0;
         // calculate the space available for SHORT_ADs in each block
         ac = (LBS - (sizeof(ALLOC_EXT_DESC) + sizeof(SHORT_AD))) & ~(sizeof(SHORT_AD)-1);
         len2 = len;
@@ -957,45 +957,49 @@ sh_alloc_err:
             if (j == len2) {
                 // if we have only 1 SHORT_AD that we can fit in last sector
                 // we shall do it instead of recording link & allocating new block
-                len =
-                TagLen = len2;
+                len = len2;
             }
             ASSERT(saved_NewLen >= (BufOffs + len));
             RtlCopyMemory( (*Buff)+BufOffs, (int8*)Alloc, len);
             Alloc = (PSHORT_AD)((int8*)Alloc + len);
             j -= len;
             BufOffs += len;
+            if (j) {
+                len = ac;
+                if (j <= (len + sizeof(SHORT_AD)))
+                    len = j - sizeof(SHORT_AD);
+                len2 = len + sizeof(SHORT_AD);
+                ((PSHORT_AD)((*Buff)+BufOffs))->extLength = LBS |
+                    (((uint32)EXTENT_NEXT_EXTENT_ALLOCDESC) << 30) ;
+                ((PSHORT_AD)((*Buff)+BufOffs))->extPosition =
+                    UDFPhysLbaToPart(
+                        Vcb,
+                        PartNum,
+                        UDFExtentOffsetToLba(
+                            Vcb, AllocExtent->Mapping,
+                            ExtOffs+BufOffs+sizeof(SHORT_AD)+ts,
+                            NULL, NULL, NULL, NULL
+                        ) 
+                    );
+            }
             if (Tag) {
                 // Set up Tag for AllocDesc
                 Tag->tagIdent = TID_ALLOC_EXTENT_DESC;
                 UDFSetUpTag(Vcb, Tag, (uint16)TagLen, TagLoc, 0);
-                prevTagLoc = TagLoc;
             }
             if (!j) {
                 // terminate loop
                 NewLen = BufOffs;
                 break;
             }
-            len = ac;
-            if (j <= (len + sizeof(SHORT_AD)))
-                len = j - sizeof(SHORT_AD);
-            len2 = len + sizeof(SHORT_AD);
-            // we have more than 1 SHORT_AD that we can't fit in current block
-            // so we shall set up pointer to the next block
-            ((PSHORT_AD)((*Buff)+BufOffs))->extLength = /*LBS*/ (len2 + sizeof(ALLOC_EXT_DESC)) |
-                (((uint32)EXTENT_NEXT_EXTENT_ALLOCDESC) << 30) ;
-            ((PSHORT_AD)((*Buff)+BufOffs))->extPosition = TagLoc =
-                UDFPhysLbaToPart(Vcb, PartNum,
-                    UDFExtentOffsetToLba(Vcb, AllocExtent->Mapping,
-                        ExtOffs+BufOffs+sizeof(SHORT_AD)+ts,
-                        NULL, NULL, NULL, NULL) );
+            TagLoc = ((PSHORT_AD)((*Buff)+BufOffs))->extPosition;
             // reflect additional (link) block & LBlock tail (if any)
             BufOffs += ts+sizeof(SHORT_AD);
             // init AllocDesc
             ( (PALLOC_EXT_DESC) ((*Buff)+BufOffs))->lengthAllocDescs = len2;
-            ( (PALLOC_EXT_DESC) ((*Buff)+BufOffs))->previousAllocExtLocation = prevTagLoc;
+            ( (PALLOC_EXT_DESC) ((*Buff)+BufOffs))->previousAllocExtLocation = 0;
             Tag = (tag*)((*Buff)+BufOffs);
-            TagLen = len2;
+            TagLen = sizeof(ALLOC_EXT_DESC) + ((Vcb->UdfRevision >= 0x0201) ? len2 : 0);;
             ts = LBS-len2-sizeof(ALLOC_EXT_DESC);
             BufOffs += sizeof(ALLOC_EXT_DESC);
         }
@@ -1031,7 +1035,7 @@ UDFBuildLongAllocDescs(
                      // but we need its lower part only
 #ifdef UDF_ALLOW_FRAG_AD
     uint32 ac, len2, ts;
-    uint32 TagLoc, prevTagLoc;
+    uint32 TagLoc;
     uint32 LBS = Vcb->SectorSize;
     uint32 LBSh = Vcb->SectorShift;
     uint32 BufOffs;
@@ -1096,7 +1100,7 @@ UDFBuildLongAllocDescs(
         return STATUS_DISK_FULL;
 #else //UDF_ALLOW_FRAG_AD
         BufOffs = 0;
-        TagLoc = prevTagLoc = 0;
+        TagLoc = 0;
         // calculate the space available for LONG_ADs in each block
         ac = (LBS - (sizeof(ALLOC_EXT_DESC) + sizeof(LONG_AD))) & ~(sizeof(LONG_AD)-1);
         len2 = len;
@@ -1134,45 +1138,49 @@ lad_alloc_err:
             if (j == len2) {
                 // if we have only 1 LONG_AD that we can fit in last sector
                 // we shall do it instead of recording link & allocating new block
-                len =
-                TagLen = len2;
+                len = len2;
             }
             RtlCopyMemory( (*Buff)+BufOffs, (int8*)Alloc, len);
             Alloc = (PLONG_AD)((int8*)Alloc + len);
             j -= len;
             BufOffs += len;
+            if (j) {
+                len = ac;
+                if (j <= (len + sizeof(LONG_AD)))
+                    len = j - sizeof(LONG_AD);
+                len2 = len+sizeof(LONG_AD);
+                ((PLONG_AD)((*Buff)+BufOffs))->extLength = LBS |
+                    (((uint32)EXTENT_NEXT_EXTENT_ALLOCDESC) << 30) ;
+                ((PLONG_AD)((*Buff)+BufOffs))->extLocation.logicalBlockNum =
+                    UDFPhysLbaToPart(
+                        Vcb,
+                        PartNum,
+                        UDFExtentOffsetToLba(
+                            Vcb, AllocExtent->Mapping,
+                            ExtOffs+BufOffs+sizeof(LONG_AD)+ts,
+                            NULL, NULL, NULL, NULL
+                        ) 
+                );
+                ((PLONG_AD)((*Buff)+BufOffs))->extLocation.partitionReferenceNum = (uint16)PartNum;
+            }
             if (Tag) {
                 // Set up Tag for AllocDesc
                 Tag->tagIdent = TID_ALLOC_EXTENT_DESC;
                 UDFSetUpTag(Vcb, Tag, (uint16)TagLen, TagLoc, 0);
-                prevTagLoc = TagLoc;
             }
             if (!j) {
                 // terminate loop
                 NewLen = BufOffs;
                 break;
             }
-            len = ac;
-            if (j <= (len + sizeof(LONG_AD)))
-                len = j - sizeof(LONG_AD);
-            len2 = len+sizeof(LONG_AD);
-            // we have more than 1 LONG_AD that we can't fit in current block
-            // so we shall set up pointer to the next block
-            ((PLONG_AD)((*Buff)+BufOffs))->extLength = /*LBS*/ len2 |
-                (((uint32)EXTENT_NEXT_EXTENT_ALLOCDESC) << 30) ;
-            ((PLONG_AD)((*Buff)+BufOffs))->extLocation.logicalBlockNum = TagLoc =
-                UDFPhysLbaToPart(Vcb, PartNum,
-                    UDFExtentOffsetToLba(Vcb, AllocExtent->Mapping,
-                        ExtOffs+BufOffs+sizeof(LONG_AD)+ts,
-                        NULL, NULL, NULL, NULL) );
-            ((PLONG_AD)((*Buff)+BufOffs))->extLocation.partitionReferenceNum = (uint16)PartNum;
+            TagLoc = ((PLONG_AD)((*Buff)+BufOffs))->extLocation.logicalBlockNum;
             // reflect additional (link) block & LBlock tail (if any)
             BufOffs += ts+sizeof(LONG_AD);
             // init AllocDesc
             ( (PALLOC_EXT_DESC) ((*Buff)+BufOffs))->lengthAllocDescs = len2;
-            ( (PALLOC_EXT_DESC) ((*Buff)+BufOffs))->previousAllocExtLocation = prevTagLoc;
+            ( (PALLOC_EXT_DESC) ((*Buff)+BufOffs))->previousAllocExtLocation = 0;
             Tag = (tag*)((*Buff)+BufOffs);
-            TagLen = len2;
+            TagLen = sizeof(ALLOC_EXT_DESC) + ((Vcb->UdfRevision >= 0x0201) ? len2 : 0);
             ts = LBS-len2-sizeof(ALLOC_EXT_DESC);
             BufOffs += sizeof(ALLOC_EXT_DESC);
         }
