@@ -222,7 +222,7 @@ UDFCommonCleanup(
             }
         }
         // get Link count
-        lc = UDFGetFileLinkCount(Fcb->FileInfo);
+        lc = UDFGetFileNameLinkCount(Fcb->FileInfo);
 
         NextFileInfo = Fcb->FileInfo;
 

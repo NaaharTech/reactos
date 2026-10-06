@@ -291,7 +291,7 @@ UDFFileDirInfoToNT(
         UDFPrint(("    FileInfo\n"));
         // validate FileInfo
         ValidateFileInfo(FileDirNdx->FileInfo);
-        if (UDFGetFileLinkCount(FileDirNdx->FileInfo) > 1)
+        if (UDFGetFileNameLinkCount(FileDirNdx->FileInfo) > 1)
             FileDirNdx->FI_Flags |= UDF_FI_FLAG_LINKED;
         FileEntry = (PFILE_ENTRY)(FileDirNdx->FileInfo->Dloc->FileEntry);
         // read required sizes from Fcb (if any) if file is not linked

@@ -527,7 +527,7 @@ UDFGetStandardInformation(
             try_return(RC = STATUS_INVALID_PARAMETER);
         }
 //        Vcb = Fcb->Vcb;
-        PtrBuffer->NumberOfLinks = UDFGetFileLinkCount(FileInfo);
+        PtrBuffer->NumberOfLinks = UDFGetFileNameLinkCount(FileInfo);
         PtrBuffer->DeletePending = (Fcb->FcbState & UDF_FCB_DELETE_ON_CLOSE) ? TRUE : FALSE;
 
         //  Case on whether this is a file or a directory, and extract
@@ -1130,7 +1130,7 @@ UDFMarkStreamsForDeletion(
            !UDFHasAStreamDir(Fcb->FileInfo) ||
            !Fcb->FileInfo->Dloc->SDirInfo ||
            UDFIsSDirDeleted(Fcb->FileInfo->Dloc->SDirInfo) ||
-           (UDFGetFileLinkCount(Fcb->FileInfo) > 1) )
+           (UDFGetFileNameLinkCount(Fcb->FileInfo) > 1) )
             try_return (RC /*=STATUS_SUCCESS*/);
 
         // We shall mark Streams for deletion if there is no
@@ -1146,7 +1146,7 @@ UDFMarkStreamsForDeletion(
             SDirAcq = TRUE;
         }
 
-        if (!ForDel || ((lc = UDFGetFileLinkCount(Fcb->FileInfo)) < 2)) {
+        if (!ForDel || ((lc = UDFGetFileNameLinkCount(Fcb->FileInfo)) < 2)) {
 
             UDF_DIR_SCAN_CONTEXT ScanContext;
             PDIR_INDEX_ITEM DirNdx;
@@ -1372,7 +1372,7 @@ UDFSetDispositionInfo(
         if (Fcb->FcbState & UDF_FCB_ROOT_DIRECTORY)
             try_return(RC = STATUS_CANNOT_DELETE);
 
-        lc = UDFGetFileLinkCount(Fcb->FileInfo);
+        lc = UDFGetFileNameLinkCount(Fcb->FileInfo);
 
         if (Fcb->FcbState & UDF_FCB_DIRECTORY) {
             // Perform check to determine whether the directory
@@ -1870,7 +1870,7 @@ UDFPrepareForRenameMoveLink(
     (*SingleDir) = ((Dir1 == Dir2) && (Dir1->Fcb));
 
     if (!(*SingleDir) ||
-       (UDFGetFileLinkCount(File1) != 1)) {
+       (UDFGetFileNameLinkCount(File1) != 1)) {
         InterlockedDecrement((PLONG)&Vcb->VcbReference);
     } else {
         InterlockedDecrement((PLONG)&Vcb->VcbReference);
