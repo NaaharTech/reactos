@@ -1813,12 +1813,11 @@ UDFUnlinkFile__(
         lc = 0;
     }
 
-    if (DirNdx && FreeSpace) {
-        // FileIdent marked as 'deleted' should have an empty ICB
-        // We shall do it only if object has parent Dir
-        // (for ex. SDir has parent object, but has no parent Dir)
-        DirNdx->FI_Flags |= UDF_FI_FLAG_FI_MODIFIED;
-        DirNdx->FI_Flags &= ~UDF_FI_FLAG_SYS_ATTR;
+    if (DirNdx) {
+        if (FreeSpace) {
+            DirNdx->FI_Flags |= UDF_FI_FLAG_FI_MODIFIED;
+            DirNdx->FI_Flags &= ~UDF_FI_FLAG_SYS_ATTR;
+        }
         // Root Files (Root/SDir/Vat/etc.) has no FileIdent...
         if (FileInfo->FileIdent)
             RtlZeroMemory(&(FileInfo->FileIdent->icb), sizeof(long_ad));
@@ -3569,6 +3568,7 @@ UDFRenameMoveFile__(
     BOOLEAN Recovery = FALSE;
     BOOLEAN SameFE = FALSE;
     uint32 NTAttr = 0;
+    long_ad SrcIcb;
 
     // validate FileInfo
     ValidateFileInfo(DirInfo1);
@@ -3700,6 +3700,7 @@ cleanup_and_abort_rename:
     // copy file attributes to newly created FileIdent
     NTAttr = UDFAttributesToNT(DirNdx1, FileInfo->Dloc->FileEntry);
     FileInfo2->FileIdent->fileVersionNum = FileInfo->FileIdent->fileVersionNum;
+    SrcIcb = FileInfo->FileIdent->icb;
     // unlink source FileIdent
     if (!NT_SUCCESS(status = UDFUnlinkFile__(IrpContext, Vcb, FileInfo, FALSE))) {
         // kill newly created entry
@@ -3722,7 +3723,7 @@ cleanup_and_abort_rename:
     // PHASE 2
     // copy all necessary info from FileInfo to FileInfo2
 
-    FileInfo2->FileIdent->icb = FileInfo->FileIdent->icb;
+    FileInfo2->FileIdent->icb = SrcIcb;
     FileInfo2->FileIdent->fileCharacteristics = FileInfo->FileIdent->fileCharacteristics;
     FileInfo2->FileIdent->fileVersionNum = FileInfo->FileIdent->fileVersionNum;
     MyFreePool__(FileInfo->FileIdent);
