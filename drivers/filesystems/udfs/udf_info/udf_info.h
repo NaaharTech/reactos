@@ -1301,9 +1301,14 @@ UDFConvertFEToExtended(
 //
 #define UDFGetPartNumByPartRef(Vcb, pi) (Vcb->Partitions[pi].PartitionNum)
 //
+
 uint32
 __fastcall UDFPartLen(PVCB Vcb,
                       uint32 PartNum);
+
+uint32
+__fastcall UDFGetLastPhysPartRef(PVCB Vcb);
+ 
 //
 NTSTATUS UDFPretendFileDeleted__(IN PVCB Vcb,
                                  IN PUDF_FILE_INFO FileInfo);

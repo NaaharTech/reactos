@@ -301,14 +301,8 @@ UDFPhysLbaToPart(
     )
 {
     uint32 retval = 0;
-    PUDFPartMap pm = Vcb->Partitions;
-    uint32 i;
-    // walk through partition maps to find suitable one...
-    for(i=RefPartNum; i<Vcb->PartitionMaps; i++, pm++) {
-        if (pm->PartitionNum == UDFGetPartNumByPartRef(Vcb, RefPartNum))
-            // wow! return relative address
-            retval = (Addr - pm->PartitionRoot);
-    }
+    if (RefPartNum < Vcb->PartitionMaps)
+        retval = (Addr - Vcb->Partitions[RefPartNum].PartitionRoot);
 
 #ifdef UDF_DBG
     {
@@ -346,30 +340,17 @@ UDFPartLbaToPhys(
             return LBA_OUT_OF_EXTENT;
         }
     }
-    // walk through partition maps & transform relative address
-    // to physical
-    for(i=Addr->partitionReferenceNum; i<Vcb->PartitionMaps; i++) {
-        if (Vcb->Partitions[i].PartitionNum == Addr->partitionReferenceNum) {
-            if (Addr->logicalBlockNum >= Vcb->Partitions[i].PartitionLen) {
-                AdPrint(("UDFPartLbaToPhys: root %x, lbn %x, plen %x (err1)\n",
-                    Vcb->Partitions[i].PartitionRoot, Addr->logicalBlockNum,
-                    Vcb->Partitions[i].PartitionLen));
-                BrutePoint();
-                return LBA_OUT_OF_EXTENT;
-            }
-            a = Vcb->Partitions[i].PartitionRoot + Addr->logicalBlockNum;
-            return a;
-        }
-    }
-    if (Addr->logicalBlockNum >= Vcb->Partitions[i-1].PartitionLen) {
-        AdPrint(("UDFPartLbaToPhys: i %x, root %x, lbn %x, plen %x (err2)\n",
-            i, Vcb->Partitions[i-1].PartitionRoot, Addr->logicalBlockNum,
-            Vcb->Partitions[i-1].PartitionLen));
+    i = Addr->partitionReferenceNum;
+    if (Addr->logicalBlockNum >= Vcb->Partitions[i].PartitionLen) {
+        AdPrint(
+            ("UDFPartLbaToPhys: partition %x, paritionRoot %x, LBN %x, partionLength %x\n",
+                i, Vcb->Partitions[i].PartitionRoot, Addr->logicalBlockNum,
+                Vcb->Partitions[i].PartitionLen)
+        );
         BrutePoint();
         return LBA_OUT_OF_EXTENT;
     }
-    a = Vcb->Partitions[i-1].PartitionRoot + Addr->logicalBlockNum;
-    return a;
+    return a = Vcb->Partitions[i].PartitionRoot + Addr->logicalBlockNum;
 } // end UDFPartLbaToPhys()
 
 
@@ -418,14 +399,21 @@ UDFGetRefPartNumByPhysLba(
     IN uint32 Lba
     )
 {
-    uint32 i=Vcb->PartitionMaps-1, root;
-    PUDFPartMap pm = &(Vcb->Partitions[i]);
-    // walk through the partition maps to find suitable one
-    for (; i != 0xffffffff; i--, pm--) {
-        if ( ((root = pm->PartitionRoot) <= Lba) &&
-             ((root + pm->PartitionLen) > Lba) )
-            // Unsure if this is correct
-            return (pm->PartitionNum >= Vcb->PartitionMaps ? i : (uint16)pm->PartitionNum);
+    uint32 i, root;
+    PUDFPartMap pm = Vcb->Partitions;
+    for (i = 0; i < Vcb->PartitionMaps; i++, pm++) {
+
+        if ((pm->PartitionType != UDF_SPARABLE_MAP15) &&
+            (pm->PartitionType != UDF_TYPE1_MAP15)
+        ) {
+            continue;
+        }
+
+        if( ((root = pm->PartitionRoot) <= Lba) &&
+             ((root + pm->PartitionLen) > Lba)
+        ) {
+            return i;
+        }
     }
     return LBA_OUT_OF_EXTENT; // Lba doesn't belong to any partition
 } // end UDFGetPartNumByPhysLba()
@@ -441,14 +429,16 @@ UDFPartStart(
     uint32 RefPartNum
     )
 {
-    uint32 i;
-    if (RefPartNum == (uint32)-1) return 0;
-    if (RefPartNum == (uint32)-2) return Vcb->Partitions[0].PartitionRoot;
-    for (i = RefPartNum; i < Vcb->PartitionMaps; i++) {
-        if (Vcb->Partitions[i].PartitionNum == UDFGetPartNumByPartRef(Vcb, RefPartNum))
-            return Vcb->Partitions[i].PartitionRoot;
-    }
-    return 0;
+    if (RefPartNum == (uint32)-1) 
+        return 0;
+
+    if (RefPartNum == (uint32)-2) 
+        RefPartNum = UDFGetLastPhysPartRef(Vcb);
+    
+    if(RefPartNum >= Vcb->PartitionMaps)
+        return 0;
+
+    return Vcb->Partitions[RefPartNum].PartitionRoot;
 } // end UDFPartStart(
 
 /*
@@ -462,16 +452,19 @@ UDFPartEnd(
     uint32 RefPartNum
     )
 {
-    uint32 i;
-    if (RefPartNum == (uint32)-1) return Vcb->SessionEndLba;
-    if (RefPartNum == (uint32)-2) RefPartNum = Vcb->PartitionMaps-1;
-    for(i=RefPartNum; i<Vcb->PartitionMaps; i++) {
-        if (Vcb->Partitions[i].PartitionNum == UDFGetPartNumByPartRef(Vcb, RefPartNum))
-            return (Vcb->Partitions[i].PartitionRoot +
-                    Vcb->Partitions[i].PartitionLen);
-    }
-    return (Vcb->Partitions[i-1].PartitionRoot +
-            Vcb->Partitions[i-1].PartitionLen);
+    if (RefPartNum == (uint32)-1)
+        return Vcb->SessionEndLba;
+
+    if (RefPartNum == (uint32)-2)
+        RefPartNum = UDFGetLastPhysPartRef(Vcb);
+    
+    if(RefPartNum >= Vcb->PartitionMaps)
+        RefPartNum = Vcb->PartitionMaps-1;
+
+    return (
+        Vcb->Partitions[RefPartNum].PartitionRoot +
+        Vcb->Partitions[RefPartNum].PartitionLen
+    );
 } // end UDFPartEnd()
 
 /*
@@ -485,17 +478,37 @@ UDFPartLen(
     uint32 RefPartNum
     )
 {
-    if (RefPartNum == (uint32)-2) return UDFPartEnd(Vcb, -2) - UDFPartStart(Vcb, -2);
+    if (RefPartNum == (uint32)-1) 
+        return Vcb->SessionEndLba;
 
-    uint32 i;
-    if (RefPartNum == (uint32)-1) return Vcb->SessionEndLba;
-    for (i = RefPartNum; i < Vcb->PartitionMaps; i++) {
-        if (Vcb->Partitions[i].PartitionNum == UDFGetPartNumByPartRef(Vcb, RefPartNum))
-            return Vcb->Partitions[i].PartitionLen;
-    }
-    return (Vcb->Partitions[i-1].PartitionRoot +
-            Vcb->Partitions[i-1].PartitionLen);
+    if (RefPartNum == (uint32)-2)
+        RefPartNum = UDFGetLastPhysPartRef(Vcb);
+
+    if(RefPartNum >= Vcb->PartitionMaps)
+        RefPartNum = Vcb->PartitionMaps-1;
+ 
+    return Vcb->Partitions[RefPartNum].PartitionLen;
 } // end UDFPartLen()
+
+uint32
+__fastcall
+UDFGetLastPhysPartRef(
+    PVCB Vcb
+)
+{
+    uint32 m;
+
+    for (m = Vcb->PartitionMaps; m > 0; m--) {
+
+        if ((Vcb->Partitions[m-1].PartitionType == UDF_TYPE1_MAP15) ||
+            (Vcb->Partitions[m-1].PartitionType == UDF_SPARABLE_MAP15)
+        ) {
+            return m-1;
+        }
+    }
+
+    return 0;
+}
 
 /*
     This routine returns length of bit-chain starting from Offs bit in
