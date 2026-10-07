@@ -620,6 +620,7 @@ UDFCloseResidual(
         MyFreePool__(Vcb->VatFileInfo);
         Vcb->VatFileInfo = NULL;
     }
+    UDFReleaseMetadata(IrpContext, Vcb);
     //  System StreamDir
     UDFPrint(("UDFCloseResidual: SysSDirFileInfo %x\n", Vcb->SysSDirFileInfo));
     if (Vcb->SysSDirFileInfo) {

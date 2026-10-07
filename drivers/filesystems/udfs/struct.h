@@ -738,9 +738,25 @@ struct VCB {
     // VAT
     uint32          InitVatCount;
     uint32          VatCount;
-    uint32* Vat;
+    uint32*         Vat;
     uint32          VatPartNdx;
     PUDF_FILE_INFO  VatFileInfo;
+    uint32          MetadataRef;            
+    uint32          MetadataPhysRef;        
+    uint32          MetadataFELoc;         
+    uint32          MetadataMirrorFELoc;
+    uint32          MetadataBitmapFELoc;   
+    uint32          MetadataAllocUnit;      
+    uint32          MetadataAlignUnit;      
+    uint8           MetadataFlags;          
+    PUDF_FILE_INFO  MetadataFileInfo;
+    PUDF_FILE_INFO  MetadataMirrorFileInfo;
+    PUDF_FILE_INFO  MetadataBitmapFileInfo;
+    PCHAR           MetadataBitmap;         
+    uint32          MetadataBitmapByteCount;
+    uint32          MetadataBitCount;
+    uint32          MetadataFreeCount;
+    BOOLEAN         MetadataBitmapModified;
     // sparing table
     ULONG           SparingCountFree;
     ULONG           SparingCount;

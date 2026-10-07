@@ -301,8 +301,12 @@ UDFPhysLbaToPart(
     )
 {
     uint32 retval = 0;
-    if (RefPartNum < Vcb->PartitionMaps)
-        retval = (Addr - Vcb->Partitions[RefPartNum].PartitionRoot);
+    if (RefPartNum < Vcb->PartitionMaps) {
+        if (Vcb->MetadataFileInfo && (RefPartNum == Vcb->MetadataRef))
+            retval = UDFPhysLbaToMetadata(Vcb, Addr);
+        else
+            retval = (Addr - Vcb->Partitions[RefPartNum].PartitionRoot);
+    }
 
 #ifdef UDF_DBG
     {
@@ -350,9 +354,76 @@ UDFPartLbaToPhys(
         BrutePoint();
         return LBA_OUT_OF_EXTENT;
     }
+    if (Vcb->MetadataFileInfo && (i == Vcb->MetadataRef))
+        return UDFMetadataLbaToPhys(Vcb, Addr->logicalBlockNum, NULL);
     return a = Vcb->Partitions[i].PartitionRoot + Addr->logicalBlockNum;
 } // end UDFPartLbaToPhys()
 
+uint32
+__fastcall
+UDFMetadataLbaToPhys(
+    IN PVCB Vcb,
+    IN uint32 Lbn,
+    OUT PSIZE_T AvailLength
+)
+{
+    SIZE_T avail;
+    uint32 lba, flags;
+
+    if (
+        !Vcb->MetadataFileInfo ||
+        !Vcb->MetadataFileInfo->Dloc->DataLoc.Mapping
+    )
+        return LBA_OUT_OF_EXTENT;
+
+    lba = UDFExtentOffsetToLba(Vcb, Vcb->MetadataFileInfo->Dloc->DataLoc.Mapping,
+                               ((int64)Lbn) << Vcb->SectorShift, NULL, &avail, &flags, NULL);
+
+    if (
+        (lba == LBA_OUT_OF_EXTENT) ||
+        (flags == EXTENT_NOT_RECORDED_NOT_ALLOCATED)
+    ) {
+        AdPrint(("UDFMetadataLbaToPhys: Metadata File does not have lbn %x\n", Lbn));
+        return LBA_OUT_OF_EXTENT;
+    }
+
+    if (AvailLength)
+        *AvailLength = avail;
+    
+    return lba;
+}
+
+uint32
+__fastcall
+UDFPhysLbaToMetadata(
+    IN PVCB Vcb,
+    IN uint32 Lba
+)
+{
+    PEXTENT_MAP Map;
+
+    if (
+        !Vcb->MetadataFileInfo ||
+        !(Map = Vcb->MetadataFileInfo->Dloc->DataLoc.Mapping)
+    )
+        return LBA_OUT_OF_EXTENT;
+
+    uint32 len, off = 0;    
+
+    for (; Map->extLength; Map++) {
+        len = (Map->extLength & UDF_EXTENT_LENGTH_MASK) >> Vcb->SectorShift;
+        
+        if (
+            ((Map->extLength >> 30) != EXTENT_NOT_RECORDED_NOT_ALLOCATED) &&
+            (Map->extLocation <= Lba) && (Lba < Map->extLocation + len)
+        )
+            return off + (Lba - Map->extLocation);
+        
+        off += len;
+    }
+
+    return LBA_OUT_OF_EXTENT;
+}
 
 /*
     This routine returns physycal Lba for partition-relative addr
@@ -401,6 +472,13 @@ UDFGetRefPartNumByPhysLba(
 {
     uint32 i, root;
     PUDFPartMap pm = Vcb->Partitions;
+
+    if (
+        Vcb->MetadataFileInfo &&
+        (UDFPhysLbaToMetadata(Vcb, Lba) != LBA_OUT_OF_EXTENT)
+    )
+        return Vcb->MetadataRef;
+
     for (i = 0; i < Vcb->PartitionMaps; i++, pm++) {
 
         if ((pm->PartitionType != UDF_SPARABLE_MAP15) &&
@@ -1249,16 +1327,17 @@ UDFGetFreeSpace(
 {
     int64 s=0;
     uint32 i;
-//    uint32* cur = (uint32*)(Vcb->FSBM_Bitmap);
 
-    if (!Vcb->CDR_Mode) {
-        for(i=0;i<Vcb->PartitionMaps;i++) {
+   if (!Vcb->CDR_Mode) {
+        for(i=0; i<Vcb->PartitionMaps;i++) {
+            if (Vcb->Partitions[i].PartitionType == UDF_METADATA_MAP25)
+                continue;
+            
             s += UDFGetPartFreeSpace(Vcb, i);
         }
     } else {
         ASSERT(Vcb->FSBM_BitCount >= max(Vcb->NWA, Vcb->SessionEndLba));
         s = Vcb->FSBM_BitCount - max(Vcb->NWA, Vcb->SessionEndLba);
-        //if (s & ((int64)1 << 64)) s=0;
     }
     return s;
 } // end UDFGetFreeSpace()
@@ -1271,15 +1350,18 @@ UDFGetTotalSpace(
     IN PVCB Vcb
     )
 {
-    int64 s=0;
     uint32 i;
+    int64 s=0;
 
     if (!Vcb->CDR_Mode) {
-        for(i=0;i<Vcb->PartitionMaps;i++) {
+        for(i=0; i<Vcb->PartitionMaps;i++) {
+            if (Vcb->Partitions[i].PartitionType == UDF_METADATA_MAP25)
+                continue;
+
             s+=Vcb->Partitions[i].PartitionLen;
         }
-    } else {
+    } else
         s = Vcb->Partitions[0].PartitionLen;
-    }
+
     return s;
 } // end UDFGetTotalSpace()
