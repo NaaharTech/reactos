@@ -4228,6 +4228,215 @@ err_vat_15:
     return status;
 } // end UDFLoadVAT()
 
+NTSTATUS
+UDFOpenMetadataFile(
+    IN PIRP_CONTEXT IrpContext,
+    IN PVCB Vcb,
+    IN uint32 PhysRef,
+    IN uint32 FELbn,
+    IN uint8 FileType,
+    OUT PUDF_FILE_INFO* FileInfo
+)
+{
+    NTSTATUS status;
+    PUDF_FILE_INFO fi;
+    lb_addr FELoc;
+
+    *FileInfo = NULL;
+
+    fi = (PUDF_FILE_INFO)MyAllocatePoolTag__(UDF_FILE_INFO_MT, sizeof(UDF_FILE_INFO), MEM_VATFINF_TAG);
+
+    if (!fi)
+        return STATUS_INSUFFICIENT_RESOURCES;
+    
+    RtlZeroMemory(fi, sizeof(UDF_FILE_INFO));
+    fi->NextLinkedFile = fi->PrevLinkedFile = fi;
+    
+    FELoc.partitionReferenceNum = (uint16)PhysRef;
+    FELoc.logicalBlockNum = FELbn;
+    
+    status = UDFOpenRootFile__(IrpContext, Vcb, &FELoc, fi);
+
+    if (
+        NT_SUCCESS(status) &&
+        (((icbtag*)((fi->Dloc->FileEntry)+1))->fileType != FileType)
+    ) {
+        UDFPrint(("UDFOpenMetadataFile: unexpected type at %x got %x, expected %x\n",
+            FELbn, ((icbtag*)((fi->Dloc->FileEntry)+1))->fileType, FileType));
+    
+        UDFCloseFile__(IrpContext, Vcb, fi);
+        status = STATUS_FILE_CORRUPT_ERROR;
+    }
+
+    if (!NT_SUCCESS(status)) {
+        UDFCleanUpFile__(Vcb, fi);
+        MyFreePool__(fi);
+        return status;
+    }
+
+    *FileInfo = fi;
+    
+    return STATUS_SUCCESS;
+}
+
+void
+UDFReleaseMetadata(
+    IN PIRP_CONTEXT IrpContext,
+    IN PVCB Vcb
+)
+{
+    PUDF_FILE_INFO* Files[3] = { 
+        &Vcb->MetadataBitmapFileInfo,
+        &Vcb->MetadataMirrorFileInfo,
+        &Vcb->MetadataFileInfo 
+    };
+
+    uint32 i;
+    for (i = 0;i < 3; i++) {
+
+        if (*(Files[i])) {
+            
+            UDFCloseFile__(IrpContext, Vcb, *(Files[i]));
+            UDFCleanUpFile__(Vcb, *(Files[i]));
+            MyFreePool__(*(Files[i]));
+
+            *(Files[i]) = NULL;
+        }
+
+    }
+
+    if (Vcb->MetadataBitmap) {
+        DbgFreePool(Vcb->MetadataBitmap);
+        Vcb->MetadataBitmap = NULL;
+    }
+
+    Vcb->MetadataBitCount = 0;
+    Vcb->MetadataFreeCount = 0;
+}
+
+NTSTATUS
+UDFLoadMetadata(
+    IN PIRP_CONTEXT IrpContext,
+    IN PVCB Vcb,
+    IN uint32 PartNdx
+    )
+{
+    NTSTATUS status;
+    PSPACE_BITMAP_DESC Sbd;
+    uint32 i, len, n, PhysRef = (uint32)-1;
+
+    if (Vcb->MetadataFileInfo) {
+        return STATUS_SUCCESS;
+    }
+
+    for (i = 0; i < Vcb->PartitionMaps; i++) {
+        if (
+            (Vcb->Partitions[i].PartitionNum == Vcb->Partitions[PartNdx].PartitionNum) &&
+            (
+                (Vcb->Partitions[i].PartitionType == UDF_TYPE1_MAP15) ||
+                (Vcb->Partitions[i].PartitionType == UDF_SPARABLE_MAP15)
+            )
+        ) {
+            PhysRef = i;
+            break;
+        }
+    }
+
+    if (PhysRef == (uint32)-1) {
+        UDFPrint(("UDFLoadMetadata: metadata map physical partition not found\n"));
+        return STATUS_DISK_CORRUPT_ERROR;
+    }
+
+    Vcb->MetadataPhysRef = PhysRef;
+
+    status = UDFOpenMetadataFile(IrpContext, Vcb, PhysRef, Vcb->MetadataFELoc,
+                                UDF_FILE_TYPE_METADATA, &Vcb->MetadataFileInfo);
+    
+    if(!NT_SUCCESS(status)) {
+        UDFPrint(("UDFLoadMetadata: failed to load metadata: %x\n", status));
+        return status;
+    }
+    
+    Vcb->Partitions[PartNdx].PartitionLen =
+        (uint32)(UDFGetFileSize(Vcb->MetadataFileInfo) >> Vcb->SectorShift);
+
+    status = UDFOpenMetadataFile(IrpContext, Vcb, PhysRef, Vcb->MetadataMirrorFELoc,
+                                UDF_FILE_TYPE_METADATA_MIRROR, &Vcb->MetadataMirrorFileInfo);
+    if ( !NT_SUCCESS(status)){
+        UDFPrint(("UDFLoadMetadata: failed to load metadata mirror: %x\n", status));
+        goto err_metadata;
+    }
+
+    if (Vcb->MetadataBitmapFELoc != 0xFFFFFFFF) {
+        status = UDFOpenMetadataFile(IrpContext, Vcb, PhysRef, Vcb->MetadataBitmapFELoc,
+                                    UDF_FILE_TYPE_METADATA_BITMAP, &Vcb->MetadataBitmapFileInfo);
+        if(!NT_SUCCESS(status)) {
+            UDFPrint(("UDFLoadMetadata: failed to load metadata bitmap: %x\n", status));
+            goto err_metadata;
+        }
+
+        len = (uint32)UDFGetFileSize(Vcb->MetadataBitmapFileInfo);
+        if (len < sizeof(SPACE_BITMAP_DESC)) {
+            status = STATUS_DISK_CORRUPT_ERROR;
+            goto err_metadata;
+        }
+
+        Sbd = (PSPACE_BITMAP_DESC)DbgAllocatePool(NonPagedPool, len);
+        if (!Sbd) {
+            status = STATUS_INSUFFICIENT_RESOURCES;
+            goto err_metadata;
+        }
+
+        status = UDFReadFile__(IrpContext, Vcb, Vcb->MetadataBitmapFileInfo, 0, 
+            len, FALSE, (int8*)Sbd);
+        if (
+            NT_SUCCESS(status) &&
+            (
+                (Sbd->descTag.tagIdent != TID_SPACE_BITMAP_DESC) ||
+                (Sbd->numOfBytes > len - sizeof(SPACE_BITMAP_DESC)) ||
+                (Sbd->numOfBits > Sbd->numOfBytes * 8)
+            )
+        ) {
+            UDFPrint(("UDFLoadMetadata: corrupted metadata bitmap: tag %x, %x bits, %x bytes\n",
+                Sbd->descTag.tagIdent, Sbd->numOfBits, Sbd->numOfBytes));
+            status = STATUS_DISK_CORRUPT_ERROR;
+        }
+
+        if (!NT_SUCCESS(status)) {
+            DbgFreePool(Sbd);
+            goto err_metadata;
+        }
+
+        Vcb->MetadataBitmap = (PCHAR)DbgAllocatePool(NonPagedPool, Sbd->numOfBytes);
+        if (!Vcb->MetadataBitmap) {
+            DbgFreePool(Sbd);
+            status = STATUS_INSUFFICIENT_RESOURCES;
+            goto err_metadata;
+        }
+        
+        RtlCopyMemory(Vcb->MetadataBitmap, Sbd+1, Sbd->numOfBytes);
+        Vcb->MetadataBitmapByteCount = Sbd->numOfBytes;
+        Vcb->MetadataBitCount = min(Sbd->numOfBits, Vcb->Partitions[PartNdx].PartitionLen);
+        
+        DbgFreePool(Sbd);
+        for (i = 0, n = 0; i < Vcb->MetadataBitCount; i++) {
+            if (Vcb->MetadataBitmap[i >> 3] & (1 << (i & 7)))
+                n++;
+        }
+        Vcb->MetadataFreeCount = n;
+    }
+
+    Vcb->MetadataBitmapModified = FALSE;
+    UDFPrint(("UDFLoadMetadata: metadata partition: ref %x, %x blocks, %x free\n",
+        PartNdx, Vcb->Partitions[PartNdx].PartitionLen, Vcb->MetadataFreeCount));
+    
+    return STATUS_SUCCESS;
+
+err_metadata:
+    UDFReleaseMetadata(IrpContext, Vcb);
+    return status;
+}
+
 /*
     Reads Extended Attributes
     Caller should use UDFGetFileEALength to allocate Buffer of sufficient

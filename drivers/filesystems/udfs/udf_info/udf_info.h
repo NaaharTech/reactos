@@ -956,6 +956,29 @@ UDFLoadVAT(
     IN uint32 PartNdx
     );
 
+NTSTATUS
+UDFLoadMetadata(
+    IN PIRP_CONTEXT IrpContext,
+    IN PVCB Vcb,
+    IN uint32 PartNdx
+);
+
+NTSTATUS
+UDFOpenMetadataFile(
+    IN PIRP_CONTEXT IrpContext,
+    IN PVCB Vcb,
+    IN uint32 PhysRef,
+    IN uint32 FELbn,
+    IN uint8 FileType,
+    OUT PUDF_FILE_INFO* FileInfo
+);
+
+void
+UDFReleaseMetadata(
+    IN PIRP_CONTEXT IrpContext,
+    IN PVCB Vcb
+);
+
 // get volume free space
 int64
 __fastcall UDFGetFreeSpace(IN PVCB Vcb);
@@ -1308,6 +1331,18 @@ __fastcall UDFPartLen(PVCB Vcb,
 
 uint32
 __fastcall UDFGetLastPhysPartRef(PVCB Vcb);
+
+uint32
+__fastcall UDFMetadataLbaToPhys(IN PVCB Vcb,
+                                IN uint32 Lbn,
+                                OUT PSIZE_T AvailLength);
+uint32
+__fastcall UDFPhysLbaToMetadata(IN PVCB Vcb,
+                                IN uint32 Lba);
+ 
+PEXTENT_MAP
+UDFSplitMetadataMapping(IN PVCB Vcb,
+                        IN PEXTENT_MAP Extent); 
  
 //
 NTSTATUS UDFPretendFileDeleted__(IN PVCB Vcb,

@@ -2179,6 +2179,13 @@ UDFLoadPartDesc(
             Vcb->Partitions[i].PartitionNum, (p->partitionNumber) ));
         if (Vcb->Partitions[i].PartitionNum == (p->partitionNumber)) {
             Found = TRUE;
+
+            if (
+                (Vcb->Partitions[i].PartitionType == UDF_METADATA_MAP25) &&
+                Vcb->MetadataFileInfo
+            )
+                continue;
+
             Vcb->Partitions[i].PartitionRoot = p->partitionStartingLocation;
             Vcb->Partitions[i].PartitionLen = p->partitionLength;
 
@@ -2213,8 +2220,13 @@ UDFLoadPartDesc(
                 return STATUS_UNRECOGNIZED_MEDIA;
             }
 
-            if (!strcmp((int8*)&(p->partitionContents.ident), PARTITION_CONTENTS_NSR02) ||
-                !strcmp((int8*)&(p->partitionContents.ident), PARTITION_CONTENTS_NSR03))
+            if (
+                (Vcb->Partitions[i].PartitionType != UDF_METADATA_MAP25) &&
+                (
+                    !strcmp((int8*)&(p->partitionContents.ident), PARTITION_CONTENTS_NSR02) ||
+                    !strcmp((int8*)&(p->partitionContents.ident), PARTITION_CONTENTS_NSR03)
+                )
+            )
             {
                 PPARTITION_HEADER_DESC phd;
 
@@ -2327,6 +2339,19 @@ UDFLoadPartDesc(
             }
         }
     }
+
+    if (
+        Found && !Vcb->MetadataFileInfo &&
+        (Vcb->MetadataRef < Vcb->PartitionMaps) &&
+        (Vcb->Partitions[Vcb->MetadataRef].PartitionType == UDF_METADATA_MAP25) &&
+        (Vcb->Partitions[Vcb->MetadataRef].PartitionNum == p->partitionNumber)
+    ) {
+        RC = UDFLoadMetadata(IrpContext, Vcb, Vcb->MetadataRef);
+        
+        if (!NT_SUCCESS(RC))
+            return RC;
+    }
+
 #ifdef UDF_DBG
     if (!Found) {
         UDFPrint(("Partition (%d) not found in partition map\n", (p->partitionNumber) ));
@@ -2367,6 +2392,8 @@ UDFVerifyPartDesc(
             Vcb->Partitions[i].PartitionNum, (p->partitionNumber) ));
         if (Vcb->Partitions[i].PartitionNum == (p->partitionNumber)) {
             Found = TRUE;
+            if(Vcb->Partitions[i].PartitionType == UDF_METADATA_MAP25)
+                continue;
             if (Vcb->Partitions[i].PartitionRoot != p->partitionStartingLocation)
                 return STATUS_DISK_CORRUPT_ERROR;
             if (Vcb->Partitions[i].PartitionLen != p->partitionLength)
