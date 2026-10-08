@@ -1595,9 +1595,24 @@ UDFLoadLogicalVol(
             else if (!strncmp((int8*)&(upm2->partIdent.ident), UDF_ID_METADATA, strlen(UDF_ID_METADATA)))
             {
                 UDFPrint(("Found metadata partition\n"));
-//                PMETADATA_PARTITION_MAP mpm = (PMETADATA_PARTITION_MAP)(((uint8*)(lvd+1))+offset);
+                PMETADATA_PARTITION_MAP mpm = (PMETADATA_PARTITION_MAP)(((uint8*)(lvd+1))+offset);
                 Vcb->Partitions[i].PartitionType = UDF_METADATA_MAP25;
-                //status = UDFLoadSparingTable(Vcb, spm);
+
+                Vcb->MetadataRef = i;
+                Vcb->MetadataMirrorFELoc = mpm->metadataMirrorFELocation;
+                Vcb->MetadataFELoc = mpm->metadataFELocation;
+                Vcb->MetadataAllocUnit = mpm->allocationUnit;
+                Vcb->MetadataBitmapFELoc = mpm->metadataBitmapFELocation;
+                Vcb->MetadataFlags = mpm->flags;
+                Vcb->MetadataAlignUnit = mpm->alignmentUnit;
+                
+                UDFPrint(
+                    (
+                        "Metadata FE %x, mirror FE %x, bitmap FE %x, alloc unit %x, align %x, flags %x\n",
+                        mpm->metadataFELocation, mpm->metadataMirrorFELocation, mpm->metadataBitmapFELocation,
+                        mpm->allocationUnit, mpm->alignmentUnit, mpm->flags
+                    )
+                );
             }
             else
             {

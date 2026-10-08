@@ -455,6 +455,97 @@ UDFShortAllocDescToMapping(
     return Extent;
 } // end UDFShortAllocDescToMapping()
 
+PEXTENT_MAP
+UDFSplitMetadataMapping(
+    IN PVCB Vcb,
+    IN PEXTENT_MAP Extent
+)
+{
+    SIZE_T avail;
+    BOOLEAN Split = FALSE;
+    PEXTENT_MAP NewExtent, Src, Dst;
+    uint32 n = 0, type, len, lbn, piece, BSh = Vcb->SectorShift;
+
+    for (Src = Extent; Src->extLength; Src++) {
+
+        type = Src->extLength >> 30;
+        
+        len = Src->extLength & UDF_EXTENT_LENGTH_MASK;
+        n++;
+        
+        if (type == EXTENT_NOT_RECORDED_NOT_ALLOCATED) {
+            continue;
+        }
+        
+        lbn = UDFPhysLbaToMetadata(Vcb, Src->extLocation);
+        
+        if (lbn == LBA_OUT_OF_EXTENT) {
+            continue;
+        }
+        
+        while (
+            (UDFMetadataLbaToPhys(Vcb, lbn, &avail) != LBA_OUT_OF_EXTENT) &&
+            (avail < len)
+        ) {
+            Split = TRUE;
+            n++;
+            len -= (uint32)avail;
+            lbn += (uint32)(avail >> BSh);
+        }
+    }
+
+    if (!Split) {
+        return Extent;
+    }
+
+    NewExtent = (PEXTENT_MAP)MyAllocatePoolTag__(NonPagedPool, (n+1)*sizeof(EXTENT_AD), MEM_EXTMAP_TAG);
+    
+    if (!NewExtent) {
+        MyFreePool__(Extent);
+        return NULL;
+    }
+
+    Dst = NewExtent;
+
+    for (Src = Extent; Src->extLength; Src++) {
+        type = Src->extLength >> 30;
+
+        len = Src->extLength & UDF_EXTENT_LENGTH_MASK;
+        lbn = (type == EXTENT_NOT_RECORDED_NOT_ALLOCATED) ? LBA_OUT_OF_EXTENT :
+                  UDFPhysLbaToMetadata(Vcb, Src->extLocation);
+        
+        if (lbn == LBA_OUT_OF_EXTENT) {
+            *Dst = *Src;
+            Dst++;
+            continue;
+        }
+
+        while (len) {
+            Dst->extLocation = UDFMetadataLbaToPhys(Vcb, lbn, &avail);
+
+            if (Dst->extLocation == LBA_OUT_OF_EXTENT) {
+                UDFPrint(("UDFSplitMetadataMapping: Metadata File doesn't have the lbn %x\n", lbn));
+                MyFreePool__(NewExtent);
+                MyFreePool__(Extent);
+                return NULL;
+            }
+
+            piece = (avail < len) ? (uint32)avail : len;
+            Dst->extLength = piece | (type << 30);
+            Dst++;
+
+            len -= piece;
+            lbn += piece >> BSh;
+        }
+    }
+
+    Dst->extLength = 0;
+    Dst->extLocation = 0;
+    MyFreePool__(Extent);
+
+    return NewExtent;
+}
+
 /*
     This routine builds file mapping according to LongAllocDesc (LONG_AD)
     array
@@ -810,6 +901,9 @@ UDFReadMappingFromXEntry(
         break;
     }
     }
+
+    if (Extent && Vcb->MetadataFileInfo)
+        Extent = UDFSplitMetadataMapping(Vcb, Extent);
 
     ExtPrint(("UDFReadMappingFromXEntry: mode %x, loc %x, len %x\n", AllocMode,
         AllocLoc->Mapping ? AllocLoc->Mapping[0].extLocation : -1, len));
