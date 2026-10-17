@@ -2,24 +2,24 @@
  * The installer fills the UDFSRAW1 record from FREELDR.SYS's UDF allocation
  * descriptor. This boot path requires a single contiguous data extent.
  */
-.intel_syntax noprefix
+#include <asm.inc>
+
 .code16
-.global start
 start:
     cli
     xor ax, ax
     mov ss, ax
-    mov sp, 0x7c00
+    mov sp, HEX(7c00)
     mov ds, ax
     mov es, ax
     sti
     mov byte ptr [boot_drive], dl
 
-    mov bx, 0x55aa
-    mov ah, 0x41
-    int 0x13
+    mov bx, HEX(55aa)
+    mov ah, HEX(41)
+    int HEX(13)
     jc disk_error
-    cmp bx, 0xaa55
+    cmp bx, HEX(aa55)
     jne disk_error
     test cx, 1
     jz disk_error
@@ -32,17 +32,17 @@ start:
     mov word ptr [remaining], ax
     mov eax, dword ptr [boot_parameters + 8]
     mov dword ptr [dap_lba], eax
-    mov word ptr [dap_segment], 0x0f80
+    mov word ptr [dap_segment], HEX(0f80)
 
 read_next:
     cmp word ptr [remaining], 0
     je boot_freeldr
     mov si, offset dap
     mov dl, byte ptr [boot_drive]
-    mov ah, 0x42
-    int 0x13
+    mov ah, HEX(42)
+    int HEX(13)
     jc disk_error
-    add word ptr [dap_segment], 0x20
+    add word ptr [dap_segment], HEX(20)
     inc dword ptr [dap_lba]
     dec word ptr [remaining]
     jmp read_next
@@ -50,7 +50,7 @@ read_next:
 boot_freeldr:
     mov dl, byte ptr [boot_drive]
     xor dh, dh
-    ljmp 0x0f80, 0
+    ljmp16 HEX(0f80), 0
 
 disk_error:
     mov si, offset message
@@ -58,9 +58,9 @@ print_next:
     lodsb
     test al, al
     jz halt
-    mov ah, 0x0e
+    mov ah, HEX(0e)
     mov bx, 7
-    int 0x10
+    int HEX(10)
     jmp print_next
 halt:
     hlt
@@ -77,7 +77,7 @@ dap:
     .word 1
     .word 0
 dap_segment:
-    .word 0x0f80
+    .word HEX(0f80)
 dap_lba:
     .long 0
     .long 0
@@ -89,4 +89,7 @@ boot_parameters:
     .word 0
 
 .org 510
-.word 0xaa55
+.word HEX(aa55)
+.endcode16
+
+END
