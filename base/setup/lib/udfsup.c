@@ -11,6 +11,8 @@
 #define NDEBUG
 #include <debug.h>
 
+#define UDF_OBJECT_NAME_BUFFER_SIZE 2048
+
 static NTSTATUS UdfReadAt(HANDLE File, ULONGLONG Position, void *Buffer, ULONG Length)
 {
     LARGE_INTEGER Offset;
@@ -24,8 +26,7 @@ static NTSTATUS UdfReadAt(HANDLE File, ULONGLONG Position, void *Buffer, ULONG L
 
 NTSTATUS InstallUdfBootCode(PCWSTR SrcPath, HANDLE RootPartition)
 {
-    union { ULONGLONG Align; UCHAR Bytes[2048]; } ObjectBuffer;
-    POBJECT_NAME_INFORMATION ObjectName = (POBJECT_NAME_INFORMATION)ObjectBuffer.Bytes;
+    POBJECT_NAME_INFORMATION ObjectName = NULL;
     WCHAR LoaderPath[MAX_PATH];
     UNICODE_STRING Name;
     OBJECT_ATTRIBUTES Attributes;
@@ -62,8 +63,10 @@ NTSTATUS InstallUdfBootCode(PCWSTR SrcPath, HANDLE RootPartition)
         Partition.PartitionLength.QuadPart % 512)
     { Status = STATUS_NOT_SUPPORTED; goto Done; }
     Stage = "partition object name";
-    Status = NtQueryObject(RootPartition, ObjectNameInformation, ObjectBuffer.Bytes,
-                           sizeof(ObjectBuffer), &Returned);
+    ObjectName = RtlAllocateHeap(ProcessHeap, 0, UDF_OBJECT_NAME_BUFFER_SIZE);
+    if (!ObjectName) { Status = STATUS_NO_MEMORY; goto Done; }
+    Status = NtQueryObject(RootPartition, ObjectNameInformation, ObjectName,
+                           UDF_OBJECT_NAME_BUFFER_SIZE, &Returned);
     if (!NT_SUCCESS(Status)) goto Done;
     if (ObjectName->Name.Length + sizeof(L"\\freeldr.sys") > sizeof(LoaderPath))
     { Status = STATUS_NAME_TOO_LONG; goto Done; }
@@ -189,6 +192,7 @@ Done:
     if (!NT_SUCCESS(Status)) DPRINT1("UDF VBR failed at %s: %08lx\n", Stage, Status);
     if (Disk) NtClose(Disk);
     if (Buffers) RtlFreeHeap(ProcessHeap, 0, Buffers);
+    if (ObjectName) RtlFreeHeap(ProcessHeap, 0, ObjectName);
     if (Loader) NtClose(Loader);
     FreeBootCode(&Template);
     return Status;
