@@ -1,0 +1,6 @@
+spec2def(uudf.dll uudf.spec)
+add_library(uudf MODULE uudf.c uudf.rc ${CMAKE_CURRENT_BINARY_DIR}/uudf.def)
+set_module_type(uudf nativedll)
+target_link_libraries(uudf udflib ${PSEH_LIB})
+add_importlibs(uudf ntdll)
+add_cd_file(TARGET uudf DESTINATION reactos/system32 FOR all)
