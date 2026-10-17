@@ -71,6 +71,14 @@ UDFCommonQueryInfo(
 
     TypeOfOpen = UDFDecodeFileObject(IrpSp->FileObject, &Fcb, &Ccb);
 
+    // An unopened or stream file object has no user CCB.  Reject it before
+    // the debug assertions dereference the decoded pointers.
+    if ((TypeOfOpen != UserDirectoryOpen && TypeOfOpen != UserFileOpen) ||
+        Fcb == NULL || Ccb == NULL) {
+        UDFCompleteRequest(IrpContext, Irp, STATUS_INVALID_PARAMETER);
+        return STATUS_INVALID_PARAMETER;
+    }
+
     ASSERT_CCB(Ccb);
     ASSERT_FCB(Fcb);
 
@@ -248,6 +256,12 @@ UDFCommonSetInfo(
     // Decode the file object
 
     TypeOfOpen = UDFDecodeFileObject(FileObject, &Fcb, &Ccb);
+
+    if ((TypeOfOpen != UserFileOpen && TypeOfOpen != UserDirectoryOpen) ||
+        Fcb == NULL || Ccb == NULL) {
+        UDFCompleteRequest(IrpContext, Irp, STATUS_INVALID_PARAMETER);
+        return STATUS_INVALID_PARAMETER;
+    }
 
     Vcb = Fcb->Vcb;
 
