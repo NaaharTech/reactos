@@ -367,7 +367,14 @@ UDFBuildHashEntry(
     WCHAR ShortNameBuffer[13];
     uint8 RetFlags = 0;
 
-    if (!Name->Buffer) return 0;
+    // An empty name has no hashes.  In particular, do not pass zero bytes to
+    // FsRtlAllocatePoolWithTag and then free its result below.
+    if (!hashes)
+        return 0;
+    if (!Name || !Name->Buffer || !Name->Length) {
+        RtlZeroMemory(hashes, sizeof(*hashes));
+        return 0;
+    }
 
     if (Mask & HASH_POSIX)
         hashes->hPosix = crc32((uint8*)(Name->Buffer), Name->Length);
