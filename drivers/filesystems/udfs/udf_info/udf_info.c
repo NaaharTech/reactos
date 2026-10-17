@@ -4793,10 +4793,17 @@ UDFWriteFileData(
 
     *WrittenBytes = 0;
 
-    status = UDFSyncInIcbData(IrpContext, Vcb, FileInfo);
-    
-    if (!NT_SUCCESS(status))
-        return status;
+    /* New File Entries are zero-initialized, and an opened File Entry was
+       read as a complete sector.  Every in-ICB write through this routine
+       copies its bytes into that same sector-sized buffer before the full
+       FE write.  Re-reading the on-disk in-ICB payload here only duplicates
+       the buffered bytes on rewritable media.  Keep the read for sequential
+       media, where the next writable location may change between writes. */
+    if (Vcb->CDR_Mode) {
+        status = UDFSyncInIcbData(IrpContext, Vcb, FileInfo);
+        if (!NT_SUCCESS(status))
+            return status;
+    }
     
     RtlCopyMemory((int8*)(Dloc->FileEntry) + Dloc->FileEntryLen + (uint32)Offset, Buffer, Length);
 
@@ -4944,7 +4951,11 @@ retry_flush_FE:
         AllocMode = 
             ((PFILE_ENTRY)(FileInfo->Dloc->FileEntry))->icbTag.flags & 
             ICB_FLAG_ALLOC_MASK;
-        if (AllocMode == ICB_FLAG_AD_IN_ICB) {
+        /* Rewritable-media in-ICB writes update the same sector-sized FE
+           buffer before committing the full FE block.  A separate disk read
+           during flush only reloads those bytes; keep it for sequential
+           media, where the writable location can move. */
+        if (AllocMode == ICB_FLAG_AD_IN_ICB && Vcb->CDR_Mode) {
 
             status = UDFSyncInIcbData(IrpContext, Vcb, FileInfo);
 
