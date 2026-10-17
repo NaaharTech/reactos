@@ -1474,8 +1474,7 @@ UDFCommonCreate(
                 }
             }
 
-            NewFileInfo = PtrNewFcb->FileInfo;
-            LastGoodFileInfo = NewFileInfo;
+            LastGoodFileInfo = PtrNewFcb->FileInfo;
 
             // Validate file/directory type against caller's request
             if (PtrNewFcb->FcbState & UDF_FCB_DIRECTORY) {
@@ -1507,6 +1506,7 @@ UDFCommonCreate(
 
             // Reference the FileInfo (balanced by UDFCloseFile__ on error
             // or by IRP_MJ_CLEANUP on success)
+            NewFileInfo = PtrNewFcb->FileInfo;
             UDFReferenceFile__(NewFileInfo);
 
             try_return(Status = UDFOpenExistingFcb(IrpContext, IrpSp, Vcb,
@@ -1636,9 +1636,8 @@ UDFCommonCreate(
 
                     // Entire path found in prefix - skip loop, open directly
                     OpenLcb = PrefixLcb;
-                    NewFileInfo = PrefixFcb->FileInfo;
                     PtrNewFcb = PrefixFcb;
-                    LastGoodFileInfo = NewFileInfo;
+                    LastGoodFileInfo = PrefixFcb->FileInfo;
                     OldRelatedFileInfo = RelatedFileInfo;
 
                     // Validate file/directory type against caller's request
@@ -1659,6 +1658,7 @@ UDFCommonCreate(
                     }
 
                     // Reference the FileInfo (will be balanced by cleanup)
+                    NewFileInfo = PrefixFcb->FileInfo;
                     UDFReferenceFile__(NewFileInfo);
 
                     // Skip the search loop - open directly
@@ -1720,6 +1720,11 @@ UDFCommonCreate(
         BOOLEAN IsStreamComponent = FALSE;
 
         while (TRUE) {
+
+            // Intermediate traversal references were released below. Do not
+            // let a later name-validation failure close that borrowed FileInfo.
+            NewFileInfo = NULL;
+            PtrNewFcb = NULL;
 
             // Split off the next component from the name.
 
@@ -1783,11 +1788,6 @@ UDFCommonCreate(
                         CurrentFcb = NewFcb;
                     }
                 }
-
-                // Reset NewFileInfo from previous iteration to prevent error path
-                // from trying to cleanup an already-closed intermediate.
-                NewFileInfo = NULL;
-                PtrNewFcb = NULL;
 
                 // check traverse rights (uses RelatedFileInfo->Fcb which is now locked as PreviousFcb)
                 Status = UDFCheckAccessRights(NULL, NULL, RelatedFileInfo->Fcb, RelatedCcb, FILE_TRAVERSE, 0);
@@ -2094,6 +2094,7 @@ UDFCommonCreate(
                 // Restore from LastGoodFileInfo (the base file).
                 PtrNewFcb = LastGoodFileInfo->Fcb;
                 NewFileInfo = LastGoodFileInfo;
+                UDFReferenceFile__(NewFileInfo);
                 // break open loop and continue with Open
                 // (Create will be skipped)
                 break;
@@ -2240,7 +2241,7 @@ UDFCommonCreate(
                         UDFFlushFile__(IrpContext, Vcb, NewFileInfo, 0);
                         UDFUnlinkFile__(IrpContext, Vcb, NewFileInfo, TRUE);
                     }
-                    UDFCloseFile__(IrpContext, Vcb, NewFileInfo);
+                    // The common failure path releases this create reference.
                     try_return(Status);
                 }
             }
@@ -2358,9 +2359,7 @@ UDFCommonCreate(
                     UDFFlushFile__(IrpContext, Vcb, NewFileInfo, 0);
                     UDFUnlinkFile__(IrpContext, Vcb, NewFileInfo, TRUE);
                 }
-                if (NewFileInfo) {
-                    UDFCloseFile__(IrpContext, Vcb, NewFileInfo);
-                }
+                // The common failure path releases this create reference.
                 try_return(Status);
             }
 
@@ -2539,7 +2538,11 @@ try_exit:   NOTHING;
             ASSERT(!LastGoodFileInfo || !LastGoodFileInfo->Fcb ||
                    !CurrentFcb || CurrentFcb == LastGoodFileInfo->Fcb);
 
-            if (Vcb && (PtrNewFcb != Vcb->RootIndexFcb) && LastGoodFileInfo) {
+            // Type/disposition checks for a related-file reopen can fail
+            // before we acquire its FCB. Teardown requires that FCB exclusive;
+            // the still-open related handle owns it in that early-failure case.
+            if (Vcb && (PtrNewFcb != Vcb->RootIndexFcb) &&
+                LastGoodFileInfo && CurrentFcb == LastGoodFileInfo->Fcb) {
 
                 BOOLEAN ProtectedPreviousFcb = FALSE;
                 if (PreviousFcb && PreviousFcb != CurrentFcb) {
@@ -2566,9 +2569,10 @@ try_exit:   NOTHING;
                 }
 
             } else {
-                // LastGoodFileInfo can be set when PtrNewFcb == RootIndexFcb
-                // (e.g. creating file in root dir) — no teardown needed for root
-                ASSERT(!LastGoodFileInfo || (PtrNewFcb == Vcb->RootIndexFcb));
+                // The target is root, or validation failed before its FCB
+                // was acquired. Neither case owns a target FCB for teardown.
+                ASSERT(!LastGoodFileInfo || !CurrentFcb ||
+                       (PtrNewFcb == Vcb->RootIndexFcb));
             }
         }
 
