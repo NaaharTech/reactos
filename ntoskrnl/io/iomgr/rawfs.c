@@ -1114,9 +1114,12 @@ RawDispatch(IN PDEVICE_OBJECT DeviceObject,
             Status = RawFileSystemControl(Vcb, Irp, IoStackLocation);
             break;
 
-        /* R/W or IOCTL request */
+        /* R/W, flush or IOCTL request. A raw volume has no cache of its own;
+         * forward flush to the partition/storage stack so formatters can
+         * require durable descriptor writes before reporting success. */
         case IRP_MJ_READ:
         case IRP_MJ_WRITE:
+        case IRP_MJ_FLUSH_BUFFERS:
         case IRP_MJ_DEVICE_CONTROL:
 
             Status = RawReadWriteDeviceControl(Vcb, Irp, IoStackLocation);
@@ -1254,6 +1257,7 @@ RawFsDriverEntry(IN PDRIVER_OBJECT DriverObject,
     DriverObject->MajorFunction[IRP_MJ_CLOSE] =
     DriverObject->MajorFunction[IRP_MJ_READ] =
     DriverObject->MajorFunction[IRP_MJ_WRITE] =
+    DriverObject->MajorFunction[IRP_MJ_FLUSH_BUFFERS] =
     DriverObject->MajorFunction[IRP_MJ_QUERY_INFORMATION] =
     DriverObject->MajorFunction[IRP_MJ_SET_INFORMATION] =
     DriverObject->MajorFunction[IRP_MJ_QUERY_VOLUME_INFORMATION] =
