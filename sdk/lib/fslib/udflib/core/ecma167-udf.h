@@ -44,6 +44,10 @@
 #ifndef _FS_UDF_ECMA167_UDF_H_
 #define _FS_UDF_ECMA167_UDF_H_
 
+#ifdef _MSC_VER
+/* Every descriptor below is serialized to disk without C padding. */
+#pragma pack(push, 1)
+#endif
 
 /*
  * in case of an older gcc versions, define the __packed as explicit
@@ -60,7 +64,11 @@
 */
 
 #ifndef __packed
+#ifdef _MSC_VER
+#define __packed
+#else
 #define __packed __attribute__((packed))
+#endif
 #endif
 
 
@@ -836,5 +844,9 @@ union dscrptr {
 	struct space_entry_desc	 sed;
 };
 
+
+#ifdef _MSC_VER
+#pragma pack(pop)
+#endif
 
 #endif /* !_FS_UDF_ECMA167_UDF_H_ */

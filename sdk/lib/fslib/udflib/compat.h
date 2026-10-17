@@ -1,11 +1,11 @@
 /* Native NT adapter for the imported BSD UDF formatter. */
 #pragma once
+#include <stdarg.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <stdint.h>
 #include <inttypes.h>
 #include <string.h>
-#include <stdarg.h>
 #include <stddef.h>
 #include <errno.h>
 #include <time.h>
@@ -28,7 +28,17 @@
 #define __RCSID(s)
 #endif
 #ifndef __packed
+#ifdef _MSC_VER
+/* ecma167-udf.h applies pack(1) to its on-disk descriptors. */
+#define __packed
+#else
 #define __packed __attribute__((packed))
+#endif
+#endif
+#ifdef _MSC_VER
+#define UDF_NORETURN __declspec(noreturn)
+#else
+#define UDF_NORETURN __attribute__((noreturn))
 #endif
 #ifndef __arraycount
 #define __arraycount(a) (sizeof(a) / sizeof((a)[0]))
@@ -41,13 +51,29 @@
 #endif
 #ifndef S_ISUID
 #define S_ISUID 0004000
+#endif
+#ifndef S_ISGID
 #define S_ISGID 0002000
+#endif
+#ifndef S_ISVTX
 #define S_ISVTX 0001000
+#endif
+#ifndef S_IRWXO
 #define S_IRWXO 0007
+#endif
+#ifndef S_IRWXG
 #define S_IRWXG 0070
+#endif
+#ifndef S_IRWXU
 #define S_IRWXU 0700
+#endif
+#ifndef S_IWOTH
 #define S_IWOTH 0002
+#endif
+#ifndef S_IWGRP
 #define S_IWGRP 0020
+#endif
+#ifndef S_IWUSR
 #define S_IWUSR 0200
 #endif
 typedef uint16_t u_int16_t;
@@ -63,8 +89,8 @@ void udf_free(void *);
 char *udf_strdup(const char *);
 int udf_printf(const char *, ...);
 int udf_fprintf(void *, const char *, ...);
-void udf_errx(int, const char *, ...) __attribute__((noreturn));
-void udf_assert(const char *, const char *, unsigned) __attribute__((noreturn));
+UDF_NORETURN void udf_errx(int, const char *, ...);
+UDF_NORETURN void udf_assert(const char *, const char *, unsigned);
 long udf_random(void);
 time_t udf_time(time_t *);
 struct tm *udf_gmtime_r(const time_t *, struct tm *);

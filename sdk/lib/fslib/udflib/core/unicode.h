@@ -67,7 +67,11 @@
  * src/lib/libc/locale/utf2.c.
  */
 
+#ifdef _MSC_VER
+#define __unused
+#else
 #define __unused __attribute__((__unused__))
+#endif
 
 static u_int16_t wget_utf8(const char **, size_t *) __unused;
 static int wput_utf8(char *, size_t, u_int16_t) __unused;
