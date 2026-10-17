@@ -3062,6 +3062,33 @@ UDFWriteExtent(
                 Lba = UDFExtentOffsetToLba(Vcb, Extent, Offset, &sect_offs, &to_write, &flags, NULL);
                 to_write = min(to_write, Length);
             }
+            SIZE_T PartialWriteLen = min(to_write, Length);
+            /* A partial write into a newly recorded single sector must leave
+               its unwritten bytes zero.  Zeroing the sector on disk and then
+               doing a read-modify-write issues W-R-W to the same LBA.  Build
+               the identical final sector in private memory and commit it once.
+               Fall back to the old path if the scratch allocation fails. */
+            if (!Vcb->CDR_Mode &&
+                PartialWriteLen &&
+                (sect_offs || PartialWriteLen < Vcb->SectorSize) &&
+                (sect_offs + PartialWriteLen <= Vcb->SectorSize)) {
+                int8* SectorBuf = (int8*)MyAllocatePool__(NonPagedPool, Vcb->SectorSize);
+                if (SectorBuf) {
+                    RtlZeroMemory(SectorBuf, Vcb->SectorSize);
+                    RtlCopyMemory(SectorBuf + sect_offs, Buffer, PartialWriteLen);
+                    status = UDFWriteData(IrpContext, Vcb, TRUE,
+                                          ((uint64)Lba) << Vcb->SectorShift,
+                                          Vcb->SectorSize, Direct, SectorBuf, &_WrittenBytes);
+                    MyFreePool__(SectorBuf);
+                    if (!NT_SUCCESS(status))
+                        return status;
+                    *WrittenBytes += PartialWriteLen;
+                    Buffer += PartialWriteLen;
+                    Offset += PartialWriteLen;
+                    Length -= PartialWriteLen;
+                    continue;
+                }
+            }
             /*
               we must fill 1st block with zeros in 1 of 2 cases:
                 1) start offset is not aligned on LBlock boundary
