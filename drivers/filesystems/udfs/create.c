@@ -1311,6 +1311,16 @@ UDFCommonCreate(
 
     _SEH2_TRY {
 
+        // A forced dismount can leave an old Vcb referenced by an in-flight
+        // open.  Complete that open with the invalid-volume status while the
+        // Vcb resource is held; raising here can escape the FSD dispatch on
+        // Windows x64 and turn the stale open into a system bugcheck.
+        if (Vcb->VcbCondition == VcbInvalid ||
+            Vcb->VcbCondition == VcbDismountInProgress) {
+            try_return(Status = FlagOn(Vcb->VcbState, VCB_STATE_DISMOUNT_IN_PROGRESS) ?
+                       STATUS_VOLUME_DISMOUNTED : STATUS_FILE_INVALID);
+        }
+
         // Verify that the Vcb is not in an unusable condition.  This routine
         // will raise if not usable.
 

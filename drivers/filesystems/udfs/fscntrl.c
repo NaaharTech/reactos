@@ -499,6 +499,7 @@ UDFMountVolume(
             Vcb->VcbState |= VCB_STATE_VOLUME_READ_ONLY;
         }
 
+
         if ((Vcb->origIntegrityType == INTEGRITY_TYPE_OPEN) && (Vcb->CDR_Mode == 0)) {
             UDFPrint(("UDFMountVolume: volume is dirty, Read Only mount\n"));
             Vcb->VcbState |= VCB_STATE_MOUNTED_DIRTY
@@ -882,7 +883,8 @@ UDFUnlockVolumeInternal (
 
     IoAcquireVpbSpinLock(&SavedIrql);
 
-    if (FlagOn(Vcb->Vpb->Flags, VPB_LOCKED) && FileObject == Vcb->VolumeLockFileObject) {
+    if (Vcb->Vpb && FlagOn(Vcb->Vpb->Flags, VPB_LOCKED) &&
+        FileObject == Vcb->VolumeLockFileObject) {
 
         // This one locked it, unlock the volume
         ClearFlag(Vcb->Vpb->Flags, VPB_LOCKED | VPB_DIRECT_WRITES_ALLOWED);
@@ -1123,7 +1125,7 @@ Return Value:
 
     IoAcquireVpbSpinLock( &SavedIrql ); 
 
-    if (!FlagOn(Vcb->Vpb->Flags, VPB_LOCKED) && 
+    if (Vcb->Vpb && !FlagOn(Vcb->Vpb->Flags, VPB_LOCKED) &&
         (Vcb->VcbCleanup == RemainingUserReferences) &&
         (Vcb->VcbUserReference == Vcb->VcbResidualUserReference + RemainingUserReferences)) {
 
