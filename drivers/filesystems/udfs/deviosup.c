@@ -239,6 +239,15 @@ UDFNonCachedIo(
                 CurrentByteCount = ScanRemaining;
             }
 
+            // A failed extension can leave a cached paging write past the
+            // last extent.  UDFLookupAllocation then returns zero bytes;
+            // without this check the pre-scan repeats the same offset forever.
+            if (CurrentByteCount == 0) {
+                IrpContext->Irp->IoStatus.Information = 0;
+                IrpContext->Irp->IoStatus.Status = STATUS_DISK_FULL;
+                return STATUS_DISK_FULL;
+            }
+
             if (!Recorded) {
                 NeedConversion = TRUE;
             } else {
@@ -691,6 +700,12 @@ UDFPrepareBuffers(
 
         if (CurrentByteCount > RemainingByteCount) {
             CurrentByteCount = RemainingByteCount;
+        }
+
+        // Every run must advance the request.  A zero-length lookup here
+        // would otherwise loop forever for both reads and writes.
+        if (CurrentByteCount == 0) {
+            ExRaiseStatus(STATUS_FILE_CORRUPT_ERROR);
         }
 
         //

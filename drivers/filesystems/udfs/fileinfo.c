@@ -1746,6 +1746,9 @@ UDFSetEndOfFileInfo(
             // dereference file
             UDFCloseFile__(IrpContext, Vcb, Fcb->FileInfo);
             InterlockedDecrement((PLONG)&Fcb->FcbReference);
+            if (!NT_SUCCESS(RC)) {
+                try_return(RC);
+            }
             // update values in NtReqFcb
             Fcb->Header.FileSize.QuadPart =
 //            NtReqFcb->CommonFCBHeader.ValidDataLength.QuadPart =
