@@ -1685,12 +1685,16 @@ UDFGetPartFreeSpace(
         }
         UDFUnpinBitmapPage(Vcb);
         UDFReleaseResource(&(Vcb->BitMapResource1));
-    } else {
+    } else if (Vcb->FSBM_Bitmap) {
         PUCHAR cur = (PUCHAR)(Vcb->FSBM_Bitmap);
         ULONG lim = (Vcb->FSBM_BitCount+7)/8;
         for(ULONG j=0; j<lim; j++) {
             s+=bit_count_tab[cur[j]];
         }
+    } else {
+        // Read-only optical media may have no free-space bitmap.
+        // A missing bitmap cannot report allocatable blocks.
+        UDFPrint(("UDF: no free-space bitmap for partition %u\n", partNum));
     }
     return s;
 } // end UDFGetPartFreeSpace()
