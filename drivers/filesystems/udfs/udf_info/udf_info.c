@@ -4809,8 +4809,25 @@ UDFWriteFileData(
 
     status = UDFWriteFEBlock(IrpContext, Vcb, FileInfo, PartNum);
 
-    if (NT_SUCCESS(status))
+    if (NT_SUCCESS(status)) {
         *WrittenBytes = Length;
+
+        /* UDFWriteFEBlock committed the entire in-ICB FE sector, including
+           its data and allocation length.  On rewritable media an otherwise
+           unchanged FE need not be written again at the next cleanup flush.
+           Keep dirty state when allocation/relocation or directory retagging
+           is still pending.  Sequential media has different write ordering. */
+        if (Length && !Vcb->CDR_Mode &&
+            !Dloc->FELoc.Modified &&
+            !Dloc->AllocLoc.Modified &&
+            !Dloc->AllocLoc.Mapping &&
+            (!Dloc->DirIndex ||
+             (!!(Dloc->DirIndex->DIFlags & UDF_DI_FLAG_INIT_IN_ICB) ==
+              !!Dloc->DataLoc.Offset))) {
+            Dloc->DataLoc.Modified = FALSE;
+            Dloc->FE_Flags &= ~UDF_FE_FLAG_FE_MODIFIED;
+        }
+    }
     
     return status;
 }
