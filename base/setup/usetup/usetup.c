@@ -2431,6 +2431,11 @@ Restart:
         /* In unattended mode, preselect the file system */
         switch (USetupData.FsType)
         {
+            /* 2 selects UDF 2.50. */
+            case 2:
+                DefaultFs = L"UDF";
+                break;
+
             /* 1 is for BtrFS */
             case 1:
                 DefaultFs = L"BTRFS";
@@ -2767,6 +2772,12 @@ FsVolCallback(
 
         if (ChkInfo->ErrorStatus == STATUS_NOT_SUPPORTED)
         {
+            if (IsUnattendedSetup)
+            {
+                DPRINT1("Skipping unsupported filesystem check for %S in unattended Setup\n",
+                        ChkInfo->Volume->Info.FileSystem);
+                return FSVOL_SKIP;
+            }
             RtlStringCbPrintfA(Buffer,
                                sizeof(Buffer),
                                "Setup is currently unable to check a partition formatted in %S.\n"

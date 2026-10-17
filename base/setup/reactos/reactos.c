@@ -1599,6 +1599,12 @@ FsVolCallback(
 
         if (ChkInfo->ErrorStatus == STATUS_NOT_SUPPORTED)
         {
+            if (SetupData.bUnattend)
+            {
+                DPRINT1("Skipping unsupported filesystem check for %S in unattended Setup\n",
+                        ChkInfo->Volume->Info.FileSystem);
+                return FSVOL_SKIP;
+            }
             INT nRet;
 
             nRet = DisplayMessage(NULL, MB_ICONERROR | MB_OKCANCEL,

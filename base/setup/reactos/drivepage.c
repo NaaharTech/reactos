@@ -419,6 +419,11 @@ FormatDlgProcWorker(
                 /* In unattended mode, preselect the file system */
                 switch (SetupData.USetupData.FsType)
                 {
+                    /* 2 selects UDF 2.50. */
+                    case 2:
+                        DefaultFs = L"UDF";
+                        break;
+
                     /* 1 is for BtrFS */
                     case 1:
                         DefaultFs = L"BTRFS";
