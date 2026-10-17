@@ -1161,6 +1161,16 @@ UDFWriteInSector(
                  TRUE, tmp_buff, FALSE);
     if (!NT_SUCCESS(status)) goto done;
 
+    /* Metadata flushes can repeat an unchanged sub-sector update.  The read
+       above has already established the on-disk bytes, so a matching write
+       would only issue another synchronous sector I/O.  In CDR_Mode writes
+       advance the next writable address even when the bytes compare equal. */
+    if (!Vcb->CDR_Mode &&
+        RtlCompareMemory(tmp_buff + Offset, Buffer, Length) == Length) {
+        *WrittenBytes = Length;
+        goto done;
+    }
+
     RtlCopyMemory(tmp_buff + Offset, Buffer, Length);
 
     status = UDFReadWriteSectors(IrpContext, Vcb,
