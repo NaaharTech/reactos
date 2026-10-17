@@ -2928,7 +2928,6 @@ UDFCreateFile__(
     PUDF_FILE_INFO FileInfo;
     *_FileInfo = NULL;
     BOOLEAN undel = FALSE;
-    SIZE_T WrittenBytes;
 //    BOOLEAN PackDir = FALSE;
     BOOLEAN FEAllocated = FALSE;
 
@@ -3176,14 +3175,9 @@ CrF__2:
         FileInfo->Dloc->DataLoc.Mapping[0].extLength &= UDF_EXTENT_LENGTH_MASK;
         FileInfo->Dloc->DataLoc.Modified = TRUE;
         FileInfo->Dloc->FELoc.Mapping[0].extLength &= UDF_EXTENT_LENGTH_MASK;
-        // zero sector for FileEntry
-        if (!Vcb->CDR_Mode) {
-            status = UDFWriteData(IrpContext, Vcb, TRUE, ((int64)(FileInfo->Dloc->FELoc.Mapping[0].extLocation)) << Vcb->SectorShift, LBS, FALSE, Vcb->ZBuffer, &WrittenBytes);
-            if (!NT_SUCCESS(status)) {
-                UDFFlushFI(IrpContext, Vcb, FileInfo, PartNum);
-                try_return (status);
-            }
-        }
+        /* UDFBuildFileEntry zeroes its sector-sized buffer.  UDFFlushFE below
+           writes the complete in-ICB FE sector, including its zero tail, so
+           a separate zero-sector write here is immediately overwritten. */
 #if 0
         if ((i >= 2) && (DirNdx->FName.Buffer[0] == L'.')) {
             BrutePoint();
@@ -3205,8 +3199,17 @@ CrF__2:
         // make FileIdent valid
         FileInfo->FileIdent->fileCharacteristics = 0;
         DirNdx->FileCharacteristics = 0;
+        status = UDFFlushFE(IrpContext, Vcb, FileInfo, PartNum);
+        if (!NT_SUCCESS(status)) {
+            /* The new FE was not committed.  Keep its directory entry a
+               tombstone before FINALLY releases the FE allocation. */
+            FileInfo->FileIdent->fileCharacteristics |= FILE_DELETED;
+            DirNdx->FileCharacteristics |= FILE_DELETED;
+            DirNdx->FI_Flags |= UDF_FI_FLAG_FI_MODIFIED;
+            UDFFlushFI(IrpContext, Vcb, FileInfo, PartNum);
+            try_return (status);
+        }
         UDFReferenceFile__(FileInfo);
-        UDFFlushFE(IrpContext, Vcb, FileInfo, PartNum);
         if (undel)
             hDirNdx->DelCount--;
         UDFReleaseDloc(Vcb, FileInfo->Dloc);
