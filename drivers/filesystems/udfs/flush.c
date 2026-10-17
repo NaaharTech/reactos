@@ -137,6 +137,12 @@ UDFCommonFlush(
             Vcb = Fcb->Vcb;
             ASSERT(Vcb);
 
+            // A file flush also updates its parent FID. Cleanup and volume
+            // flush serialize those sector read-modify-writes with the Vcb
+            // resource, so join that protocol before taking either Fcb lock.
+            UDFAcquireVcbShared(IrpContext, Vcb, FALSE);
+            AcquiredVCB = TRUE;
+
             // Child-first lock ordering
             UDF_CHECK_PAGING_IO_RESOURCE(Fcb);
             UDFAcquireFcbExclusive(IrpContext, Fcb, FALSE);
