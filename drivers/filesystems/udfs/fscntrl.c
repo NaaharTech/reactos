@@ -1001,12 +1001,17 @@ UDFPurgeVolume (
             UDFUnlockVcb(IrpContext, Vcb);
             UDFUnlockFcbTable(IrpContext, Vcb);
         } else {
-            ThisFcb->FcbReference -= 1;
             UDFUnlockVcb(IrpContext, Vcb);
             UDFUnlockFcbTable(IrpContext, Vcb);
 
+            // Keep the enumeration reference until its FCB resource is held.
+            // A cached-section close can otherwise tear down the FCB between
+            // dropping the last reference and acquiring this resource.
             UDF_CHECK_PAGING_IO_RESOURCE(ThisFcb);
             UDFAcquireFcbExclusive(IrpContext, ThisFcb, FALSE);
+            UDFLockVcb(IrpContext, Vcb);
+            ThisFcb->FcbReference -= 1;
+            UDFUnlockVcb(IrpContext, Vcb);
             UDFTeardownStructures(IrpContext, ThisFcb, FALSE, &RemovedFcb);
             if (!RemovedFcb) {
                 UDFReleaseFcb(IrpContext, ThisFcb);

@@ -570,7 +570,12 @@ UDFTeardownStructures(
                     CurrentFcb->FileInfo->Dloc->CommonFcb = NULL;
                 }
 
-                if (UDFCleanUpFile__(Vcb, CurrentFcb->FileInfo) == (UDF_FREE_FILEINFO | UDF_FREE_DLOC)) {
+                // FILEINFO and DLOC have separate lifetimes.  Cleanup can
+                // detach this FileInfo while retaining a Dloc shared by other
+                // links.  That still releases this FCB; restoring its already
+                // detached FileInfo would leave a NULL Dloc for a later close.
+                ULONG CleanupResult = UDFCleanUpFile__(Vcb, CurrentFcb->FileInfo);
+                if (CleanupResult & UDF_FREE_FILEINFO) {
 
                     AdPrint(("UDFTeardownStructures, deleting Fcb %p\n", CurrentFcb));
 

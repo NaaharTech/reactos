@@ -149,6 +149,13 @@ UDFCommonClose(
             // Decrement reference counts
             // These were incremented in UDFCompleteFcbOpen.
 
+            // Keep this close's reference until the FCB resource is held.
+            // Another close or volume purge can otherwise see the last
+            // reference disappear and free the FCB before teardown starts.
+            if (Fcb != Vcb->VolumeDasdFcb) {
+                UDFAcquireFcbExclusive(IrpContext, Fcb, FALSE);
+            }
+
             UDFLockVcb(IrpContext, Vcb);
 
             Fcb->FcbReference--;
@@ -207,7 +214,6 @@ UDFCommonClose(
             // TODO: refactor to use UDFCommonClosePrivate
             {
                 BOOLEAN RemovedFcb = FALSE;
-                UDFAcquireFcbExclusive(IrpContext, Fcb, FALSE);
                 // LCB-based teardown: walks ParentLcbQueue to find and remove LCBs
                 UDFTeardownStructures(IrpContext, Fcb, FALSE, &RemovedFcb);
                 if (!RemovedFcb) {
