@@ -43,6 +43,7 @@ list(APPEND FREELDR_BOOTLIB_SOURCE
     lib/fs/fat.c
     lib/fs/fs.c
     lib/fs/iso.c
+    lib/fs/udf.c
     lib/fs/ntfs.c
     lib/inifile/ini_init.c
     lib/inifile/inifile.c

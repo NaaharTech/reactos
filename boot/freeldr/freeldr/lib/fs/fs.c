@@ -61,6 +61,7 @@ PFS_MOUNT FileSystems[] =
 #ifndef _M_ARM
     IsoMount,
 #endif
+    UdfMount,
     FatMount,
     BtrFsMount,
 #ifndef _M_ARM
@@ -587,6 +588,9 @@ FsGetVolumeSize(
         pFsGetVolumeSize = IsoGetVolumeSize;
     else
 #endif
+    if (!_wcsicmp(ServiceName, L"udfs"))
+        pFsGetVolumeSize = UdfGetVolumeSize;
+    else
     if (!_wcsicmp(ServiceName, L"fastfat") || !_wcsicmp(ServiceName, L"vfatfs"))
         pFsGetVolumeSize = FatGetVolumeSize;
     else
