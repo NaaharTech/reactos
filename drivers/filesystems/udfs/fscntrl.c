@@ -1632,10 +1632,11 @@ UDFGetRetrievalPointers(
                 OutputBuffer->Extents[i].Lcn.QuadPart = (int64)(-1);
             } else
             if (SubMapping[i].extLocation & 0x80000000) {
-                OutputBuffer->Extents[i].Lcn.LowPart = (SubMapping[i].extLocation & 0x7fffffff) >> Vcb->SectorShift;
+                /* extLocation is already a sector LBA, not a byte offset. */
+                OutputBuffer->Extents[i].Lcn.LowPart = SubMapping[i].extLocation & 0x7fffffff;
                 OutputBuffer->Extents[i].Lcn.HighPart = 0x80000000;
             } else {
-                OutputBuffer->Extents[i].Lcn.LowPart = SubMapping[i].extLocation >> Vcb->SectorShift;
+                OutputBuffer->Extents[i].Lcn.LowPart = SubMapping[i].extLocation;
                 OutputBuffer->Extents[i].Lcn.HighPart = 0;
             }
             // alignment for last sector
