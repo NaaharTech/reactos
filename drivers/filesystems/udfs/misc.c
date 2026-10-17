@@ -1249,9 +1249,11 @@ UDFReadRegKeys(
 
     // Should we update AttrFileTime on Attr changes
     UDFUpdateCompatOption(Vcb, Update, UseCfg, UDF_UPDATE_TIMES_ATTR, UDF_VCB_IC_UPDATE_ATTR_TIME, FALSE);
-    // Should we update ModifyFileTime on Writes changes
-    // It also affects ARCHIVE bit setting on write operations
-    UDFUpdateCompatOption(Vcb, Update, UseCfg, UDF_UPDATE_TIMES_MOD, UDF_VCB_IC_UPDATE_MODIFY_TIME, FALSE);
+    // Windows build tools use LastWriteTime to decide whether an output is
+    // newer than its inputs.  This driver does not currently load per-volume
+    // registry options (UDFGetRegParameter returns the default), so leaving
+    // this disabled makes in-place writes retain their old timestamp.
+    UDFUpdateCompatOption(Vcb, Update, UseCfg, UDF_UPDATE_TIMES_MOD, UDF_VCB_IC_UPDATE_MODIFY_TIME, TRUE);
     // Should we update AccessFileTime on Exec & so on.
     UDFUpdateCompatOption(Vcb, Update, UseCfg, UDF_UPDATE_TIMES_ACCS, UDF_VCB_IC_UPDATE_ACCESS_TIME, FALSE);
     // Should we update Archive bit
