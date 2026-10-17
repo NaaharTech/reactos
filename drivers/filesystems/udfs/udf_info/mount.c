@@ -383,6 +383,7 @@ UDFUpdateLogicalVolInt(
     struct LogicalVolIntegrityDescImpUse* LVID_iUse;
     struct LogicalVolHeaderDesc* LVID_hd;
     uint32*     partFreeSpace;
+    uint32*     partSize;
     BOOLEAN     equal = FALSE;
     LONGLONG NtTime;
 
@@ -433,6 +434,17 @@ UDFUpdateLogicalVolInt(
         pSize = UDFGetPartFreeSpace(Vcb, i);
         equal = equal && (partFreeSpace[i] == pSize);
         partFreeSpace[i] = pSize;
+    }
+
+    // Metadata growth changes the logical partition size independently of
+    // its free count. Include SizeTable in the unchanged-descriptor test.
+    if (Vcb->MetadataFileInfo &&
+        Vcb->MetadataRef < lvid->numOfPartitions &&
+        Vcb->MetadataRef < Vcb->PartitionMaps) {
+        partSize = partFreeSpace + lvid->numOfPartitions;
+        pSize = Vcb->Partitions[Vcb->MetadataRef].PartitionLen;
+        equal = equal && (partSize[Vcb->MetadataRef] == pSize);
+        partSize[Vcb->MetadataRef] = pSize;
     }
 
     // Update LVID Header Descriptor
