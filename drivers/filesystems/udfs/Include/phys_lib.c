@@ -225,8 +225,8 @@ UDFSendSectorIo(
 *
 *************************************************************************/
 
-NTSTATUS
-UDFReadWriteSectors(
+static NTSTATUS
+UDFReadWriteSectorsRaw(
     IN PIRP_CONTEXT IrpContext,
     IN PVCB Vcb,
     IN LONGLONG StartingOffset,
@@ -362,6 +362,68 @@ try_exit: NOTHING;
     }
 
     return RC;
+} // end UDFReadWriteSectorsRaw()
+
+NTSTATUS
+UDFReadWriteSectors(
+    IN PIRP_CONTEXT IrpContext,
+    IN PVCB Vcb,
+    IN LONGLONG StartingOffset,
+    IN ULONG ByteCount,
+    IN BOOLEAN ReturnError,
+    IN PVOID Buffer,
+    IN BOOLEAN IsWrite
+    )
+{
+    NTSTATUS status;
+    uint32 firstLba, count, i, metadataLbn, mirrorLba, mirrorFlags;
+    PEXTENT_MAP mirrorMap;
+
+    // Write the primary copy before its mirror, including sector updates
+    // made by the file-entry and directory paths.  The mirror has its own
+    // physical allocation only when the duplicate flag is set.
+    status = UDFReadWriteSectorsRaw(IrpContext, Vcb, StartingOffset,
+                                   ByteCount, ReturnError, Buffer, IsWrite);
+    if (!NT_SUCCESS(status) || !IsWrite ||
+        !(Vcb->MetadataFlags & UDF_METADATA_DUPLICATED) ||
+        !Vcb->MetadataFileInfo || !Vcb->MetadataMirrorFileInfo)
+        return status;
+
+    mirrorMap = Vcb->MetadataMirrorFileInfo->Dloc->DataLoc.Mapping;
+    if (!mirrorMap || (StartingOffset & (Vcb->SectorSize - 1)) ||
+        (ByteCount & (Vcb->SectorSize - 1)))
+        return STATUS_FILE_CORRUPT_ERROR;
+
+    firstLba = (uint32)(StartingOffset >> Vcb->SectorShift);
+    count = ByteCount >> Vcb->SectorShift;
+    for (i = 0; i < count; i++) {
+        metadataLbn = UDFPhysLbaToMetadata(Vcb, firstLba + i);
+        if (metadataLbn == LBA_OUT_OF_EXTENT)
+            continue;
+
+        mirrorLba = UDFExtentOffsetToLba(Vcb, mirrorMap,
+                                         ((int64)metadataLbn) << Vcb->SectorShift,
+                                         NULL, NULL, &mirrorFlags, NULL);
+        if (mirrorLba == LBA_OUT_OF_EXTENT ||
+            mirrorFlags != EXTENT_RECORDED_ALLOCATED) {
+            status = STATUS_FILE_CORRUPT_ERROR;
+            break;
+        }
+
+        status = UDFReadWriteSectorsRaw(IrpContext, Vcb,
+                     ((LONGLONG)mirrorLba) << Vcb->SectorShift,
+                     Vcb->SectorSize, ReturnError,
+                     (PUCHAR)Buffer + (((SIZE_T)i) << Vcb->SectorShift), TRUE);
+        if (!NT_SUCCESS(status))
+            break;
+    }
+
+    if (!NT_SUCCESS(status)) {
+        Vcb->VcbState |= VCB_STATE_VOLUME_READ_ONLY;
+        if (!ReturnError)
+            ExRaiseStatus(status);
+    }
+    return status;
 } // end UDFReadWriteSectors()
 
 /*
