@@ -5338,6 +5338,36 @@ UDFCrc(
 /*
     Read the first block of a tagged descriptor & check it.
 */
+static BOOLEAN
+UDFTaggedSectorValid(
+    IN PVCB Vcb,
+    IN const int8* Buf,
+    IN uint32 Location
+    )
+{
+    const tag* Tag = (const tag*)Buf;
+    const uint8* Bytes = (const uint8*)Buf;
+    uint8 Checksum = 0;
+    uint32 i;
+
+    if (Vcb->SectorSize < sizeof(tag) ||
+        Tag->tagLocation != Location ||
+        (Tag->descVersion != 2 && Tag->descVersion != 3) ||
+        Tag->descCRCLength > Vcb->SectorSize - sizeof(tag))
+        return FALSE;
+
+    for (i = 0; i < sizeof(tag); i++) {
+        if (i != 4)
+            Checksum += Bytes[i];
+    }
+    if (Checksum != Tag->tagChecksum)
+        return FALSE;
+
+    return !Tag->descCRC ||
+           Tag->descCRC == UDFCrc((uint8*)Bytes + sizeof(tag),
+                                   Tag->descCRCLength, 0);
+}
+
 NTSTATUS
 UDFReadTagged(
     IN PIRP_CONTEXT IrpContext,
@@ -5354,6 +5384,9 @@ UDFReadTagged(
     uint8 checksum;
     unsigned int i;
     int8* tb;
+    uint32 MetadataLbn, MirrorLba, MirrorFlags;
+    int8* MirrorBuf;
+    NTSTATUS MirrorStatus;
 
     // Read the block
     if (Block == 0xFFFFFFFF)
@@ -5364,6 +5397,41 @@ UDFReadTagged(
         if (!NT_SUCCESS(RC)) {
             UDFPrint(("UDF: Block=%x, Location=%x: read failed\n", Block, Location));
             try_return(RC);
+        }
+
+        // A duplicated UDF 2.50 metadata partition is a recovery copy, not
+        // merely reserved space.  On a bad primary descriptor, validate the
+        // corresponding mirror sector before exposing it to the caller.
+        if ((Vcb->MetadataFlags & UDF_METADATA_DUPLICATED) &&
+            Vcb->MetadataFileInfo && Vcb->MetadataMirrorFileInfo &&
+            Vcb->MetadataMirrorFileInfo->Dloc &&
+            Vcb->MetadataMirrorFileInfo->Dloc->DataLoc.Mapping &&
+            !UDFTaggedSectorValid(Vcb, Buf, Location)) {
+            MetadataLbn = UDFPhysLbaToMetadata(Vcb, Block);
+            if (MetadataLbn != LBA_OUT_OF_EXTENT) {
+                MirrorLba = UDFExtentOffsetToLba(
+                    Vcb, Vcb->MetadataMirrorFileInfo->Dloc->DataLoc.Mapping,
+                    ((int64)MetadataLbn) << Vcb->SectorShift,
+                    NULL, NULL, &MirrorFlags, NULL);
+                if (MirrorLba != LBA_OUT_OF_EXTENT &&
+                    MirrorLba != Block &&
+                    MirrorFlags == EXTENT_RECORDED_ALLOCATED) {
+                    MirrorBuf = (int8*)DbgAllocatePool(NonPagedPool,
+                                                       Vcb->SectorSize);
+                    if (MirrorBuf) {
+                        MirrorStatus = UDFReadSectors(IrpContext, Vcb, FALSE,
+                                                      MirrorLba, 1, FALSE,
+                                                      MirrorBuf);
+                        if (NT_SUCCESS(MirrorStatus) &&
+                            UDFTaggedSectorValid(Vcb, MirrorBuf, Location)) {
+                            RtlCopyMemory(Buf, MirrorBuf, Vcb->SectorSize);
+                            UDFPrint(("UDF: recovered metadata descriptor %x "
+                                      "from mirror %x\n", Block, MirrorLba));
+                        }
+                        DbgFreePool(MirrorBuf);
+                    }
+                }
+            }
         }
 
         *Ident = PTag->tagIdent;
@@ -5394,8 +5462,10 @@ UDFReadTagged(
         }
 
         // Verify the descriptor CRC
-        if (((PTag->descCRCLength) + sizeof(tag) > Vcb->SectorSize) ||
-            ((PTag->descCRC) == UDFCrc((uint8 *)Buf + sizeof(tag), PTag->descCRCLength, 0)) || !(PTag->descCRC))
+        if (((PTag->descCRCLength) + sizeof(tag) <= Vcb->SectorSize) &&
+            (((PTag->descCRC) == UDFCrc((uint8 *)Buf + sizeof(tag),
+                                       PTag->descCRCLength, 0)) ||
+             !(PTag->descCRC)))
         {
             /*        UDFPrint(("Tag ID: %x, ver %x\t", PTag->tagIdent, PTag->descVersion ));
                     if ((i == TID_FILE_ENTRY) ||
