@@ -432,6 +432,307 @@ UDFPhysLbaToMetadata(
     return LBA_OUT_OF_EXTENT;
 }
 
+static NTSTATUS
+UDFGrowMetadataFile(
+    IN PIRP_CONTEXT IrpContext,
+    IN PVCB Vcb,
+    IN uint32 RequestedBlocks
+    )
+{
+    uint32 unit, align, grow, oldBlocks, newBlocks, oldMapBytes;
+    uint32 newBitmapBytes, physStart, physEnd, candidate, mirrorCandidate, i;
+    uint32 mainMapBytes, mirrorMapBytes;
+    BOOLEAN duplicate;
+    PCHAR newBitmap = NULL;
+    int8* zeroBuffer = NULL;
+    PEXTENT_MAP mainMap = NULL, mirrorMap = NULL;
+    PEXTENT_MAP oldMainMap, oldMirrorMap;
+    EXTENT_INFO physical, physicalMirror;
+    SIZE_T written;
+    NTSTATUS status = STATUS_DISK_FULL;
+
+    if (!Vcb->MetadataFileInfo || !Vcb->MetadataMirrorFileInfo ||
+        !Vcb->MetadataBitmapFileInfo)
+        return STATUS_NOT_SUPPORTED;
+
+    duplicate = (Vcb->MetadataFlags & UDF_METADATA_DUPLICATED) != 0;
+    oldBlocks = Vcb->MetadataBitCount;
+    if (oldBlocks != Vcb->Partitions[Vcb->MetadataRef].PartitionLen ||
+        oldBlocks != (uint32)(UDFGetFileSize(Vcb->MetadataFileInfo) >> Vcb->SectorShift) ||
+        oldBlocks != (uint32)(UDFGetFileSize(Vcb->MetadataMirrorFileInfo) >> Vcb->SectorShift))
+        return STATUS_FILE_CORRUPT_ERROR;
+
+    oldMainMap = Vcb->MetadataFileInfo->Dloc->DataLoc.Mapping;
+    oldMirrorMap = Vcb->MetadataMirrorFileInfo->Dloc->DataLoc.Mapping;
+    mainMapBytes = UDFGetMappingLength(oldMainMap);
+    mirrorMapBytes = UDFGetMappingLength(oldMirrorMap);
+    if (!mainMapBytes || mirrorMapBytes != mainMapBytes)
+        return STATUS_NOT_SUPPORTED;
+    for (i = 0; i < mainMapBytes / sizeof(EXTENT_MAP); i++) {
+        if (oldMainMap[i].extLength != oldMirrorMap[i].extLength ||
+            (duplicate && oldMainMap[i].extLength &&
+             oldMainMap[i].extLocation == oldMirrorMap[i].extLocation) ||
+            (!duplicate &&
+             oldMainMap[i].extLocation != oldMirrorMap[i].extLocation))
+            return STATUS_NOT_SUPPORTED;
+    }
+
+    unit = Vcb->MetadataAllocUnit ? Vcb->MetadataAllocUnit : 1;
+    align = Vcb->MetadataAlignUnit ? Vcb->MetadataAlignUnit : 1;
+    // A fixed 512-block increment exhausts the Metadata File Entry's short
+    // AD space on large directories long before the physical partition fills.
+    // Geometric growth keeps the number of ADs bounded for large volumes.
+    grow = max(RequestedBlocks, max((uint32)512, oldBlocks / 2));
+    if (grow > MAXULONG - (unit - 1))
+        return STATUS_DISK_FULL;
+    grow = ((grow + unit - 1) / unit) * unit;
+    if (oldBlocks > MAXULONG - grow)
+        return STATUS_DISK_FULL;
+    newBlocks = oldBlocks + grow;
+    newBitmapBytes = (newBlocks >> 3) + ((newBlocks & 7) != 0);
+    newBitmapBytes = max(newBitmapBytes, Vcb->MetadataBitmapByteCount);
+
+    newBitmap = (PCHAR)DbgAllocatePool(NonPagedPool, newBitmapBytes);
+    zeroBuffer = (int8*)DbgAllocatePool(NonPagedPool, Vcb->SectorSize * 8);
+    mainMap = (PEXTENT_MAP)MyAllocatePoolTag__(NonPagedPool,
+                mainMapBytes + sizeof(EXTENT_MAP), MEM_EXTMAP_TAG);
+    mirrorMap = (PEXTENT_MAP)MyAllocatePoolTag__(NonPagedPool,
+                mirrorMapBytes + sizeof(EXTENT_MAP), MEM_EXTMAP_TAG);
+    if (!newBitmap || !zeroBuffer || !mainMap || !mirrorMap) {
+        status = STATUS_INSUFFICIENT_RESOURCES;
+        goto cleanup;
+    }
+    RtlFillMemory(newBitmap, newBitmapBytes, 0xff);
+    RtlCopyMemory(newBitmap, Vcb->MetadataBitmap, Vcb->MetadataBitmapByteCount);
+    for (i = oldBlocks; i < newBlocks; i++)
+        newBitmap[i >> 3] |= (uint8)(1 << (i & 7));
+    RtlZeroMemory(zeroBuffer, Vcb->SectorSize * 8);
+
+    physical.Mapping = NULL;
+    physicalMirror.Mapping = NULL;
+    physStart = UDFPartStart(Vcb, Vcb->MetadataPhysRef);
+    physEnd = UDFPartEnd(Vcb, Vcb->MetadataPhysRef);
+    if (physEnd > physStart && grow <= physEnd - physStart) {
+        for (candidate = physStart; candidate <= physEnd - grow;) {
+            status = UDFAllocFreeExtent(IrpContext, Vcb,
+                        ((int64)grow) << Vcb->SectorShift,
+                        candidate, candidate + grow, &physical, EXTENT_FLAG_VERIFY);
+            if (NT_SUCCESS(status))
+                break;
+            if (status != STATUS_DISK_FULL)
+                goto cleanup;
+            if (align > physEnd - grow - candidate)
+                break;
+            candidate += align;
+        }
+    }
+    if (!physical.Mapping) {
+        status = STATUS_DISK_FULL;
+        goto cleanup;
+    }
+    if (physical.Mapping[0].extLocation != candidate ||
+        physical.Mapping[1].extLength) {
+        status = STATUS_FILE_CORRUPT_ERROR;
+        goto release_physical;
+    }
+
+    // Duplicated metadata requires a second, disjoint physical allocation.
+    // Its recorded AD has the same logical length as the primary AD.
+    mirrorCandidate = candidate;
+    if (duplicate) {
+        for (mirrorCandidate = physStart; mirrorCandidate <= physEnd - grow;) {
+            status = UDFAllocFreeExtent(IrpContext, Vcb,
+                        ((int64)grow) << Vcb->SectorShift,
+                        mirrorCandidate, mirrorCandidate + grow,
+                        &physicalMirror, EXTENT_FLAG_VERIFY);
+            if (NT_SUCCESS(status))
+                break;
+            if (status != STATUS_DISK_FULL)
+                goto release_physical;
+            if (align > physEnd - grow - mirrorCandidate)
+                break;
+            mirrorCandidate += align;
+        }
+        if (!physicalMirror.Mapping) {
+            status = STATUS_DISK_FULL;
+            goto release_physical;
+        }
+        if (physicalMirror.Mapping[0].extLocation != mirrorCandidate ||
+            physicalMirror.Mapping[1].extLength ||
+            (mirrorCandidate < candidate + grow &&
+             candidate < mirrorCandidate + grow)) {
+            status = STATUS_FILE_CORRUPT_ERROR;
+            goto release_physical;
+        }
+    }
+
+    // Metadata File ADs must describe aligned, recorded allocation units.
+    for (i = 0; i < grow; i += 8) {
+        uint32 chunk = min((uint32)8, grow - i);
+        status = UDFWriteSectors(IrpContext, Vcb, TRUE, candidate + i,
+                                 chunk, FALSE, zeroBuffer, &written);
+        if (!NT_SUCCESS(status) || written != ((SIZE_T)chunk << Vcb->SectorShift)) {
+            if (NT_SUCCESS(status)) status = STATUS_IO_DEVICE_ERROR;
+            goto release_physical;
+        }
+        if (duplicate) {
+            status = UDFWriteSectors(IrpContext, Vcb, TRUE, mirrorCandidate + i,
+                                     chunk, FALSE, zeroBuffer, &written);
+            if (!NT_SUCCESS(status) || written != ((SIZE_T)chunk << Vcb->SectorShift)) {
+                if (NT_SUCCESS(status)) status = STATUS_IO_DEVICE_ERROR;
+                goto release_physical;
+            }
+        }
+    }
+
+    RtlCopyMemory(mainMap, oldMainMap, mainMapBytes - sizeof(EXTENT_MAP));
+    RtlCopyMemory(mirrorMap, oldMirrorMap, mirrorMapBytes - sizeof(EXTENT_MAP));
+    oldMapBytes = mainMapBytes - sizeof(EXTENT_MAP);
+    mainMap[oldMapBytes / sizeof(EXTENT_MAP)].extLocation = candidate;
+    mainMap[oldMapBytes / sizeof(EXTENT_MAP)].extLength = grow << Vcb->SectorShift;
+    mirrorMap[oldMapBytes / sizeof(EXTENT_MAP)] =
+        mainMap[oldMapBytes / sizeof(EXTENT_MAP)];
+    mirrorMap[oldMapBytes / sizeof(EXTENT_MAP)].extLocation = mirrorCandidate;
+    RtlZeroMemory((int8*)mainMap + mainMapBytes, sizeof(EXTENT_MAP));
+    RtlZeroMemory((int8*)mirrorMap + mirrorMapBytes, sizeof(EXTENT_MAP));
+
+    Vcb->MetadataFileInfo->Dloc->DataLoc.Mapping = mainMap;
+    Vcb->MetadataMirrorFileInfo->Dloc->DataLoc.Mapping = mirrorMap;
+    Vcb->MetadataFileInfo->Dloc->DataLoc.Length =
+        Vcb->MetadataMirrorFileInfo->Dloc->DataLoc.Length =
+        ((int64)newBlocks) << Vcb->SectorShift;
+    Vcb->MetadataFileInfo->Dloc->DataLoc.Modified = TRUE;
+    Vcb->MetadataFileInfo->Dloc->AllocLoc.Modified = TRUE;
+    Vcb->MetadataMirrorFileInfo->Dloc->DataLoc.Modified = TRUE;
+    Vcb->MetadataMirrorFileInfo->Dloc->AllocLoc.Modified = TRUE;
+    UDFSetFileSize(Vcb->MetadataFileInfo, ((int64)newBlocks) << Vcb->SectorShift);
+    UDFSetFileSize(Vcb->MetadataMirrorFileInfo, ((int64)newBlocks) << Vcb->SectorShift);
+    MyFreePool__(oldMainMap);
+    MyFreePool__(oldMirrorMap);
+    mainMap = mirrorMap = NULL;
+    MyFreePool__(physical.Mapping);
+    physical.Mapping = NULL;
+    if (physicalMirror.Mapping) {
+        MyFreePool__(physicalMirror.Mapping);
+        physicalMirror.Mapping = NULL;
+    }
+
+    status = UDFFlushFile__(IrpContext, Vcb, Vcb->MetadataFileInfo, 0);
+    if (!NT_SUCCESS(status)) goto failed_after_commit;
+    status = UDFFlushFile__(IrpContext, Vcb, Vcb->MetadataMirrorFileInfo, 0);
+    if (!NT_SUCCESS(status)) goto failed_after_commit;
+    status = UDFResizeFile__(IrpContext, Vcb, Vcb->MetadataBitmapFileInfo,
+                             sizeof(SPACE_BITMAP_DESC) + newBitmapBytes);
+    if (!NT_SUCCESS(status)) goto failed_after_commit;
+
+    DbgFreePool(Vcb->MetadataBitmap);
+    Vcb->MetadataBitmap = newBitmap;
+    newBitmap = NULL;
+    Vcb->MetadataBitmapByteCount = newBitmapBytes;
+    Vcb->MetadataBitCount = newBlocks;
+    Vcb->MetadataFreeCount += grow;
+    Vcb->MetadataHint = oldBlocks;
+    Vcb->Partitions[Vcb->MetadataRef].PartitionLen = newBlocks;
+    Vcb->MetadataBitmapModified = TRUE;
+    UDFSetModified(Vcb);
+    status = UDFFlushMetadataBitmap(IrpContext, Vcb);
+    if (!NT_SUCCESS(status)) goto failed_after_commit;
+    goto cleanup;
+
+release_physical:
+    if (physicalMirror.Mapping) {
+        UDFMarkSpaceAsXXX(Vcb, 0, physicalMirror.Mapping, AS_DISCARDED);
+        MyFreePool__(physicalMirror.Mapping);
+    }
+    UDFMarkSpaceAsXXX(Vcb, 0, physical.Mapping, AS_DISCARDED);
+    MyFreePool__(physical.Mapping);
+failed_after_commit:
+    if (!NT_SUCCESS(status))
+        Vcb->VcbState |= VCB_STATE_VOLUME_READ_ONLY;
+cleanup:
+    if (newBitmap) DbgFreePool(newBitmap);
+    if (zeroBuffer) DbgFreePool(zeroBuffer);
+    if (mainMap) MyFreePool__(mainMap);
+    if (mirrorMap) MyFreePool__(mirrorMap);
+    return status;
+}
+
+NTSTATUS
+UDFAllocMetadataExtent(
+    IN PIRP_CONTEXT IrpContext,
+    IN PVCB Vcb,
+    IN int64 Length,
+    OUT PEXTENT_INFO ExtInfo
+    )
+{
+    uint32 blocks, bit, i, phys, pass, first;
+    BOOLEAN growthAttempted = FALSE;
+    EXTENT_AD extent;
+
+    ExtInfo->Mapping = NULL;
+    ExtInfo->Offset = 0;
+    ExtInfo->Length = 0;
+
+    if (!Vcb->MetadataFileInfo || !Vcb->MetadataBitmap)
+        return STATUS_NOT_SUPPORTED;
+    if (Length <= 0 || Length > UDF_EXTENT_LENGTH_MASK)
+        return STATUS_INVALID_PARAMETER;
+
+    blocks = (uint32)((Length + Vcb->SectorSize - 1) >> Vcb->SectorShift);
+retry_after_growth:
+    UDFAcquireResourceExclusive(&(Vcb->BitMapResource1), TRUE);
+    first = Vcb->MetadataHint < Vcb->MetadataBitCount ? Vcb->MetadataHint : 0;
+    for (pass = 0; pass < 2 && blocks <= Vcb->MetadataBitCount; pass++) {
+      for (bit = pass ? 0 : first;
+           bit <= Vcb->MetadataBitCount - blocks && (pass == 0 || bit < first);
+           bit++) {
+        phys = UDFMetadataLbaToPhys(Vcb, bit, NULL);
+        if (phys == LBA_OUT_OF_EXTENT)
+            continue;
+        for (i = 0; i < blocks; i++) {
+            if (!(Vcb->MetadataBitmap[(bit + i) >> 3] &
+                  (1 << ((bit + i) & 7))) ||
+                UDFMetadataLbaToPhys(Vcb, bit + i, NULL) != phys + i)
+                break;
+        }
+        if (i != blocks)
+            continue;
+
+        extent.extLocation = phys;
+        extent.extLength = (blocks << Vcb->SectorShift) |
+                           (EXTENT_NOT_RECORDED_ALLOCATED << 30);
+        ExtInfo->Mapping = UDFExtentToMapping(&extent);
+        if (!ExtInfo->Mapping) {
+            UDFReleaseResource(&(Vcb->BitMapResource1));
+            return STATUS_INSUFFICIENT_RESOURCES;
+        }
+        for (i = 0; i < blocks; i++)
+            Vcb->MetadataBitmap[(bit + i) >> 3] &=
+                ~(1 << ((bit + i) & 7));
+        Vcb->MetadataFreeCount -= blocks;
+        Vcb->MetadataHint = bit + blocks;
+        if (Vcb->MetadataHint >= Vcb->MetadataBitCount)
+            Vcb->MetadataHint = 0;
+        Vcb->MetadataBitmapModified = TRUE;
+        UDFSetModified(Vcb);
+        ExtInfo->Length = Length;
+        UDFReleaseResource(&(Vcb->BitMapResource1));
+        return STATUS_SUCCESS;
+      }
+    }
+
+    UDFReleaseResource(&(Vcb->BitMapResource1));
+    if (!growthAttempted) {
+        NTSTATUS status = UDFGrowMetadataFile(IrpContext, Vcb, blocks);
+        if (NT_SUCCESS(status)) {
+            growthAttempted = TRUE;
+            goto retry_after_growth;
+        }
+        return status;
+    }
+    return STATUS_DISK_FULL;
+}
+
 /*
     This routine returns physycal Lba for partition-relative addr
     No partition bounds check is performed.
@@ -991,6 +1292,8 @@ UDFMarkSpaceAsXXXNoProtect_(
     uint32 lba, j, len, BS, BSh;
     uint32 root;
     BOOLEAN asUsed = (asXXX == AS_USED || (asXXX & AS_BAD));
+    BOOLEAN physicalMarked = FALSE;
+    BOOLEAN metadataFileMap;
 #ifdef UDF_TRACK_ONDISK_ALLOCATION
     BOOLEAN bit_before, bit_after;
 #endif //UDF_TRACK_ONDISK_ALLOCATION
@@ -1001,8 +1304,11 @@ UDFMarkSpaceAsXXXNoProtect_(
 
     BS = Vcb->SectorSize;
     BSh = Vcb->SectorShift;
-    Vcb->BitmapModified = TRUE;
-    UDFSetModified(Vcb);
+    metadataFileMap = Vcb->MetadataFileInfo &&
+        Map == Vcb->MetadataFileInfo->Dloc->DataLoc.Mapping;
+    if (Vcb->MetadataMirrorFileInfo &&
+        Map == Vcb->MetadataMirrorFileInfo->Dloc->DataLoc.Mapping)
+        metadataFileMap = TRUE;
     uint32 partRoot = Vcb->Partitions[0].PartitionRoot;
     // walk through all frags in data area specified
     while(Map[i].extLength & UDF_EXTENT_LENGTH_MASK) {
@@ -1034,6 +1340,54 @@ UDFMarkSpaceAsXXXNoProtect_(
 #endif // UDF_DBG
         len = ((Map[i].extLength & UDF_EXTENT_LENGTH_MASK)+BS-1) >> BSh;
         lba = Map[i].extLocation;
+
+        // These sectors are already reserved by the physical partition's
+        // bitmap as part of the Metadata File.  Track child ICBs and directory
+        // extents in the Metadata Bitmap instead; never release their physical
+        // blocks to ordinary file data.
+        if (Vcb->MetadataBitmap && !metadataFileMap &&
+            !(asXXX & AS_BAD)) {
+            uint32 metadataLbn = UDFPhysLbaToMetadata(Vcb, lba);
+            if (metadataLbn != LBA_OUT_OF_EXTENT &&
+                metadataLbn < Vcb->MetadataBitCount &&
+                len <= Vcb->MetadataBitCount - metadataLbn) {
+                for (j = 0; j < len; j++) {
+                    if (UDFMetadataLbaToPhys(Vcb, metadataLbn + j, NULL) != lba + j)
+                        break;
+                }
+                if (j == len) {
+                    for (j = 0; j < len; j++) {
+                        uint32 bit = metadataLbn + j;
+                        uint8 mask = (uint8)(1 << (bit & 7));
+                        BOOLEAN wasFree = (Vcb->MetadataBitmap[bit >> 3] & mask) != 0;
+                        if (asUsed && wasFree) {
+                            Vcb->MetadataBitmap[bit >> 3] &= ~mask;
+                            Vcb->MetadataFreeCount--;
+                        } else if (!asUsed && !wasFree) {
+                            Vcb->MetadataBitmap[bit >> 3] |= mask;
+                            Vcb->MetadataFreeCount++;
+                            if (bit < Vcb->MetadataHint)
+                                Vcb->MetadataHint = bit;
+                        }
+                    }
+                    Vcb->MetadataBitmapModified = TRUE;
+                    UDFSetModified(Vcb);
+                    if (!asUsed) {
+                        Map[i].extLength = (len << BSh) |
+                            (EXTENT_NOT_RECORDED_NOT_ALLOCATED << 30);
+                        Map[i].extLocation = 0;
+                    }
+                    i++;
+                    continue;
+                }
+            }
+        }
+
+        if (!physicalMarked) {
+            Vcb->BitmapModified = TRUE;
+            UDFSetModified(Vcb);
+            physicalMarked = TRUE;
+        }
         if (lba < partRoot) {
             ASSERT(FALSE);
             i++;
@@ -1190,6 +1544,11 @@ UDFAllocFreeExtent_(
     PEXTENT_MAP Map = NULL;
     uint32 len, LBS, BSh, blen;
 
+    if (Vcb->MetadataFileInfo &&
+        SearchStart == UDFPartStart(Vcb, Vcb->MetadataRef) &&
+        SearchLim == UDFPartEnd(Vcb, Vcb->MetadataRef))
+        return UDFAllocMetadataExtent(IrpContext, Vcb, Length, ExtInfo);
+
     LBS = Vcb->SectorSize;
     BSh = Vcb->SectorShift;
     uint32 MaxExtentLength = ALIGN_DOWN_BY(UDF_EXTENT_LENGTH_MASK, LBS);
@@ -1301,6 +1660,9 @@ UDFGetPartFreeSpace(
     )
 {
     uint32 s=0;
+
+    if (Vcb->MetadataFileInfo && partNum == Vcb->MetadataRef)
+        return Vcb->MetadataFreeCount;
 
     if (Vcb->BitmapFcb) {
         // Even the readers should be exclusive because the pinned page is shared state.

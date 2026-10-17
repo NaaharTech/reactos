@@ -879,7 +879,7 @@ UDFBuildFileEntry(
     EXTENT_INFO _FEExtInfo;
     uint16* lcp;
 
-    ASSERT(!PartNum);
+    ASSERT(PartNum < Vcb->PartitionMaps);
     ASSERT(!ExtAttrSz);
     // calculate the length required
     l = (Extended ? sizeof(EXTENDED_FILE_ENTRY) : sizeof(FILE_ENTRY)) + ExtAttrSz;
@@ -1571,6 +1571,10 @@ UDFWriteFile__(
     Dloc = FileInfo->Dloc;
     ASSERT(Dloc->FELoc.Mapping[0].extLocation);
     uint32 PartNum = UDFGetRefPartNumByPhysLba(Vcb, Dloc->FELoc.Mapping[0].extLocation);
+    uint32 DataPartNum = PartNum;
+    if (Vcb->MetadataFileInfo && PartNum == Vcb->MetadataRef &&
+        !UDFIsADirectory(FileInfo))
+        DataPartNum = Vcb->MetadataPhysRef;
     (*WrittenBytes) = 0;
 
     AdPrint(("UDFWriteFile__ FE %x, FileInfo %x, ExtInfo %x, Mapping %x\n",
@@ -1616,7 +1620,8 @@ UDFWriteFile__(
     ExtPrint(("  init Alloc mode\n"));
     if ((((PFILE_ENTRY)(Dloc->FileEntry))->icbTag.flags & ICB_FLAG_ALLOC_MASK) == ICB_FLAG_AD_IN_ICB) {
         ((PFILE_ENTRY)(Dloc->FileEntry))->icbTag.flags &= ~ICB_FLAG_ALLOC_MASK;
-        ((PFILE_ENTRY)(Dloc->FileEntry))->icbTag.flags |= ICB_FLAG_AD_SHORT;
+        ((PFILE_ENTRY)(Dloc->FileEntry))->icbTag.flags |=
+            (DataPartNum == PartNum) ? ICB_FLAG_AD_SHORT : ICB_FLAG_AD_LONG;
         WasInIcb = TRUE;
         // Clear embedded data flag since file is no longer in ICB mode
         // Fcb may be NULL during directory operations (FCB not yet created)
@@ -1629,7 +1634,7 @@ UDFWriteFile__(
         UDFIsADirectory(FileInfo) ? "DIR" : "FILE",
         WasInIcb ? "In-Icb" : "",
         Vcb->LowFreeSpace ? "LowSpace" : ""));
-    status = UDFResizeExtent(IrpContext, Vcb, PartNum, t, FALSE, &(Dloc->DataLoc));
+    status = UDFResizeExtent(IrpContext, Vcb, DataPartNum, t, FALSE, &(Dloc->DataLoc));
     ExtPrint(("  DataLoc Offs %x, Len %I64x\n",
         Dloc->DataLoc.Offset, Dloc->DataLoc.Length));
     AdPrint(("UDFWriteFile__ (2) FileInfo %x, ExtInfo %x, Mapping %x\n", FileInfo, &(Dloc->DataLoc), Dloc->DataLoc.Mapping));
@@ -1653,7 +1658,7 @@ UDFWriteFile__(
             // restore file size
             AdPrint(("  restore alloc\n"));
             FileInfo->Dloc->DataLoc.Flags |= EXTENT_FLAG_CUT_PREALLOCATED;
-            UDFResizeExtent(IrpContext, Vcb, PartNum, OldLen, FALSE, &Dloc->DataLoc);
+            UDFResizeExtent(IrpContext, Vcb, DataPartNum, OldLen, FALSE, &Dloc->DataLoc);
             FileInfo->Dloc->DataLoc.Flags &= ~EXTENT_FLAG_CUT_PREALLOCATED;
         }
         return status;
@@ -4011,6 +4016,9 @@ mark_data_map_0:
         // resize extent
         ASSERT(FileInfo->Dloc->FELoc.Mapping[0].extLocation);
         PartNum = UDFGetRefPartNumByPhysLba(Vcb, FileInfo->Dloc->FELoc.Mapping[0].extLocation);
+        if (Vcb->MetadataFileInfo && PartNum == Vcb->MetadataRef &&
+            !UDFIsADirectory(FileInfo))
+            PartNum = Vcb->MetadataPhysRef;
         status = UDFResizeExtent(IrpContext, Vcb, PartNum, NewLength, FALSE, &FileInfo->Dloc->DataLoc);
         FileInfo->Dloc->DataLoc.Modified = TRUE;
         FileInfo->Dloc->AllocLoc.Modified = TRUE;
@@ -4312,6 +4320,8 @@ UDFReleaseMetadata(
 
     Vcb->MetadataBitCount = 0;
     Vcb->MetadataFreeCount = 0;
+    Vcb->MetadataHint = 0;
+    Vcb->MetadataBitmapModified = FALSE;
 }
 
 NTSTATUS
@@ -4424,6 +4434,7 @@ UDFLoadMetadata(
                 n++;
         }
         Vcb->MetadataFreeCount = n;
+        Vcb->MetadataHint = 0;
     }
 
     Vcb->MetadataBitmapModified = FALSE;
@@ -4434,6 +4445,78 @@ UDFLoadMetadata(
 
 err_metadata:
     UDFReleaseMetadata(IrpContext, Vcb);
+    return status;
+}
+
+NTSTATUS
+UDFFlushMetadataBitmap(
+    IN PIRP_CONTEXT IrpContext,
+    IN PVCB Vcb
+)
+{
+    NTSTATUS status;
+    PSPACE_BITMAP_DESC Sbd;
+    uint32 len;
+    SIZE_T written = 0;
+
+    if (!Vcb->MetadataBitmapModified)
+        return STATUS_SUCCESS;
+
+    if (!Vcb->MetadataBitmap || !Vcb->MetadataBitmapFileInfo)
+        return STATUS_FILE_CORRUPT_ERROR;
+
+    len = (uint32)UDFGetFileSize(Vcb->MetadataBitmapFileInfo);
+    if (len < sizeof(SPACE_BITMAP_DESC) ||
+        Vcb->MetadataBitmapByteCount > len - sizeof(SPACE_BITMAP_DESC))
+        return STATUS_FILE_CORRUPT_ERROR;
+
+    Sbd = (PSPACE_BITMAP_DESC)DbgAllocatePool(NonPagedPool, len);
+    if (!Sbd)
+        return STATUS_INSUFFICIENT_RESOURCES;
+
+    status = UDFReadFile__(IrpContext, Vcb, Vcb->MetadataBitmapFileInfo,
+                           0, len, FALSE, (int8*)Sbd);
+    if (NT_SUCCESS(status)) {
+        if (Sbd->descTag.tagIdent != TID_SPACE_BITMAP_DESC ||
+            Sbd->numOfBytes > len - sizeof(SPACE_BITMAP_DESC) ||
+            Sbd->numOfBits > Sbd->numOfBytes * 8) {
+            status = STATUS_FILE_CORRUPT_ERROR;
+        } else {
+            uint32 descriptorLba = UDFExtentOffsetToLba(
+                Vcb, Vcb->MetadataBitmapFileInfo->Dloc->DataLoc.Mapping,
+                Vcb->MetadataBitmapFileInfo->Dloc->DataLoc.Offset,
+                NULL, NULL, NULL, NULL);
+            if (descriptorLba == LBA_OUT_OF_EXTENT) {
+                DbgFreePool(Sbd);
+                return STATUS_FILE_CORRUPT_ERROR;
+            }
+            Sbd->numOfBits = Vcb->MetadataBitCount;
+            Sbd->numOfBytes = Vcb->MetadataBitmapByteCount;
+            RtlCopyMemory(Sbd + 1, Vcb->MetadataBitmap,
+                          Vcb->MetadataBitmapByteCount);
+            // ECMA 167 4/14.12: the CRC covers only the two bitmap length
+            // fields.  The bitmap payload is mutable and excluded from it.
+            UDFSetUpTag(Vcb, &Sbd->descTag,
+                        sizeof(SPACE_BITMAP_DESC),
+                        UDFPhysLbaToPart(Vcb, Vcb->MetadataPhysRef,
+                                         descriptorLba), 0);
+            status = UDFWriteFile__(IrpContext, Vcb,
+                                    Vcb->MetadataBitmapFileInfo, 0, len,
+                                    FALSE, (int8*)Sbd, &written);
+            if (NT_SUCCESS(status) && written != len)
+                status = STATUS_IO_DEVICE_ERROR;
+            // The bitmap may be embedded in its File Entry.  Flush that FE
+            // before UDFUmount__ closes the LVID; closing the FileInfo later
+            // must not reopen a volume whose metadata is already committed.
+            if (NT_SUCCESS(status))
+                status = UDFFlushFile__(IrpContext, Vcb,
+                                        Vcb->MetadataBitmapFileInfo, 0);
+            if (NT_SUCCESS(status))
+                Vcb->MetadataBitmapModified = FALSE;
+        }
+    }
+
+    DbgFreePool(Sbd);
     return status;
 }
 
@@ -4834,7 +4917,9 @@ retry_flush_FE:
     if ((FileInfo->Dloc->FE_Flags & UDF_FE_FLAG_FE_MODIFIED) ||
         FileInfo->Dloc->FELoc.Modified) {
         ASSERT(PartNum != (uint32)(-1));
-        ASSERT(!PartNum);
+        // UDF 2.50 File Entries may live in the metadata partition, whose
+        // partition map is distinct from the physical partition map.
+        ASSERT(PartNum < Vcb->PartitionMaps);
         if (PartNum == (uint32)(-1) || PartNum == (uint32)(-2)) {
             UDFPrint(("  bad PartNum: %d\n", PartNum));
         }

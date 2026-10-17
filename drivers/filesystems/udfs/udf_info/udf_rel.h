@@ -474,7 +474,7 @@ typedef struct _UDF_ALLOCATION_CACHE_ITEM {
 #define UDF_MAX_LINK_COUNT          0x7fff
 
 #define UDF_MAX_READ_REVISION       0x0260
-#define UDF_MAX_WRITE_REVISION      0x0201
+#define UDF_MAX_WRITE_REVISION      0x0250
 
 #define UDF_MAX_LVID_CHAIN_LENGTH   1024
 #define UDF_LVID_TTL                1024

@@ -455,6 +455,12 @@ UDFFlushVolume(
         ASSERT(Vcb->RootIndexFcb);
         ret_val |= UDFFlushADirectory(IrpContext, Vcb, Vcb->RootIndexFcb->FileInfo, &IoStatus, FlushFlags);
 
+        if (Vcb->MetadataBitmapModified) {
+            NTSTATUS metadataStatus = UDFFlushMetadataBitmap(IrpContext, Vcb);
+            if (!NT_SUCCESS(metadataStatus))
+                return metadataStatus;
+        }
+
 //        if (UDFFlushIsBreaking(Vcb, FlushFlags))
 //            return;
         // flush internal cache

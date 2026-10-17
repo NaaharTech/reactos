@@ -440,6 +440,14 @@ UDFFlushAllCachedAllocations(
 
 // allocate space for FE
 NTSTATUS
+UDFAllocMetadataExtent(
+    IN PIRP_CONTEXT IrpContext,
+    IN PVCB Vcb,
+    IN int64 Length,
+    OUT PEXTENT_INFO ExtInfo
+    );
+
+NTSTATUS
 UDFAllocateFESpace(
     IN PIRP_CONTEXT IrpContext,
     IN PVCB Vcb,
@@ -961,6 +969,12 @@ UDFLoadMetadata(
     IN PIRP_CONTEXT IrpContext,
     IN PVCB Vcb,
     IN uint32 PartNdx
+);
+
+NTSTATUS
+UDFFlushMetadataBitmap(
+    IN PIRP_CONTEXT IrpContext,
+    IN PVCB Vcb
 );
 
 NTSTATUS

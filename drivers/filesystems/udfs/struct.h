@@ -756,6 +756,7 @@ struct VCB {
     uint32          MetadataBitmapByteCount;
     uint32          MetadataBitCount;
     uint32          MetadataFreeCount;
+    uint32          MetadataHint;
     BOOLEAN         MetadataBitmapModified;
     // sparing table
     ULONG           SparingCountFree;

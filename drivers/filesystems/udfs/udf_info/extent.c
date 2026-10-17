@@ -1151,9 +1151,18 @@ UDFBuildLongAllocDescs(
     if (!Alloc) return STATUS_INSUFFICIENT_RESOURCES;
     // fill contiguous AllocDesc buffer (decribing UserData)
     for(i=0;i<len;i++) {
+        uint32 DataPartNum = PartNum;
+        if (Vcb->MetadataFileInfo && Extent[i].extLocation) {
+            DataPartNum = UDFGetRefPartNumByPhysLba(Vcb, Extent[i].extLocation);
+            if (DataPartNum == LBA_OUT_OF_EXTENT) {
+                MyFreePool__(Alloc);
+                return STATUS_FILE_CORRUPT_ERROR;
+            }
+        }
         Alloc[i].extLength = Extent[i].extLength;
-        Alloc[i].extLocation.logicalBlockNum = UDFPhysLbaToPart(Vcb, PartNum, Extent[i].extLocation);
-        Alloc[i].extLocation.partitionReferenceNum = (uint16)PartNum;
+        Alloc[i].extLocation.logicalBlockNum = Extent[i].extLocation ?
+            UDFPhysLbaToPart(Vcb, DataPartNum, Extent[i].extLocation) : 0;
+        Alloc[i].extLocation.partitionReferenceNum = (uint16)DataPartNum;
         RtlZeroMemory(&(Alloc[i].impUse), sizeof(Alloc[i].impUse));
     }
     if (i) {
@@ -1611,6 +1620,10 @@ UDFAllocateFESpace(
     )
 {
     UNREFERENCED_PARAMETER(DirInfo);
+
+    if (Vcb->MetadataFileInfo && PartNum == Vcb->MetadataRef)
+        return UDFAllocMetadataExtent(IrpContext, Vcb, Len, FEExtInfo);
+
     return UDFAllocFreeExtent(IrpContext, Vcb, Len,
            UDFPartStart(Vcb, PartNum), UDFPartEnd(Vcb, PartNum), FEExtInfo, EXTENT_FLAG_VERIFY);
 } // end UDFAllocateFESpace()
