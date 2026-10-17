@@ -1705,6 +1705,7 @@ UDFUnlinkFile__(
     PDIR_INDEX_ITEM DirNdx;
     NTSTATUS status;
     BOOLEAN IsSDir;
+    BOOLEAN FinalFileLink;
 
     AdPrint(("UDFUnlinkFile__:\n"));
     if (!FileInfo) return STATUS_SUCCESS;
@@ -1806,6 +1807,7 @@ UDFUnlinkFile__(
         }
     }
     lc = UDFGetFileLinkCount(FileInfo);
+    FinalFileLink = (lc == 1);
 
     if (lc) {
 
@@ -1906,8 +1908,31 @@ cleanup_SDir:
                                                      UDF_FE_FLAG_HAS_DEL_SDIR);
             FileInfo->Dloc->FE_Flags |= UDF_FE_FLAG_IS_DEL_SDIR;
         }
-        // flush file
-        UDFFlushFile__(IrpContext, Vcb, FileInfo, 0);
+        // The last name of an ordinary file is being removed. Commit its
+        // deleted FID before freeing any blocks; the now unreachable FE need
+        // not be rewritten solely to record a zero link count. Its dirty
+        // allocation state was rejected above, and open FCBs still defer the
+        // physical free until they leave FcbTable.
+        // Keep stream, directory, sequential-media and unmount paths intact.
+        uint32 PartNum;
+        if (FinalFileLink &&
+            !UDFIsADirectory(FileInfo) &&
+            !UDFIsAStream(FileInfo) &&
+            !UDFHasAStreamDir(FileInfo) &&
+            FileInfo->FileIdent &&
+            !Vcb->CDR_Mode &&
+            Vcb->VcbCondition == VcbMounted &&
+            Vcb->FsDeviceType == FILE_DEVICE_DISK_FILE_SYSTEM &&
+            !(Vcb->VcbState & VCB_STATE_REMOVABLE_MEDIA) &&
+            ((PartNum = UDFGetRefPartNumByPhysLba(
+                Vcb, Dloc->FELoc.Mapping[0].extLocation)) != (uint32)-1)) {
+            status = UDFFlushFI(IrpContext, Vcb, FileInfo, PartNum);
+            if (!NT_SUCCESS(status))
+                return status;
+            Dloc->FE_Flags &= ~UDF_FE_FLAG_FE_MODIFIED;
+        } else {
+            UDFFlushFile__(IrpContext, Vcb, FileInfo, 0);
+        }
 
         if ((Dloc->FE_Flags & UDF_FE_FLAG_FREE_DEFERRED) || Dloc->CommonFcb) {
 
