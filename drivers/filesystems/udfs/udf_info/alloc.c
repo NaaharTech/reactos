@@ -216,9 +216,15 @@ UDFIsBitmapBitFree(
     IN ULONG Lbn
     )
 {
+    BOOLEAN isFree;
+
     UDFPinBitmapPage(Vcb, Lbn);
     ULONG idx = Lbn - Vcb->BitmapPageStartLbn;
-    return RtlCheckBit(&Vcb->BitmapRtl, idx) ? TRUE : FALSE;
+    isFree = RtlCheckBit(&Vcb->BitmapRtl, idx) ? TRUE : FALSE;
+    /* A BCB resource belongs to the pinning thread. Never leave a read
+       helper's pin in the VCB for a later request on another thread. */
+    UDFUnpinBitmapPage(Vcb);
+    return isFree;
 }
 
 /*
@@ -263,6 +269,7 @@ UDFGetCachedBitmapLen(
         if (pos < pageEnd) break;
     }
 
+    UDFUnpinBitmapPage(Vcb);
     return totalLen;
 }
 
@@ -962,6 +969,7 @@ UDFMarkBadSpaceAsUsed(
         }
     }
 #undef BIT_C
+    UDFUnpinBitmapPage(Vcb);
 } // UDFMarkBadSpaceAsUsed()
 
 /*
