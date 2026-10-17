@@ -876,25 +876,27 @@ UDFCheckSpaceAllocation_(
 #endif //UDF_CHECK_EXTENT_SIZE_ALIGNMENT
         len = ((Map[i].extLength & UDF_EXTENT_LENGTH_MASK)+BS-1) >> BSh;
         lba = Map[i].extLocation;
-        if ((lba+len) > Vcb->FSBM_BitCount) {
-            // skip blocks beyond bitmap boundary
-            if (lba >= Vcb->FSBM_BitCount) {
-                ASSERT(FALSE);
-                i++;
-                continue;
-            }
-            len = Vcb->FSBM_BitCount - lba;
+        if (lba < Vcb->Partitions[0].PartitionRoot) {
+            ASSERT(FALSE);
+            i++;
+            continue;
         }
-
-        // Convert PSN to LBN for bitmap access
+        // The bitmap counts partition-relative blocks, not physical sectors.
         uint32 lbn = lba - Vcb->Partitions[0].PartitionRoot;
+        if (lbn >= Vcb->FSBM_BitCount) {
+            ASSERT(FALSE);
+            i++;
+            continue;
+        }
+        if (len > Vcb->FSBM_BitCount - lbn)
+            len = Vcb->FSBM_BitCount - lbn;
 
         // mark frag as XXX (see asUsed parameter)
         if (asUsed) {
 
             ASSERT(len);
             for(j=0;j<len;j++) {
-                if (lba+j >= Vcb->FSBM_BitCount) {
+                if (lbn+j >= Vcb->FSBM_BitCount) {
                     BrutePoint();
                     AdPrint(("USED Mapping covers block(s) beyond bitmap @%x\n",lba+j));
                     break;
@@ -910,7 +912,7 @@ UDFCheckSpaceAllocation_(
 
             ASSERT(len);
             for(j=0;j<len;j++) {
-                if (lba+j >= Vcb->FSBM_BitCount) {
+                if (lbn+j >= Vcb->FSBM_BitCount) {
                     BrutePoint();
                     AdPrint(("USED Mapping covers block(s) beyond bitmap @%x\n",lba+j));
                     break;
@@ -1024,18 +1026,22 @@ UDFMarkSpaceAsXXXNoProtect_(
 #endif // UDF_DBG
         len = ((Map[i].extLength & UDF_EXTENT_LENGTH_MASK)+BS-1) >> BSh;
         lba = Map[i].extLocation;
-        if ((lba+len) > Vcb->FSBM_BitCount) {
-            // skip blocks beyond bitmap boundary
-            if (lba >= Vcb->FSBM_BitCount) {
-                ASSERT(FALSE);
-                i++;
-                continue;
-            }
-            len = Vcb->FSBM_BitCount - lba;
+        if (lba < partRoot) {
+            ASSERT(FALSE);
+            i++;
+            continue;
         }
-
-        // Convert PSN to LBN for bitmap access
+        // Validate the same partition-relative range that is marked below.
+        // Comparing the physical LBA with the bitmap's bit count leaves the
+        // partition's final PartitionRoot blocks free after allocation.
         uint32 lbn = lba - partRoot;
+        if (lbn >= Vcb->FSBM_BitCount) {
+            ASSERT(FALSE);
+            i++;
+            continue;
+        }
+        if (len > Vcb->FSBM_BitCount - lbn)
+            len = Vcb->FSBM_BitCount - lbn;
 
         if (asUsed) {
             Vcb->SectorHint = lbn + len;
