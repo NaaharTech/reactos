@@ -411,8 +411,26 @@ UDFCommonWrite(
             } else {
                 if (!MainResourceAcquired) {
                     UDF_CHECK_PAGING_IO_RESOURCE(Fcb);
-                    if (!UDFAcquireResourceShared(&Fcb->FcbNonpaged->FcbResource, Wait)) {
-                        try_return(Status = STATUS_PENDING);
+                    // CcCopyWrite may synchronously flush this same file through
+                    // UDFFastIoAcqCcFlush. Embedded data shares its ICB sector
+                    // with metadata, so that callback requires the FCB exclusive.
+                    // Holding it shared here would deadlock on a recursive upgrade.
+                    if (Fcb->FcbState & UDF_FCB_EMBEDDED_DATA) {
+                        if (!UDFAcquireResourceExclusive(&Fcb->FcbNonpaged->FcbResource, Wait)) {
+                            try_return(Status = STATUS_PENDING);
+                        }
+                    } else {
+                        if (!UDFAcquireResourceShared(&Fcb->FcbNonpaged->FcbResource, Wait)) {
+                            try_return(Status = STATUS_PENDING);
+                        }
+                        // Recheck under the lock in case the storage mode changed
+                        // while we waited. Never upgrade a held shared resource.
+                        if (Fcb->FcbState & UDF_FCB_EMBEDDED_DATA) {
+                            UDFReleaseResource(&Fcb->FcbNonpaged->FcbResource);
+                            if (!UDFAcquireResourceExclusive(&Fcb->FcbNonpaged->FcbResource, Wait)) {
+                                try_return(Status = STATUS_PENDING);
+                            }
+                        }
                     }
                     MainResourceAcquired = TRUE;
                 }
