@@ -30,10 +30,11 @@ int meta_perc = 5;
 float meta_fract = 0.05f;
 char *dev, *format_str;
 
-/* During first-stage Setup an unformatted partition is served by RawFS,
- * whose IRP_MJ_FLUSH_BUFFERS returns STATUS_INVALID_DEVICE_REQUEST. Flush
- * the identified backing disk instead; a successful synchronous disk flush
- * is required before reporting the newly written descriptors complete. */
+/* A locked partition may still have a filesystem mounted on it. RawFS can
+ * reject a flush, while UDFS rejects one on a dirty read-only mount even
+ * though direct writes through the volume handle succeeded. In either case
+ * flush the identified backing disk before reporting the new descriptors
+ * complete. */
 static NTSTATUS UdfFlushBackingDisk(HANDLE Partition)
 {
     STORAGE_DEVICE_NUMBER Number;
@@ -292,7 +293,8 @@ BOOLEAN NTAPI UdfFormat(PUNICODE_STRING DriveRoot, PFMIFSCALLBACK Callback,
         if (Error) RtlRaiseStatus(NT_SUCCESS(IoError) ? STATUS_UNSUCCESSFUL : IoError);
         FormatStage = "flush";
         Status = NtFlushBuffersFile(Volume, &IoStatus);
-        if (Status == STATUS_INVALID_DEVICE_REQUEST)
+        if (Status == STATUS_INVALID_DEVICE_REQUEST ||
+            Status == STATUS_VOLUME_DIRTY)
         {
             FormatStage = "backing disk flush";
             Status = UdfFlushBackingDisk(Volume);
