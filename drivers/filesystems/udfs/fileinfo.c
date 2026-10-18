@@ -2404,7 +2404,19 @@ try_exit:    NOTHING;
         //
         if (NeedRemovePrefix) {
             if (StaleLcb->ParentFcbLinks.Flink != &StaleLcb->ParentFcbLinks) {
+                PFCB StaleParentFcb = StaleLcb->ParentFcb;
+
                 UDFRemovePrefix(IrpContext, StaleLcb);
+                // UDFAcquirePrefix holds one FCB and FileInfo reference on
+                // the parent for every LCB it creates. Teardown normally
+                // releases both; replacing a target removes its LCB here.
+                if (StaleParentFcb) {
+                    if (StaleParentFcb->FileInfo) {
+                        UDFCloseFile__(IrpContext, Vcb, StaleParentFcb->FileInfo);
+                    }
+                    ASSERT(StaleParentFcb->FcbReference > 0);
+                    InterlockedDecrement((PLONG)&StaleParentFcb->FcbReference);
+                }
             }
             if (StaleFcb) {
                 UDFLockFcbTable(IrpContext, Vcb);
