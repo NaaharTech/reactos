@@ -645,6 +645,7 @@ UDFOpenObjectByFileId(
 
     BOOLEAN UnlockFcbTable = FALSE;
     BOOLEAN FcbExisted = FALSE;
+    BOOLEAN ExistingFileInfoReferenced = FALSE;
 
     NODE_TYPE_CODE NodeTypeCode;
     TYPE_OF_OPEN TypeOfOpen;
@@ -956,8 +957,18 @@ UDFOpenObjectByFileId(
                                  IrpSp->Parameters.Create.SecurityContext->DesiredAccess)) {
 
             //
-            // Call our worker routine to complete the open.
+            // UDFOpenRootFile__ acquired the reference for a newly built
+            // FCB. An FCB found in the table still needs one FileInfo
+            // reference for this handle: cleanup closes it once per open.
             //
+
+            if (FcbExisted) {
+                if (!NextFcb->FileInfo) {
+                    try_return(Status = STATUS_FILE_CORRUPT_ERROR);
+                }
+                UDFReferenceFile__(NextFcb->FileInfo);
+                ExistingFileInfoReferenced = TRUE;
+            }
 
             Status = UDFCompleteFcbOpen(IrpContext,
                                          IrpSp,
@@ -968,11 +979,19 @@ UDFOpenObjectByFileId(
                                          FILE_OPEN,
                                          FALSE,        // VcbLocked
                                          FILE_OPENED);
+            if (NT_SUCCESS(Status)) {
+                // The successful CCB transfers this reference to cleanup.
+                ExistingFileInfoReferenced = FALSE;
+            }
         }
 
 try_exit:   NOTHING;
 
     } _SEH2_FINALLY {
+
+        if (ExistingFileInfoReferenced) {
+            UDFCloseFile__(IrpContext, Vcb, NextFcb->FileInfo);
+        }
 
         if (UnlockFcbTable) {
 
