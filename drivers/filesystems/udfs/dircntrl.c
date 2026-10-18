@@ -98,8 +98,9 @@ UDFCommonDirControl(
     // a user directory.
 
     IrpSp = IoGetCurrentIrpStackLocation(Irp);
+    FileObject = IrpSp->FileObject;
 
-    if (UDFDecodeFileObject(IrpSp->FileObject, &Fcb, &Ccb) != UserDirectoryOpen) {
+    if (UDFDecodeFileObject(FileObject, &Fcb, &Ccb) != UserDirectoryOpen) {
 
         UDFCompleteRequest( IrpContext, Irp, STATUS_INVALID_PARAMETER );
         return STATUS_INVALID_PARAMETER;
