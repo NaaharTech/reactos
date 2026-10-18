@@ -50,6 +50,7 @@ UDFCommonCleanup(
 {
     IO_STATUS_BLOCK         IoStatus;
     NTSTATUS                RC = STATUS_SUCCESS;
+    NTSTATUS                UnlinkError = STATUS_SUCCESS;
     PFILE_OBJECT            FileObject = NULL;
     PFCB                    Fcb = NULL;
     PCCB                    Ccb = NULL;
@@ -231,6 +232,8 @@ UDFCommonCleanup(
            !(Fcb->FcbCleanup)) {
 
             BOOLEAN DeleteAttempted = FALSE;
+            BOOLEAN HadFreeDeferred = (NextFileInfo->Dloc &&
+                (NextFileInfo->Dloc->FE_Flags & UDF_FE_FLAG_FREE_DEFERRED));
 
             // This can be useful for Streams, those were brutally deleted
             // (together with parent object)
@@ -287,7 +290,15 @@ UDFCommonCleanup(
                 // Try to unlink
                 RC = UDFUnlinkFile__(IrpContext, Vcb, NextFileInfo, TRUE);
 
-                if (RC == STATUS_CANNOT_DELETE) {
+                if (!NT_SUCCESS(RC) && RC != STATUS_CANNOT_DELETE) {
+                    /* An I/O failure did not commit the unlink. Teardown must
+                     * retain the FE allocation and must not report removal. */
+                    UnlinkError = RC;
+                    DeleteAttempted = FALSE;
+                    Fcb->FcbState &= ~UDF_FCB_DELETE_ON_CLOSE;
+                    if (!HadFreeDeferred && NextFileInfo->Dloc)
+                        NextFileInfo->Dloc->FE_Flags &= ~UDF_FE_FLAG_FREE_DEFERRED;
+                } else if (RC == STATUS_CANNOT_DELETE) {
 
                     if (NextFileInfo->Dloc &&
                        NextFileInfo->Dloc->SDirInfo &&
@@ -316,7 +327,7 @@ UDFCommonCleanup(
 
                 } else {
 
-                    // Unlink completed (success or other error) — mark as deleted
+                    // Unlink completed — mark as deleted
                     ASSERT(!(Fcb->FcbState & UDF_FCB_ROOT_DIRECTORY));
                     ForcedCleanUp = TRUE;
                     if (NT_SUCCESS(RC))
@@ -614,7 +625,8 @@ try_exit: NOTHING;
         }
 
         if (!_SEH2_AbnormalTermination()) {
-
+                if (!NT_SUCCESS(UnlinkError))
+                    RC = UnlinkError;
                 UDFCompleteRequest(IrpContext, Irp, RC);
         }
 

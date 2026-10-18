@@ -1706,6 +1706,11 @@ UDFUnlinkFile__(
     NTSTATUS status;
     BOOLEAN IsSDir;
     BOOLEAN FinalFileLink;
+    uint8 OldCharacteristics = 0;
+    uint8 OldFidCharacteristics = 0;
+    uint8 OldFiFlags = 0;
+    uint32 OldFeFlags = 0;
+    long_ad OldIcb;
 
     AdPrint(("UDFUnlinkFile__:\n"));
     if (!FileInfo) return STATUS_SUCCESS;
@@ -1770,6 +1775,17 @@ UDFUnlinkFile__(
          Dloc->FELoc.Modified ||
         (DirNdx && (DirNdx->FI_Flags & UDF_FI_FLAG_FI_MODIFIED)) )) {
         return STATUS_CANNOT_DELETE;
+    }
+    /* An ordinary final-link delete may fail while writing its FID. Save the
+     * state that must be restored before cleanup can flush the parent. */
+    if (FreeSpace && UDFGetFileLinkCount(FileInfo) == 1 &&
+        !UDFIsADirectory(FileInfo) && !UDFIsAStream(FileInfo) &&
+        !UDFHasAStreamDir(FileInfo) && FileInfo->FileIdent) {
+        OldCharacteristics = DirNdx->FileCharacteristics;
+        OldFidCharacteristics = FileInfo->FileIdent->fileCharacteristics;
+        OldFiFlags = DirNdx->FI_Flags;
+        OldFeFlags = Dloc->FE_Flags;
+        RtlCopyMemory(&OldIcb, &FileInfo->FileIdent->icb, sizeof(OldIcb));
     }
     SDirInfo = Dloc->SDirInfo;
 /*    if (FreeSpace && SDirInfo) {
@@ -1927,8 +1943,23 @@ cleanup_SDir:
             ((PartNum = UDFGetRefPartNumByPhysLba(
                 Vcb, Dloc->FELoc.Mapping[0].extLocation)) != (uint32)-1)) {
             status = UDFFlushFI(IrpContext, Vcb, FileInfo, PartNum);
-            if (!NT_SUCCESS(status))
+            if (!NT_SUCCESS(status)) {
+                /* The FID was changed in memory before UDFFlushFI. A later
+                 * parent flush must not turn this failed unlink into a delete.
+                 * Keep the FE and its allocation reachable, and retry writing
+                 * the original FID in case the failed write was partial. */
+                DirNdx->FileCharacteristics = OldCharacteristics;
+                FileInfo->FileIdent->fileCharacteristics = OldFidCharacteristics;
+                RtlCopyMemory(&FileInfo->FileIdent->icb, &OldIcb, sizeof(OldIcb));
+                DirNdx->FI_Flags = OldFiFlags | UDF_FI_FLAG_FI_MODIFIED;
+                hDirNdx->DelCount--;
+                UDFChangeFileCounter(Vcb, TRUE, TRUE);
+                UDFIncFileLinkCount(FileInfo);
+                Dloc->FE_Flags = OldFeFlags;
+                if (NT_SUCCESS(UDFFlushFI(IrpContext, Vcb, FileInfo, PartNum)))
+                    DirNdx->FI_Flags = OldFiFlags;
                 return status;
+            }
             Dloc->FE_Flags &= ~UDF_FE_FLAG_FE_MODIFIED;
         } else {
             UDFFlushFile__(IrpContext, Vcb, FileInfo, 0);
