@@ -1278,7 +1278,7 @@ UDFLoadPVolDesc(
     }
     UDFGetDstring(&(Vcb->VolIdent), (dstring*)&(pvoldesc->volIdent), CUR_IDENT_SZ);
 #undef CUR_IDENT_SZ
-    UDFPrint(("volIdent[] = '%ws'\n", Vcb->VolIdent.Buffer));
+    UDFPrint(("volIdent[] = '%wZ'\n", &Vcb->VolIdent));
 #ifdef UDF_DBG
     UDFPrint(("volSeqNum         = %d\n", pvoldesc->volSeqNum));
     UDFPrint(("maxVolSeqNum      = %d\n", pvoldesc->maxVolSeqNum));
@@ -1291,7 +1291,7 @@ UDFLoadPVolDesc(
 #define CUR_IDENT_SZ (sizeof(pvoldesc->volSetIdent))
     UDFGetDstring(&instr, (dstring*)&(pvoldesc->volSetIdent), CUR_IDENT_SZ);
 #undef CUR_IDENT_SZ
-    UDFPrint(("volSetIdent[] = '%ws'\n", instr.Buffer));
+    UDFPrint(("volSetIdent[] = '%wZ'\n", &instr));
 //    UDFPrint(("maxInterchangeLvl = %d\n", pvoldesc->maxInterchangeLvl));
     UDFPrint(("flags             = %x\n", pvoldesc->flags));
     if (instr.Buffer) MyFreePool__(instr.Buffer);
@@ -2825,7 +2825,7 @@ UDFLoadFileset(
     }
     UDFGetDstring(&(Vcb->VolIdent), (dstring*)&(fset->logicalVolIdent), CUR_IDENT_SZ);
 #undef CUR_IDENT_SZ
-    UDFPrint(("volIdent[] = '%ws'\n", Vcb->VolIdent.Buffer));
+    UDFPrint(("volIdent[] = '%wZ'\n", &Vcb->VolIdent));
     // Get current UDF revision
     // Get Read-Only flags
     UDFReadEntityID_Domain(Vcb, &(fset->domainIdent));

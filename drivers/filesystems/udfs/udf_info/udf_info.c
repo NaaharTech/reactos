@@ -1765,7 +1765,7 @@ UDFUnlinkFile__(
     DirNdx = UDFDirIndex(hDirNdx,Index);
 #if defined UDF_DBG
     if (DirNdx && DirNdx->FName.Buffer) {
-        AdPrint(("Unlink: %ws\n",DirNdx->FName.Buffer));
+        AdPrint(("Unlink: %wZ\n", &DirNdx->FName));
     }
 #endif // UDF_DBG
     if (FreeSpace &&

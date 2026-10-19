@@ -629,7 +629,7 @@ UDFIndexDirectory(
 #if 0
         UDFPrint(("%ws\n", DirNdx->FName.Buffer));
 #endif
-        DirPrint(("%ws\n", DirNdx->FName.Buffer));
+        DirPrint(("%wZ\n", &DirNdx->FName));
         // remember FileEntry location...
         DirNdx->FileEntryLoc = FileId->icb.extLocation;
         // ... and some file characteristics

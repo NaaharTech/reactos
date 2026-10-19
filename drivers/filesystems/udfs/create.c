@@ -1535,7 +1535,7 @@ UDFCommonCreate(
         }
 
         _SEH2_TRY {
-            AdPrint(("    Opening file %ws %8.8x\n",FileName->Buffer, FileObject));
+            AdPrint(("    Opening file %wZ %8.8x\n",FileName, FileObject));
         } _SEH2_EXCEPT(EXCEPTION_EXECUTE_HANDLER) {
             AdPrint(("    Exception when printing FN\n"));
         } _SEH2_END;
