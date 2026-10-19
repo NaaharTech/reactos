@@ -992,6 +992,7 @@ UDFSingleAsync(
         CompletionRoutine = UDFSingleAsyncCompletionRoutine;
     }
 
+    IrpContext->IoContext->ExpectedByteCount = ByteCount;
     IoSetCompletionRoutine(IrpContext->Irp,
                            CompletionRoutine,
                            IrpContext->IoContext,
@@ -1131,6 +1132,7 @@ UDFMultipleAsync(
 
     IrpContext->IoContext->IrpCount = RunCount;
     IrpContext->IoContext->MasterIrp = MasterIrp;
+    IrpContext->IoContext->Status = STATUS_SUCCESS;
 
     //
     //  Prevent the I/O system from completing the master IRP
@@ -1203,6 +1205,10 @@ UDFSingleSyncCompletionRoutine(
 {
     UNREFERENCED_PARAMETER(DeviceObject);
 
+    if (NT_SUCCESS(Irp->IoStatus.Status) &&
+        Irp->IoStatus.Information != ((PUDF_IO_CONTEXT)Context)->ExpectedByteCount) {
+        Irp->IoStatus.Status = STATUS_IO_DEVICE_ERROR;
+    }
     if (!NT_SUCCESS(Irp->IoStatus.Status)) {
         Irp->IoStatus.Information = 0;
     }
@@ -1240,6 +1246,10 @@ UDFSingleAsyncCompletionRoutine(
     //  zero on error.
     //
 
+    if (NT_SUCCESS(Irp->IoStatus.Status) &&
+        Irp->IoStatus.Information != IoContext->ExpectedByteCount) {
+        Irp->IoStatus.Status = STATUS_IO_DEVICE_ERROR;
+    }
     Irp->IoStatus.Information = 0;
 
     if (NT_SUCCESS(Irp->IoStatus.Status)) {
@@ -1298,9 +1308,17 @@ UDFMultiSyncCompletionRoutine(
     //  Record the first error.
     //
 
+    /* Our own stack retains this run's physical length while the lower
+     * stack is used by the target device. Runs can complete out of order. */
+    if (NT_SUCCESS(Irp->IoStatus.Status) &&
+        Irp->IoStatus.Information !=
+            IoGetCurrentIrpStackLocation(Irp)->Parameters.Read.Length) {
+        Irp->IoStatus.Status = STATUS_IO_DEVICE_ERROR;
+    }
     if (!NT_SUCCESS(Irp->IoStatus.Status)) {
 
-        InterlockedExchange(&IoContext->Status, Irp->IoStatus.Status);
+        InterlockedCompareExchange(&IoContext->Status,
+                                   Irp->IoStatus.Status, STATUS_SUCCESS);
         IoContext->MasterIrp->IoStatus.Information = 0;
     }
 

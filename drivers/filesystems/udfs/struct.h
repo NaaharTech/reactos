@@ -99,6 +99,8 @@ struct UDF_IO_CONTEXT {
     PIRP MasterIrp;
     volatile NTSTATUS Status;
     BOOLEAN AllocatedContext;
+    /* Physical transfer length; independent of the logical async result. */
+    ULONG ExpectedByteCount;
 
     union {
 
