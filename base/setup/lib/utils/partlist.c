@@ -3881,13 +3881,35 @@ WritePartitionsToDisk(
     /* The PARTMGR should have notified the MOUNTMGR that new volumes
      * associated with the new partitions had to be created */
 
-    /* Assign valid device names to new volumes */
+    /* Assign valid device names to new volumes. A newly created partition
+     * already has a stable partition path from the successful layout write.
+     * Opening it here solely to query a mount-manager name can mount its old
+     * filesystem contents before PnP has enumerated the replacement PDO. */
     for (Entry = List->VolumesList.Flink;
          Entry != &List->VolumesList;
          Entry = Entry->Flink)
     {
         Volume = CONTAINING_RECORD(Entry, VOLENTRY, ListEntry);
-        InitVolumeDeviceName(Volume, NULL);
+        if (!*Volume->Info.DeviceName &&
+            Volume->PartEntry &&
+            Volume->PartEntry->IsPartitioned)
+        {
+            if (Volume->PartEntry->PartitionNumber == 0 ||
+                !*Volume->PartEntry->DeviceName)
+            {
+                DPRINT1("No current partition path for a new volume\n");
+                return FALSE;
+            }
+            Status = RtlStringCchCopyW(Volume->Info.DeviceName,
+                                       _countof(Volume->Info.DeviceName),
+                                       Volume->PartEntry->DeviceName);
+            if (!NT_SUCCESS(Status))
+                return FALSE;
+        }
+        else
+        {
+            InitVolumeDeviceName(Volume, NULL);
+        }
     }
 
     return TRUE;
