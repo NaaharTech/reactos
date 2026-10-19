@@ -1135,10 +1135,15 @@ UDFWriteInSector(
     int8* tmp_buff;
     NTSTATUS status;
 
-    if (!Vcb->Modified) {
+    if (!Vcb->Modified || Vcb->IntegrityType == INTEGRITY_TYPE_CLOSE) {
         UDFSetModified(Vcb);
-        if (Vcb->LVid)
+        if (Vcb->LVid) {
             status = UDFUpdateLogicalVolInt(IrpContext, Vcb, FALSE);
+            if (!NT_SUCCESS(status)) {
+                *WrittenBytes = 0;
+                return status;
+            }
+        }
     }
 
     if (Vcb->CDR_Mode) {
@@ -1220,6 +1225,9 @@ UDFWriteData(
         UDFSetModified(Vcb);
         if (Vcb->LVid && !Direct) {
             status = UDFUpdateLogicalVolInt(IrpContext, Vcb, FALSE);
+            if (!NT_SUCCESS(status)) {
+                return status;
+            }
         }
     }
 
