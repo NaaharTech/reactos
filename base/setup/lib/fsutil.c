@@ -17,6 +17,7 @@
 #include "precomp.h"
 
 #include "partlist.h"
+#include "devutils.h"
 #include "fsrec.h"
 #include "bootcode.h"
 #include "fsutil.h"
@@ -862,6 +863,9 @@ FormatPartition(
     NTSTATUS Status;
     PDISKENTRY DiskEntry = PartEntry->DiskEntry;
     UCHAR PartitionType;
+    HANDLE PartitionHandle;
+    IO_STATUS_BLOCK IoStatusBlock;
+    PARTITION_INFORMATION_EX PartitionInfo;
 
     ASSERT(PartEntry->IsPartitioned && PartEntry->PartitionNumber != 0);
 
@@ -928,7 +932,46 @@ FormatPartition(
     /* We must have an associated volume now */
     ASSERT(PartEntry->Volume);
 
-    /* Format the associated volume */
+    /* The mount manager's volume name is not persistent across layout writes.
+     * Open the current partition path and verify its geometry before writing. */
+    Status = pOpenDeviceEx(PartEntry->DeviceName,
+                           &PartitionHandle,
+                           FILE_GENERIC_READ | FILE_GENERIC_WRITE,
+                           FILE_SHARE_READ | FILE_SHARE_WRITE);
+    if (!NT_SUCCESS(Status))
+    {
+        DPRINT1("Failed to open partition %S for format, Status 0x%08lx\n",
+                PartEntry->DeviceName, Status);
+        return Status;
+    }
+
+    Status = NtDeviceIoControlFile(PartitionHandle, NULL, NULL, NULL,
+                                   &IoStatusBlock,
+                                   IOCTL_DISK_GET_PARTITION_INFO_EX,
+                                   NULL, 0,
+                                   &PartitionInfo, sizeof(PartitionInfo));
+    NtClose(PartitionHandle);
+    if (!NT_SUCCESS(Status))
+    {
+        DPRINT1("Failed to query partition %S for format, Status 0x%08lx\n",
+                PartEntry->DeviceName, Status);
+        return Status;
+    }
+    if (PartitionInfo.StartingOffset.QuadPart != GetPartEntryOffsetInBytes(PartEntry) ||
+        PartitionInfo.PartitionLength.QuadPart != GetPartEntrySizeInBytes(PartEntry))
+    {
+        DPRINT1("Partition geometry changed before format: %S\n",
+                PartEntry->DeviceName);
+        return STATUS_PARTITION_FAILURE;
+    }
+
+    /* Setup also uses this name to create the installation directory and
+     * install boot code. Keep the verified path after formatting. */
+    Status = RtlStringCchCopyW(PartEntry->Volume->Info.DeviceName,
+                               _countof(PartEntry->Volume->Info.DeviceName),
+                               PartEntry->DeviceName);
+    if (!NT_SUCCESS(Status))
+        return Status;
     Status = FormatVolume(&PartEntry->Volume->Info,
                           FileSystemName,
                           MediaFlag,
