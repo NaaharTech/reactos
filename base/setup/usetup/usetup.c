@@ -2772,43 +2772,11 @@ FsVolCallback(
 
         if (ChkInfo->ErrorStatus == STATUS_NOT_SUPPORTED)
         {
-            if (IsUnattendedSetup)
-            {
-                DPRINT1("Skipping unsupported filesystem check for %S in unattended Setup\n",
-                        ChkInfo->Volume->Info.FileSystem);
-                return FSVOL_SKIP;
-            }
-            RtlStringCbPrintfA(Buffer,
-                               sizeof(Buffer),
-                               "Setup is currently unable to check a partition formatted in %S.\n"
-                               "\n"
-                               "  \x07  Press ENTER to continue Setup.\n"
-                               "  \x07  Press F3 to quit Setup.",
-                               ChkInfo->Volume->Info.FileSystem);
-
-            PopupError(Buffer,
-                       MUIGetString(STRING_QUITCONTINUE),
-                       NULL, POPUP_WAIT_NONE);
-
-            while (TRUE)
-            {
-                CONSOLE_ConInKey(Ir);
-
-                if (Ir->Event.KeyEvent.uChar.AsciiChar == 0x00 &&
-                    Ir->Event.KeyEvent.wVirtualKeyCode == VK_F3)  /* F3 */
-                {
-                    if (ConfirmQuit(Ir))
-                    {
-                        FsVolContext->NextPageOnAbort = QUIT_PAGE;
-                        return FSVOL_ABORT;
-                    }
-                    return FSVOL_SKIP;
-                }
-                else if (Ir->Event.KeyEvent.uChar.AsciiChar == VK_RETURN) /* ENTER */
-                {
-                    return FSVOL_SKIP;
-                }
-            }
+            DPRINT1("Filesystem check unavailable for %S; skipping without a health verdict\n",
+                    ChkInfo->Volume->Info.FileSystem);
+            CONSOLE_SetStatusText("   %S check skipped: checker unavailable.",
+                                  ChkInfo->Volume->Info.FileSystem);
+            return FSVOL_SKIP;
         }
         else if (!NT_SUCCESS(ChkInfo->ErrorStatus))
         {
