@@ -829,7 +829,7 @@ UDFReadFile__(
 /*
     This routine reads data from file described by FileInfo
  */
-__inline
+static __inline
 NTSTATUS UDFReadFileLocation__(IN PVCB Vcb,
                                IN PUDF_FILE_INFO FileInfo,
                                IN int64 Offset,              // offset in extent to start SubExtent from
