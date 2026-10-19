@@ -432,6 +432,73 @@ UDFPhysLbaToMetadata(
     return LBA_OUT_OF_EXTENT;
 }
 
+/* Search free runs once instead of allocating and rolling back each
+   overlapping alignment window on a large physical partition.  Keep the
+   bitmap lock across discovery and reservation so the selected run cannot
+   be taken by another allocation. */
+static NTSTATUS
+UDFAllocAlignedMetadataRun(
+    IN PIRP_CONTEXT IrpContext,
+    IN PVCB Vcb,
+    IN uint32 Blocks,
+    IN uint32 PhysStart,
+    IN uint32 PhysEnd,
+    IN uint32 Align,
+    OUT PEXTENT_INFO ExtInfo,
+    OUT uint32* AllocStart
+    )
+{
+    uint32 searchStart, runStart, runLength, candidate, remainder;
+    NTSTATUS status = STATUS_DISK_FULL;
+
+    ExtInfo->Mapping = NULL;
+    ExtInfo->Length = 0;
+    ExtInfo->Offset = 0;
+    if (PhysEnd <= PhysStart || Blocks > PhysEnd - PhysStart)
+        return status;
+
+    UDFAcquireResourceExclusive(&(Vcb->BitMapResource1), TRUE);
+    searchStart = PhysStart;
+    while (searchStart <= PhysEnd - Blocks) {
+        runStart = (uint32)UDFFindMinSuitableExtent(Vcb, Blocks,
+                      searchStart, PhysEnd, &runLength, 0);
+        if (runLength < Blocks)
+            break;
+        if (runStart < searchStart || runStart >= PhysEnd ||
+            runLength > PhysEnd - runStart) {
+            status = STATUS_FILE_CORRUPT_ERROR;
+            break;
+        }
+
+        candidate = runStart;
+        remainder = (candidate - PhysStart) % Align;
+        if (remainder && Align - remainder > runLength - Blocks) {
+            searchStart = runStart + runLength;
+            continue;
+        }
+        if (remainder)
+            candidate += Align - remainder;
+        status = UDFAllocFreeExtent(IrpContext, Vcb,
+                     ((int64)Blocks) << Vcb->SectorShift,
+                     candidate, candidate + Blocks, ExtInfo,
+                     EXTENT_FLAG_VERIFY);
+        if (NT_SUCCESS(status)) {
+            *AllocStart = candidate;
+            break;
+        }
+        if (ExtInfo->Mapping) {
+            UDFMarkSpaceAsXXX(Vcb, 0, ExtInfo->Mapping, AS_DISCARDED);
+            MyFreePool__(ExtInfo->Mapping);
+            ExtInfo->Mapping = NULL;
+        }
+        if (status != STATUS_DISK_FULL)
+            break;
+        searchStart = runStart + runLength;
+    }
+    UDFReleaseResource(&(Vcb->BitMapResource1));
+    return status;
+}
+
 static NTSTATUS
 UDFGrowMetadataFile(
     IN PIRP_CONTEXT IrpContext,
@@ -512,20 +579,10 @@ UDFGrowMetadataFile(
     physicalMirror.Mapping = NULL;
     physStart = UDFPartStart(Vcb, Vcb->MetadataPhysRef);
     physEnd = UDFPartEnd(Vcb, Vcb->MetadataPhysRef);
-    if (physEnd > physStart && grow <= physEnd - physStart) {
-        for (candidate = physStart; candidate <= physEnd - grow;) {
-            status = UDFAllocFreeExtent(IrpContext, Vcb,
-                        ((int64)grow) << Vcb->SectorShift,
-                        candidate, candidate + grow, &physical, EXTENT_FLAG_VERIFY);
-            if (NT_SUCCESS(status))
-                break;
-            if (status != STATUS_DISK_FULL)
-                goto cleanup;
-            if (align > physEnd - grow - candidate)
-                break;
-            candidate += align;
-        }
-    }
+    status = UDFAllocAlignedMetadataRun(IrpContext, Vcb, grow,
+                 physStart, physEnd, align, &physical, &candidate);
+    if (!NT_SUCCESS(status))
+        goto cleanup;
     if (!physical.Mapping) {
         status = STATUS_DISK_FULL;
         goto cleanup;
@@ -540,19 +597,11 @@ UDFGrowMetadataFile(
     // Its recorded AD has the same logical length as the primary AD.
     mirrorCandidate = candidate;
     if (duplicate) {
-        for (mirrorCandidate = physStart; mirrorCandidate <= physEnd - grow;) {
-            status = UDFAllocFreeExtent(IrpContext, Vcb,
-                        ((int64)grow) << Vcb->SectorShift,
-                        mirrorCandidate, mirrorCandidate + grow,
-                        &physicalMirror, EXTENT_FLAG_VERIFY);
-            if (NT_SUCCESS(status))
-                break;
-            if (status != STATUS_DISK_FULL)
-                goto release_physical;
-            if (align > physEnd - grow - mirrorCandidate)
-                break;
-            mirrorCandidate += align;
-        }
+        status = UDFAllocAlignedMetadataRun(IrpContext, Vcb, grow,
+                     physStart, physEnd, align, &physicalMirror,
+                     &mirrorCandidate);
+        if (!NT_SUCCESS(status))
+            goto release_physical;
         if (!physicalMirror.Mapping) {
             status = STATUS_DISK_FULL;
             goto release_physical;
