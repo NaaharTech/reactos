@@ -305,7 +305,7 @@ UDFInsertPrefix(
     // Initialize LCB structure
     //
     UDFPrint(("UDFInsertPrefix: Lcb=%p, AllocationSize=0x%X, sizeof(LCB)=%u, NameLength=%u\n",
-              Lcb, AllocationSize, (ULONG)sizeof(LCB), NameLength));
+              Lcb, AllocationSize, (ULONG)sizeof(struct LCB), NameLength));
 
     ULONG BytesToZero = min(AllocationSize, UDF_LCB_BASE_SIZE);
     UDFPrint(("  BytesToZero=0x%X (min of AllocationSize and UDF_LCB_BASE_SIZE=0x%X)\n",
