@@ -250,12 +250,6 @@ UDFCommonCleanup(
 
                 DeleteAttempted = TRUE;
 
-                // Mark all streams for deletion if no more links
-                if ((lc <= 1) &&
-                   !UDFIsSDirDeleted(Fcb->FileInfo->Dloc->SDirInfo)) {
-                    RC = UDFMarkStreamsForDeletion(IrpContext, Vcb, Fcb, TRUE); // Delete
-                }
-
                 // Acquire parent for delete operation (after current — child first order)
                 if (Fcb->FileInfo->ParentFile) {
                     UDF_CHECK_PAGING_IO_RESOURCE(Fcb->ParentFcb);
@@ -267,17 +261,26 @@ UDFCommonCleanup(
                 // If unlink fails (STATUS_CANNOT_DELETE), the file stays visible
                 // with FSize=0 — other threads see truncated data.
 
-                // Mark parent object for deletion if requested
-                if ((Fcb->FcbState & UDF_FCB_DELETE_PARENT) &&
-                    Fcb->ParentFcb) {
-                    ASSERT(!(Fcb->ParentFcb->FcbState & UDF_FCB_ROOT_DIRECTORY));
-                    Fcb->ParentFcb->FcbState |= UDF_FCB_DELETE_ON_CLOSE;
-                }
-
                 // Flush file. It is required by UDFUnlinkFile__()
                 RC = UDFFlushFile__(IrpContext, Vcb, NextFileInfo, 0);
                 if (!NT_SUCCESS(RC)) {
-                    AdPrint(("Error flushing file !!!\n"));
+                    /* Unlink rejects dirty metadata. Do not turn that refusal
+                     * into an in-memory deletion or deferred block release. */
+                    UnlinkError = RC;
+                    DeleteAttempted = FALSE;
+                    Fcb->FcbState &= ~UDF_FCB_DELETE_ON_CLOSE;
+                    FileObject->DeletePending = FALSE;
+                    goto delete_attempt_done;
+                }
+
+                if ((lc <= 1) &&
+                   !UDFIsSDirDeleted(Fcb->FileInfo->Dloc->SDirInfo)) {
+                    RC = UDFMarkStreamsForDeletion(IrpContext, Vcb, Fcb, TRUE);
+                }
+
+                if ((Fcb->FcbState & UDF_FCB_DELETE_PARENT) && Fcb->ParentFcb) {
+                    ASSERT(!(Fcb->ParentFcb->FcbState & UDF_FCB_ROOT_DIRECTORY));
+                    Fcb->ParentFcb->FcbState |= UDF_FCB_DELETE_ON_CLOSE;
                 }
 
                 // Defer block freeing to teardown when this is the last link.
@@ -347,6 +350,7 @@ UDFCommonCleanup(
                 }
             }
 
+delete_attempt_done:
             if (DeleteAttempted) {
                 // Prevent SetEOF operations on completely deleted data streams
                 if (lc < 1) {
