@@ -277,6 +277,17 @@ UDFCommonCleanup(
                 if ((lc <= 1) &&
                    !UDFIsSDirDeleted(Fcb->FileInfo->Dloc->SDirInfo)) {
                     RC = UDFMarkStreamsForDeletion(IrpContext, Vcb, Fcb, TRUE);
+                    if (!NT_SUCCESS(RC)) {
+                        /* The streams must remain attached if preparing their
+                         * deletion failed.  Do not unlink the last base FID
+                         * or schedule its allocation for release. */
+                        UnlinkError = RC;
+                        DeleteAttempted = FALSE;
+                        Fcb->FcbState &= ~(UDF_FCB_DELETE_ON_CLOSE |
+                                           UDF_FCB_DELETE_PARENT);
+                        FileObject->DeletePending = FALSE;
+                        goto delete_attempt_done;
+                    }
                 }
 
                 // Defer block freeing to teardown when this is the last link.
