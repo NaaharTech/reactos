@@ -528,7 +528,7 @@ UDFGrowMetadataFile(
     IN uint32 RequestedBlocks
     )
 {
-    uint32 unit, align, grow, preferredGrow, minGrow, nextGrow, fallbacks = 0;
+    uint32 unit, align, grow, preferredGrow, minGrow, maxGrow, nextGrow, fallbacks = 0;
     uint32 oldBlocks, newBlocks, oldMapBytes;
     uint32 newBitmapBytes, physStart, physEnd, candidate, mirrorCandidate, i;
     uint32 mainMapBytes, mirrorMapBytes;
@@ -583,6 +583,15 @@ UDFGrowMetadataFile(
         return STATUS_DISK_FULL;
     minGrow = ((RequestedBlocks + unit - 1) / unit) * unit;
     grow = ((grow + unit - 1) / unit) * unit;
+    /* A metadata-file AD stores the byte length in 30 bits. Keep each
+     * geometric increment representable as one allocation-unit-aligned AD;
+     * the physical allocator cannot safely split this particular mapping. */
+    maxGrow = (UDF_EXTENT_LENGTH_MASK >> Vcb->SectorShift);
+    maxGrow -= maxGrow % unit;
+    if (!maxGrow || minGrow > maxGrow)
+        return STATUS_NOT_SUPPORTED;
+    if (grow > maxGrow)
+        grow = maxGrow;
     preferredGrow = grow;
     if (oldBlocks > MAXULONG - grow)
         return STATUS_DISK_FULL;
