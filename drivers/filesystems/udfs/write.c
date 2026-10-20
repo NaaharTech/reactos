@@ -302,6 +302,15 @@ UDFCommonWrite(
             try_return(Status);
         }
 
+        /* A full volume flush owns the VCB exclusively through its CLOSED
+         * LVID commit. Block new user writes before taking any FCB lock;
+         * paging writes are drained by that flush and may arrive with an FCB
+         * resource already held by Cache Manager. */
+        if (!PagingIo) {
+            UDFAcquireVcbShared(IrpContext, Vcb, FALSE);
+            VcbAcquired = TRUE;
+        }
+
         // Validate start offset and length supplied.
         // Here is a special check that determines whether the caller wishes to
         // begin the write at current end-of-file (whatever the value of that
@@ -441,6 +450,15 @@ UDFCommonWrite(
 
             UDFVerifyFcbOperation(IrpContext, Fcb, Ccb);
         }
+
+        /* Recorded-file and cached writes can bypass UDFWriteData entirely.
+         * Persist OPEN LVID before accepting either route. */
+        if (!Wait && (!Vcb->Modified ||
+                      Vcb->IntegrityType == INTEGRITY_TYPE_CLOSE))
+            try_return(Status = STATUS_PENDING);
+        Status = UDFOpenIntegrityForWrite(IrpContext, Vcb, FALSE);
+        if (!NT_SUCCESS(Status))
+            try_return(Status);
 
         //  Here is the deal with ValidDataLength and FileSize:
         //

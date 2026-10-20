@@ -72,6 +72,12 @@ UDFReadData(
     OUT PCHAR Buffer
     );
 
+/* Before a normal write, persist OPEN LVID before any subsequent payload. */
+NTSTATUS UDFOpenIntegrityForWrite(IN PIRP_CONTEXT IrpContext,
+                                  IN PVCB Vcb,
+                                  IN BOOLEAN Direct);
+NTSTATUS UDFBarrierFlushDevice(IN PDEVICE_OBJECT TargetDeviceObject);
+
 // write physical sectors
 NTSTATUS UDFWriteSectors(IN PIRP_CONTEXT IrpContext,
                          IN PVCB Vcb,

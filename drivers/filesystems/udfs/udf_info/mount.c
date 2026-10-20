@@ -1009,6 +1009,11 @@ UDFUmount__(
     if ((Vcb->VcbState & VCB_STATE_VOLUME_READ_ONLY)
         || !Vcb->Modified)
         return STATUS_SUCCESS;
+    /* Some metadata-only paths mark the VCB modified before issuing a
+     * sector write. Open and persist the LVID before flushing their data. */
+    status = UDFOpenIntegrityForWrite(IrpContext, Vcb, FALSE);
+    if (!NT_SUCCESS(status))
+        return status;
     // prevent discarding metadata
     Vcb->VcbState |= UDF_VCB_ASSUME_ALL_USED;
     if (Vcb->CDR_Mode) {
@@ -1064,6 +1069,9 @@ UDFUmount__(
 
     // Update Integrity Desc if any
     if (Vcb->LVid && Vcb->origIntegrityType == INTEGRITY_TYPE_CLOSE) {
+        status = UDFBarrierFlushDevice(Vcb->TargetDeviceObject);
+        if (!NT_SUCCESS(status))
+            goto release_bitmap;
         status = UDFUpdateLogicalVolInt(IrpContext, Vcb, TRUE);
         if (!NT_SUCCESS(status))
             goto release_bitmap;

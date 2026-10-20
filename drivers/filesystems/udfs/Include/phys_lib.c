@@ -1084,6 +1084,64 @@ UDFReadData(
     return UDFReadInSector(IrpContext, Vcb, Lba, 0, Length, Buffer);
 } // end UDFReadData()
 
+NTSTATUS
+UDFBarrierFlushDevice(IN PDEVICE_OBJECT TargetDeviceObject)
+{
+    IO_STATUS_BLOCK iosb;
+    KEVENT event;
+    PIRP irp;
+    NTSTATUS status;
+
+    iosb.Status = STATUS_UNSUCCESSFUL;
+    iosb.Information = 0;
+    KeInitializeEvent(&event, NotificationEvent, FALSE);
+    irp = IoBuildSynchronousFsdRequest(IRP_MJ_FLUSH_BUFFERS,
+                                       TargetDeviceObject, NULL, 0, NULL,
+                                       &event, &iosb);
+    if (!irp)
+        return STATUS_INSUFFICIENT_RESOURCES;
+    status = IoCallDriver(TargetDeviceObject, irp);
+    if (status == STATUS_PENDING) {
+        KeWaitForSingleObject(&event, Executive, KernelMode, FALSE, NULL);
+        status = iosb.Status;
+    } else if (NT_SUCCESS(status)) {
+        status = iosb.Status;
+    }
+    return status;
+}
+
+NTSTATUS
+UDFOpenIntegrityForWrite(IN PIRP_CONTEXT IrpContext, IN PVCB Vcb,
+                         IN BOOLEAN Direct)
+{
+    NTSTATUS status = STATUS_SUCCESS;
+
+    if (Vcb->VcbState & VCB_STATE_VOLUME_READ_ONLY)
+        return STATUS_MEDIA_WRITE_PROTECTED;
+    if (Vcb->Modified && Vcb->IntegrityType != INTEGRITY_TYPE_CLOSE)
+        return STATUS_SUCCESS;
+    if (Vcb->CDR_Mode) {
+        UDFSetModified(Vcb);
+        return STATUS_SUCCESS;
+    }
+
+    /* A bitmap paging write can be invoked by CcFlushCache while the caller
+     * owns this resource. Avoid taking it on the already-OPEN fast path. */
+    UDFAcquireResourceExclusive(&(Vcb->BitMapResource1), TRUE);
+    if (!Vcb->Modified || Vcb->IntegrityType == INTEGRITY_TYPE_CLOSE) {
+        UDFSetModified(Vcb);
+        if (Vcb->LVid && !Direct) {
+            status = UDFUpdateLogicalVolInt(IrpContext, Vcb, FALSE);
+            if (NT_SUCCESS(status))
+                status = UDFBarrierFlushDevice(Vcb->TargetDeviceObject);
+            if (!NT_SUCCESS(status))
+                Vcb->VcbState |= VCB_STATE_VOLUME_READ_ONLY;
+        }
+    }
+    UDFReleaseResource(&(Vcb->BitMapResource1));
+    return status;
+}
+
 /*
     This routine writes physical sectors.
     Marks volume as modified and updates LVID if needed.
@@ -1102,15 +1160,10 @@ UDFWriteSectors(
 {
     NTSTATUS status;
 
-    if (!Vcb->Modified || (Vcb->IntegrityType == INTEGRITY_TYPE_CLOSE)) {
-        UDFSetModified(Vcb);
-        if (Vcb->LVid && !Direct) {
-            status = UDFUpdateLogicalVolInt(IrpContext, Vcb, FALSE);
-            if (!NT_SUCCESS(status)) {
-                *WrittenBytes = 0;
-                return status;
-            }
-        }
+    status = UDFOpenIntegrityForWrite(IrpContext, Vcb, Direct);
+    if (!NT_SUCCESS(status)) {
+        *WrittenBytes = 0;
+        return status;
     }
 
     if (Vcb->CDR_Mode) {
@@ -1147,15 +1200,10 @@ UDFWriteInSector(
     int8* tmp_buff;
     NTSTATUS status;
 
-    if (!Vcb->Modified || Vcb->IntegrityType == INTEGRITY_TYPE_CLOSE) {
-        UDFSetModified(Vcb);
-        if (Vcb->LVid) {
-            status = UDFUpdateLogicalVolInt(IrpContext, Vcb, FALSE);
-            if (!NT_SUCCESS(status)) {
-                *WrittenBytes = 0;
-                return status;
-            }
-        }
+    status = UDFOpenIntegrityForWrite(IrpContext, Vcb, FALSE);
+    if (!NT_SUCCESS(status)) {
+        *WrittenBytes = 0;
+        return status;
     }
 
     if (Vcb->CDR_Mode) {
@@ -1233,15 +1281,9 @@ UDFWriteData(
     if (Vcb->VcbState & UDF_VCB_FLAGS_DEAD)
         return STATUS_NO_SUCH_DEVICE;
 
-    if (!Vcb->Modified || (Vcb->IntegrityType == INTEGRITY_TYPE_CLOSE)) {
-        UDFSetModified(Vcb);
-        if (Vcb->LVid && !Direct) {
-            status = UDFUpdateLogicalVolInt(IrpContext, Vcb, FALSE);
-            if (!NT_SUCCESS(status)) {
-                return status;
-            }
-        }
-    }
+    status = UDFOpenIntegrityForWrite(IrpContext, Vcb, Direct);
+    if (!NT_SUCCESS(status))
+        return status;
 
     if (Vcb->CDR_Mode) {
         Lba = (uint32)(Offset >> BSh);
