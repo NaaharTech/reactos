@@ -418,6 +418,19 @@ UDFFlushADirectory(
                     if (!tempFI) continue;
                     if (UDFIsADirectory(tempFI)) {
                         UDFFlushADirectory(IrpContext, Vcb, tempFI, PtrIoStatus, FlushFlags);
+                    } else if (!tempFI->Fcb && tempFI->Dloc) {
+                        /* A retained FileInfo may no longer have an FCB.
+                         * Passing NULL to UDFFlushAFile silently skips its
+                         * dirty FE/FID, so flush that metadata directly. */
+                        if ((tempFI->Dloc->FE_Flags & UDF_FE_FLAG_FE_MODIFIED) ||
+                            tempFI->Dloc->DataLoc.Modified ||
+                            tempFI->Dloc->AllocLoc.Modified ||
+                            tempFI->Dloc->FELoc.Modified ||
+                            (DI->FI_Flags & UDF_FI_FLAG_FI_MODIFIED)) {
+                            UDFRememberFlushStatus(PtrIoStatus,
+                                UDFFlushFile__(IrpContext, Vcb, tempFI,
+                                               FlushFlags));
+                        }
                     } else {
                         UDFFlushAFile(IrpContext, tempFI->Fcb, NULL, PtrIoStatus, FlushFlags);
                     }
