@@ -1599,27 +1599,9 @@ FsVolCallback(
 
         if (ChkInfo->ErrorStatus == STATUS_NOT_SUPPORTED)
         {
-            if (SetupData.bUnattend)
-            {
-                DPRINT1("Skipping unsupported filesystem check for %S in unattended Setup\n",
-                        ChkInfo->Volume->Info.FileSystem);
-                return FSVOL_SKIP;
-            }
-            INT nRet;
-
-            nRet = DisplayMessage(NULL, MB_ICONERROR | MB_OKCANCEL,
-                                  NULL, // Default to "Error"
-                                  MAKEINTRESOURCEW(IDS_ERROR_COULD_NOT_CHECK),
-                                  ChkInfo->Volume->Info.FileSystem);
-            if (nRet == IDCANCEL)
-            {
-                // FsVolContext->NextPageOnAbort = QUIT_PAGE;
-                return FSVOL_ABORT;
-            }
-            else if (nRet == IDOK)
-            {
-                return FSVOL_SKIP;
-            }
+            DPRINT1("Filesystem check unavailable for %S; skipping without a health verdict\n",
+                    ChkInfo->Volume->Info.FileSystem);
+            return FSVOL_SKIP;
         }
         else if (!NT_SUCCESS(ChkInfo->ErrorStatus))
         {
@@ -1712,13 +1694,16 @@ FsVolCallback(
 
         ASSERT((FSVOL_OP)Param2 == FSVOL_CHECK);
 
-        /* Find the volume info in the partition TreeList UI.
-         * If none, don't check it. */
+        /* A pre-existing UDF volume has no VolCreate (it is only allocated
+         * when the user requests formatting).  Let its scheduled check reach
+         * the unsupported-check handler instead of silently skipping it. */
         VolCreate = FindVolCreateInTreeByVolume(UiContext.hPartList,
                                                 ChkInfo->Volume);
-        if (!VolCreate)
+        if (!VolCreate &&
+            _wcsicmp(ChkInfo->Volume->Info.FileSystem, L"UDF") != 0)
             return FSVOL_SKIP;
-        ASSERT(VolCreate->Volume == ChkInfo->Volume);
+        if (VolCreate)
+            ASSERT(VolCreate->Volume == ChkInfo->Volume);
 
         ASSERT(*ChkInfo->Volume->Info.DeviceName);
 
