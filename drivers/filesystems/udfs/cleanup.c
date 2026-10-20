@@ -541,7 +541,10 @@ delete_attempt_done:
             !(Fcb->FcbState & UDF_FCB_DELETED) &&
             !(Vcb->VcbState & VCB_STATE_VOLUME_READ_ONLY) &&
             NextFileInfo) {
-            UDFFlushFile__(IrpContext, Vcb, NextFileInfo, 0);
+            NTSTATUS FlushStatus = UDFFlushFile__(IrpContext, Vcb,
+                                                  NextFileInfo, 0);
+            if (NT_SUCCESS(UnlinkError) && !NT_SUCCESS(FlushStatus))
+                UnlinkError = FlushStatus;
         }
 
         if (!(Fcb->FcbState & UDF_FCB_DIRECTORY) &&
@@ -576,7 +579,10 @@ delete_attempt_done:
         ASSERT(AcquiredVcb);
         if (NextFileInfo) {
             PUDF_FILE_INFO DirInfo = NextFileInfo->ParentFile;
-            UDFCloseFile__(IrpContext, Vcb, NextFileInfo);
+            NTSTATUS CloseStatus = UDFCloseFile__(IrpContext, Vcb,
+                                                  NextFileInfo);
+            if (NT_SUCCESS(UnlinkError) && !NT_SUCCESS(CloseStatus))
+                UnlinkError = CloseStatus;
             if (DirInfo && 
                 DirInfo->Dloc && 
                 DirInfo->Fcb &&
@@ -590,10 +596,17 @@ delete_attempt_done:
                 ) {
                 UDF_CHECK_PAGING_IO_RESOURCE(DirInfo->Fcb);
                 UDFAcquireFcbExclusive(IrpContext, DirInfo->Fcb, FALSE);
-                UDFFlushFile__(IrpContext, Vcb, DirInfo, UDF_FLUSH_FLAGS_LITE);
+                NTSTATUS FlushStatus = UDFFlushFile__(IrpContext, Vcb,
+                                                       DirInfo,
+                                                       UDF_FLUSH_FLAGS_LITE);
+                if (NT_SUCCESS(UnlinkError) && !NT_SUCCESS(FlushStatus))
+                    UnlinkError = FlushStatus;
                 UDFReleaseFcb(IrpContext, DirInfo->Fcb);
             }
         }
+
+        if (!NT_SUCCESS(UnlinkError))
+            Fcb->FcbState &= ~UDF_FCB_DELAY_CLOSE;
 
         Ccb->Flags |= UDF_CCB_CLEANED;
 
