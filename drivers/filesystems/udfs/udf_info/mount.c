@@ -1022,6 +1022,14 @@ UDFUmount__(
         return UDFRecordVAT(IrpContext, Vcb);
     }
 
+    /* Mount may have accepted only the main or only the reserve sequence.
+     * An absent copy has a zero range, not a VDS at physical block zero.
+     * At least one validated sequence is still required for a clean close. */
+    if (!Vcb->VDS1_Len && !Vcb->VDS2_Len) {
+        status = STATUS_FILE_CORRUPT_ERROR;
+        goto clear_assume;
+    }
+
     status = UDFFlushAllCachedAllocations(Vcb, UDF_PREALLOC_CLASS_DIR);
     if (!NT_SUCCESS(status))
         goto clear_assume;
@@ -1035,12 +1043,16 @@ UDFUmount__(
 
     // RAM mode
     if (Vcb->VolIdentChanged) {
-        status = UDFUpdateVolIdent(IrpContext, Vcb, Vcb->PVolDescAddr, &Vcb->VolIdent);
-        if (!NT_SUCCESS(status))
-            goto release_bitmap;
-        status = UDFUpdateVolIdent(IrpContext, Vcb, Vcb->PVolDescAddr2, &Vcb->VolIdent);
-        if (!NT_SUCCESS(status))
-            goto release_bitmap;
+        if (Vcb->VDS1_Len) {
+            status = UDFUpdateVolIdent(IrpContext, Vcb, Vcb->PVolDescAddr, &Vcb->VolIdent);
+            if (!NT_SUCCESS(status))
+                goto release_bitmap;
+        }
+        if (Vcb->VDS2_Len) {
+            status = UDFUpdateVolIdent(IrpContext, Vcb, Vcb->PVolDescAddr2, &Vcb->VolIdent);
+            if (!NT_SUCCESS(status))
+                goto release_bitmap;
+        }
     }
 
     UDF_CHECK_BITMAP_RESOURCE(Vcb);
@@ -1060,12 +1072,16 @@ UDFUmount__(
         }
     }
 
-    status = UDFUpdateVDS(IrpContext, Vcb, Vcb->VDS1, Vcb->VDS1 + Vcb->VDS1_Len, flags);
-    if (!NT_SUCCESS(status))
-        goto release_bitmap;
-    status = UDFUpdateVDS(IrpContext, Vcb, Vcb->VDS2, Vcb->VDS2 + Vcb->VDS2_Len, flags);
-    if (!NT_SUCCESS(status))
-        goto release_bitmap;
+    if (Vcb->VDS1_Len) {
+        status = UDFUpdateVDS(IrpContext, Vcb, Vcb->VDS1, Vcb->VDS1 + Vcb->VDS1_Len, flags);
+        if (!NT_SUCCESS(status))
+            goto release_bitmap;
+    }
+    if (Vcb->VDS2_Len) {
+        status = UDFUpdateVDS(IrpContext, Vcb, Vcb->VDS2, Vcb->VDS2 + Vcb->VDS2_Len, flags);
+        if (!NT_SUCCESS(status))
+            goto release_bitmap;
+    }
 
     // Update Integrity Desc if any
     if (Vcb->LVid && Vcb->origIntegrityType == INTEGRITY_TYPE_CLOSE) {
