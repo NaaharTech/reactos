@@ -1075,6 +1075,14 @@ UDFUmount__(
         status = UDFUpdateLogicalVolInt(IrpContext, Vcb, TRUE);
         if (!NT_SUCCESS(status))
             goto release_bitmap;
+        /* Do not report a clean volume while its CLOSED LVID may still be
+         * only in the lower device's volatile cache. This also covers
+         * internal lock/dismount callers without an outer flush IRP. */
+        status = UDFBarrierFlushDevice(Vcb->TargetDeviceObject);
+        if (!NT_SUCCESS(status)) {
+            Vcb->VcbState |= VCB_STATE_VOLUME_READ_ONLY;
+            goto release_bitmap;
+        }
     }
 
     if (flags & 1) {
