@@ -1156,6 +1156,11 @@ UDFMarkStreamsForDeletion(
     ULONG lc;
     BOOLEAN SDirAcq = FALSE;
     BOOLEAN StrAcq = FALSE;
+    BOOLEAN FileOpened = FALSE;
+    BOOLEAN FileClosed = FALSE;
+    BOOLEAN SDirClosed = FALSE;
+    PFCB* StreamFcbs = NULL;
+    uint_di StreamCount = 0;
     uint_di d,i;
 
     _SEH2_TRY {
@@ -1187,6 +1192,7 @@ UDFMarkStreamsForDeletion(
 
             UDF_DIR_SCAN_CONTEXT ScanContext;
             PDIR_INDEX_ITEM DirNdx;
+            PUDF_FILE_INFO ScanFileInfo = NULL;
 
             // It is not worth checking whether the Stream can be deleted if
             // Undelete requested
@@ -1195,13 +1201,13 @@ UDFMarkStreamsForDeletion(
                 UDFDirIndexInitScan(SDirInfo, &ScanContext, 2)) {
 
                 // Check if we can delete Streams
-                while((DirNdx = UDFDirIndexScan(&ScanContext, &FileInfo))) {
-                    if (!FileInfo)
+                while((DirNdx = UDFDirIndexScan(&ScanContext, &ScanFileInfo))) {
+                    if (!ScanFileInfo)
                         continue;
-                    if (FileInfo->Fcb) {
+                    if (ScanFileInfo->Fcb) {
 
                         MmPrint(("    MmFlushImageSection() for Stream\n"));
-                        if (!MmFlushImageSection(&(FileInfo->Fcb->FcbNonpaged->SegmentObject), MmFlushForDelete)) {
+                        if (!MmFlushImageSection(&(ScanFileInfo->Fcb->FcbNonpaged->SegmentObject), MmFlushForDelete)) {
 
                             try_return(RC = STATUS_CANNOT_DELETE);
                         }
@@ -1209,21 +1215,27 @@ UDFMarkStreamsForDeletion(
                     }
                 }
             }
-            // (Un)Mark Streams for deletion
-
-            // Perform sequencial Open for Streams & mark 'em
-            // for deletion. We should not  get FileInfo pointers directly
-            // from DirNdx[i] to prevent great troubles with linked
-            // files. We should mark for deletion FI with proper ParentFile
-            // pointer.
+            /* Preflight every stream before changing any delete flags.  A
+             * later open, link-count or close failure must not leave the
+             * earlier streams delete-pending while the base FID survives. */
             d = UDFDirIndexGetLastIndex(SDirInfo->Dloc->DirIndex);
+            if (d > 2) {
+                if (d - 2 > MAXULONG / sizeof(PFCB))
+                    try_return(RC = STATUS_INSUFFICIENT_RESOURCES);
+                StreamFcbs = (PFCB*)MyAllocatePool__(NonPagedPool,
+                                                     (d - 2) * sizeof(PFCB));
+                if (!StreamFcbs)
+                    try_return(RC = STATUS_INSUFFICIENT_RESOURCES);
+            }
+
+            // Open by index to obtain the correct ParentFile for linked FI.
             for(i=2; i<d; i++) {
                 RC = UDFOpenFile__(IrpContext,
                                    Vcb,
                                    FALSE,TRUE,NULL,
                                    SDirInfo,&FileInfo,&i);
-                ASSERT(NT_SUCCESS(RC) || (RC == STATUS_FILE_DELETED));
                 if (NT_SUCCESS(RC)) {
+                    FileOpened = TRUE;
                     if (FileInfo->Fcb) {
 
                         UDF_CHECK_PAGING_IO_RESOURCE(FileInfo->Fcb);
@@ -1239,29 +1251,29 @@ UDFMarkStreamsForDeletion(
                             try_return(RC = STATUS_CANNOT_DELETE);
                         }
 #endif //UDF_ALLOW_LINKS_TO_STREAMS
-                        if (ForDel) {
-                            AdPrint(("    SET stream DeleteOnClose\n"));
 #ifdef UDF_DBG
+                        if (ForDel) {
                             ASSERT(!(FileInfo->Fcb->FcbState & UDF_FCB_ROOT_DIRECTORY));
                             if (FileInfo->ParentFile &&
                                FileInfo->ParentFile->Fcb) {
                                 ASSERT(!(FileInfo->ParentFile->Fcb->FcbState & UDF_FCB_ROOT_DIRECTORY));
                             }
-#endif // UDF_DBG
-                            FileInfo->Fcb->FcbState |= (UDF_FCB_DELETE_ON_CLOSE |
-                                                        UDF_FCB_DELETE_PARENT);
-                        } else {
-                            AdPrint(("    CLEAR stream DeleteOnClose\n"));
-                            FileInfo->Fcb->FcbState &= ~(UDF_FCB_DELETE_ON_CLOSE |
-                                                         UDF_FCB_DELETE_PARENT);
                         }
+#endif // UDF_DBG
+                        /* Keep the FCB alive after closing this temporary FI
+                         * and until the entire set is committed. */
+                        InterlockedIncrement((PLONG)&FileInfo->Fcb->FcbReference);
+                        StreamFcbs[StreamCount++] = FileInfo->Fcb;
                     }
-                    UDFCloseFile__(IrpContext, Vcb, FileInfo);
-                } else
-                if (RC == STATUS_FILE_DELETED) {
+                    RC = UDFCloseFile__(IrpContext, Vcb, FileInfo);
+                    FileClosed = TRUE;
+                    if (!NT_SUCCESS(RC))
+                        try_return(RC);
+                } else if (RC == STATUS_FILE_DELETED) {
                     // That's OK if STATUS_FILE_DELETED returned...
                     RC = STATUS_SUCCESS;
-                }
+                } else
+                    try_return(RC);
                 if (FileInfo) {
                     if (UDFCleanUpFile__(Vcb, FileInfo)) {
                         ASSERT(!StrAcq && !(FileInfo->Fcb));
@@ -1273,6 +1285,25 @@ UDFMarkStreamsForDeletion(
                     }
                 }
                 FileInfo = NULL;
+                FileOpened = FALSE;
+                FileClosed = FALSE;
+            }
+            /* A failed stream-directory close is also a precommit failure. */
+            RC = UDFCloseFile__(IrpContext, Vcb, SDirInfo);
+            SDirClosed = TRUE;
+            if (!NT_SUCCESS(RC))
+                try_return(RC);
+
+            for (i = 0; i < StreamCount; i++) {
+                UDF_CHECK_PAGING_IO_RESOURCE(StreamFcbs[i]);
+                UDFAcquireFcbExclusive(IrpContext, StreamFcbs[i], TRUE);
+                if (ForDel)
+                    StreamFcbs[i]->FcbState |= (UDF_FCB_DELETE_ON_CLOSE |
+                                                UDF_FCB_DELETE_PARENT);
+                else
+                    StreamFcbs[i]->FcbState &= ~(UDF_FCB_DELETE_ON_CLOSE |
+                                                 UDF_FCB_DELETE_PARENT);
+                UDFReleaseFcb(IrpContext, StreamFcbs[i]);
             }
             // Mark SDir for deletion
             if (SDirInfo->Fcb) {
@@ -1295,6 +1326,10 @@ UDFMarkStreamsForDeletion(
             }
         } else
         if (lc >= 2) {
+            RC = UDFCloseFile__(IrpContext, Vcb, SDirInfo);
+            SDirClosed = TRUE;
+            if (!NT_SUCCESS(RC))
+                try_return(RC);
             // if caller wants us to perform DelTree for Streams, but
             // someone keeps Stream opened and there is a Link to this
             // file, we can't delete it immediately (on Cleanup) & should
@@ -1316,7 +1351,8 @@ try_exit: NOTHING;
 
     } _SEH2_FINALLY {
         if (FileInfo) {
-            UDFCloseFile__(IrpContext, Vcb, FileInfo);
+            if (FileOpened && !FileClosed)
+                UDFCloseFile__(IrpContext, Vcb, FileInfo);
             if (UDFCleanUpFile__(Vcb, FileInfo)) {
                 ASSERT(!StrAcq && !(FileInfo->Fcb));
                 MyFreePool__(FileInfo);
@@ -1324,10 +1360,13 @@ try_exit: NOTHING;
             if (StrAcq) {
                 UDFReleaseFcb(IrpContext, FileInfo->Fcb);
             }
-            SDirInfo = NULL;
         }
         if (SDirInfo) {
-            UDFCloseFile__(IrpContext, Vcb, SDirInfo);
+            if (!SDirClosed) {
+                NTSTATUS CloseStatus = UDFCloseFile__(IrpContext, Vcb, SDirInfo);
+                if (NT_SUCCESS(RC) && !NT_SUCCESS(CloseStatus))
+                    RC = CloseStatus;
+            }
             if (SDirAcq) {
                 UDFReleaseFcb(IrpContext, SDirInfo->Fcb);
             }
@@ -1336,6 +1375,10 @@ try_exit: NOTHING;
             }
             SDirInfo = NULL;
         }
+        for (i = 0; i < StreamCount; i++)
+            InterlockedDecrement((PLONG)&StreamFcbs[i]->FcbReference);
+        if (StreamFcbs)
+            MyFreePool__(StreamFcbs);
     } _SEH2_END;
     return RC;
 } // end UDFMarkStreamsForDeletion()
