@@ -1395,8 +1395,8 @@ UdfsRecoveryProbeLayout(const UDFS_RECOVERY_READER *reader,
     if (status == UdfsRecoveryProbeValidLayout &&
         !result->LvidCountersMatch)
         status = UdfsRecoveryProbeLvidMismatch;
-    /* Even a closed ownership graph does not establish safe write ordering,
-     * data hashes or a crash-retry protocol. No write path is exposed here. */
+    /* Probing is read-only. Any checkpoint still requires a repair plan,
+     * lower-device barriers and verification by UdfsRecoveryApplyRepair. */
 done:
     result->Status = status;
     reader->Free(reader->Context, work);
@@ -1417,6 +1417,7 @@ UdfsRecoveryPrepareRepair(const UDFS_RECOVERY_READER *reader,
     uint32_t missing, staleFree, staleFiles;
     uint16_t crc;
     uint64_t nextUniqueId;
+    int coherentCheckpoint;
 
     if (!reader || !reader->ReadSector || !reader->Allocate ||
         !reader->Free || !probe || !recordingTime || !plan)
@@ -1451,13 +1452,24 @@ UdfsRecoveryPrepareRepair(const UDFS_RECOVERY_READER *reader,
          probe->ReferencedFreeMetadataBlocks == 0))
         return UdfsRecoveryProbeUnsupported;
 
-    /* This is deliberately a single-create/single-delete recovery class,
-     * including its bitmap-first interrupted retry. A merely OPEN LVID with
-     * a closed graph does not prove that arbitrary file data is durable. */
     missing = probe->ReferencedFreeMetadataBlocks;
     staleFree = probe->LvidMetadataFreeBlocks - probe->MetadataFreeBlocks;
     staleFiles = probe->FilesVisited - probe->LvidFileCount;
-    if (!((missing == 2 && staleFree == 0 && staleFiles == 1 &&
+    /* A coherent OPEN checkpoint needs no namespace or allocation repair.
+     * Deleted files can leave gaps below NextUniqueId: it is a high-water
+     * mark, not the largest surviving ID plus one. Preserve it. Require all
+     * ownership, mirror and LVID checks before closing this checkpoint;
+     * the barriers in ApplyRepair must complete before a writable mount.
+     * This does not recover application data that was never flushed. */
+    coherentCheckpoint =
+        probe->Status == UdfsRecoveryProbeValidLayout &&
+        probe->CompleteOwnershipGraph && probe->LvidCountersMatch &&
+        missing == 0 && staleFree == 0 && staleFiles == 0 &&
+        probe->LvidNextUniqueId > probe->MaxUniqueId;
+    /* Keep the existing bounded create repair and interrupted-retry classes
+     * separate from the already coherent checkpoint. */
+    if (!(coherentCheckpoint ||
+          (missing == 2 && staleFree == 0 && staleFiles == 1 &&
            probe->LvidNextUniqueId == probe->MaxUniqueId) ||
           (missing == 1 && staleFree == 0 && staleFiles == 1 &&
            probe->ReferencedFreeInlineFileFeBlocks == 1 &&
