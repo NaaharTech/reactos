@@ -3,7 +3,52 @@
 
 typedef struct _UDFS_RECOVERY_MOUNT_IO {
     PDEVICE_OBJECT Target;
+#if defined(UDF_DBG) && defined(USE_KD_PRINT)
+    ULONG Reads;
+    ULONG Writes;
+    ULONG Flushes;
+#endif
 } UDFS_RECOVERY_MOUNT_IO;
+
+#if defined(UDF_DBG) && defined(USE_KD_PRINT)
+typedef struct _UDFS_RECOVERY_PHASE {
+    LARGE_INTEGER Start;
+    LARGE_INTEGER Frequency;
+    ULONG Reads;
+    ULONG Writes;
+    ULONG Flushes;
+} UDFS_RECOVERY_PHASE;
+
+/* One clock pair and one log per phase; no clock or print per sector. */
+static void
+UdfsRecoveryPhaseBegin(UDFS_RECOVERY_MOUNT_IO *io, UDFS_RECOVERY_PHASE *phase)
+{
+    phase->Start = KeQueryPerformanceCounter(&phase->Frequency);
+    phase->Reads = io->Reads;
+    phase->Writes = io->Writes;
+    phase->Flushes = io->Flushes;
+}
+
+static void
+UdfsRecoveryPhaseEnd(UDFS_RECOVERY_MOUNT_IO *io, UDFS_RECOVERY_PHASE *phase,
+                     const char *name, UDFS_RECOVERY_PROBE_STATUS status)
+{
+    LARGE_INTEGER end = KeQueryPerformanceCounter(NULL);
+    ULONG milliseconds = 0;
+    if (phase->Frequency.QuadPart > 0 && end.QuadPart >= phase->Start.QuadPart)
+        milliseconds = (ULONG)((end.QuadPart - phase->Start.QuadPart) * 1000 /
+                              phase->Frequency.QuadPart);
+    UDFPrint(("UDFS recovery: %s status %u, %lu ms, reads %lu writes %lu flushes %lu\n",
+              name, (ULONG)status, milliseconds, io->Reads - phase->Reads,
+              io->Writes - phase->Writes, io->Flushes - phase->Flushes));
+}
+
+#define UDFS_RECOVERY_COUNT(io, field) (++(io)->field)
+#else
+#define UdfsRecoveryPhaseBegin(io, phase) ((void)0)
+#define UdfsRecoveryPhaseEnd(io, phase, name, status) ((void)0)
+#define UDFS_RECOVERY_COUNT(io, field) ((void)0)
+#endif
 
 static int
 UdfsRecoverySectorIo(void *context, uint32_t lba, void *buffer,
@@ -17,6 +62,8 @@ UdfsRecoverySectorIo(void *context, uint32_t lba, void *buffer,
     PIO_STACK_LOCATION stack;
     NTSTATUS status;
 
+    if (write) UDFS_RECOVERY_COUNT(io, Writes);
+    else UDFS_RECOVERY_COUNT(io, Reads);
     offset.QuadPart = ((LONGLONG)lba) * UDFS_RECOVERY_SECTOR_SIZE;
     iosb.Status = STATUS_UNSUCCESSFUL;
     iosb.Information = 0;
@@ -63,6 +110,7 @@ UdfsRecoveryMountFlush(void *context)
     PIRP irp;
     NTSTATUS status;
 
+    UDFS_RECOVERY_COUNT(io, Flushes);
     iosb.Status = STATUS_UNSUCCESSFUL;
     iosb.Information = 0;
     KeInitializeEvent(&event, NotificationEvent, FALSE);
@@ -108,17 +156,40 @@ UDFRecoverDirtyVolumeBeforeLoad(PIRP_CONTEXT IrpContext, PVCB Vcb)
     uint8_t integrityType;
     UDF_TIME_STAMP timestamp;
     LONGLONG now;
+#if defined(UDF_DBG) && defined(USE_KD_PRINT)
+    UDFS_RECOVERY_PHASE phase;
+#endif
 
     UNREFERENCED_PARAMETER(IrpContext);
-    if (Vcb->SectorSize != UDFS_RECOVERY_SECTOR_SIZE ||
-        Vcb->SessionStartLba != 0 ||
-        !Vcb->TrackMap ||
-        Vcb->TrackMap[Vcb->LastTrackNum].FirstLba != 0 ||
-        Vcb->SessionEndLba == UINT32_MAX ||
-        Vcb->TargetDeviceObject->DeviceType != FILE_DEVICE_DISK)
+    if (Vcb->SectorSize != UDFS_RECOVERY_SECTOR_SIZE) {
+        UDFPrint(("UDFS recovery: skipped, sector size %lu\n", (ULONG)Vcb->SectorSize));
         return STATUS_SUCCESS;
+    }
+    if (Vcb->SessionStartLba != 0) {
+        UDFPrint(("UDFS recovery: skipped, session starts at %lx\n", (ULONG)Vcb->SessionStartLba));
+        return STATUS_SUCCESS;
+    }
+    if (!Vcb->TrackMap) {
+        UDFPrint(("UDFS recovery: skipped, no track map\n"));
+        return STATUS_SUCCESS;
+    }
+    if (Vcb->TrackMap[Vcb->LastTrackNum].FirstLba != 0) {
+        UDFPrint(("UDFS recovery: skipped, last track starts at %lx\n",
+                  (ULONG)Vcb->TrackMap[Vcb->LastTrackNum].FirstLba));
+        return STATUS_SUCCESS;
+    }
+    if (Vcb->SessionEndLba == UINT32_MAX) {
+        UDFPrint(("UDFS recovery: skipped, sector count exceeds supported range\n"));
+        return STATUS_SUCCESS;
+    }
+    if (Vcb->TargetDeviceObject->DeviceType != FILE_DEVICE_DISK) {
+        UDFPrint(("UDFS recovery: skipped, device type %lu\n",
+                  (ULONG)Vcb->TargetDeviceObject->DeviceType));
+        return STATUS_SUCCESS;
+    }
 
     RtlZeroMemory(&reader, sizeof(reader));
+    RtlZeroMemory(&io, sizeof(io));
     io.Target = Vcb->TargetDeviceObject;
     reader.Context = &io;
     reader.ReadSector = UdfsRecoveryMountReadSector;
@@ -127,24 +198,36 @@ UDFRecoverDirtyVolumeBeforeLoad(PIRP_CONTEXT IrpContext, PVCB Vcb)
     reader.Allocate = UdfsRecoveryMountAllocate;
     reader.Free = UdfsRecoveryMountFree;
     reader.SectorCount = Vcb->SessionEndLba + 1;
+    UdfsRecoveryPhaseBegin(&io, &phase);
     status = UdfsRecoveryPeekIntegrity(&reader, &integrityType);
+    UdfsRecoveryPhaseEnd(&io, &phase, "peek", status);
     if (status != UdfsRecoveryProbeValidLayout) {
         UDFPrint(("UDFS recovery: descriptor/integrity probe refused %u; existing mount policy\n",
                   (ULONG)status));
         return STATUS_SUCCESS;
     }
-    if (integrityType != 0)
+    if (integrityType != 0) {
+        UDFPrint(("UDFS recovery: CLOSED checkpoint, no recovery required\n"));
         return STATUS_SUCCESS;
+    }
     /* A dirty write-protected device remains available through the existing
      * read-only policy. Do not turn an optional repair into a mount failure. */
     if (UDFPerformDevIoCtrl(IOCTL_DISK_IS_WRITABLE, io.Target,
                             NULL, 0, NULL, 0, TRUE, NULL) ==
-        STATUS_MEDIA_WRITE_PROTECTED)
+        STATUS_MEDIA_WRITE_PROTECTED) {
+        UDFPrint(("UDFS recovery: skipped, device is write protected\n"));
         return STATUS_SUCCESS;
+    }
+    UdfsRecoveryPhaseBegin(&io, &phase);
     status = UdfsRecoveryProbeLayout(&reader, &before);
+    UdfsRecoveryPhaseEnd(&io, &phase, "probe", status);
     UDFPrint(("UDFS recovery: anchor %lx VDS %lx, probe %u at %lx\n",
               (ULONG)before.AnchorLba, (ULONG)before.VdsStartLba,
               (ULONG)status, (ULONG)before.FailureLba));
+    UDFPrint(("UDFS recovery: files %lu dirs %lu, physical blocks %lu, object %u:%lx\n",
+              (ULONG)before.FilesVisited, (ULONG)before.DirectoriesVisited,
+              (ULONG)before.PartitionBlocks, (ULONG)before.FailureObjectRef,
+              (ULONG)before.FailureObjectLbn));
     /* The probe has not written anything yet. Incomplete validation keeps
      * the pre-existing dirty/read-only mount policy. */
     if (status == UdfsRecoveryProbeNoMemory ||
@@ -165,12 +248,17 @@ UDFRecoverDirtyVolumeBeforeLoad(PIRP_CONTEXT IrpContext, PVCB Vcb)
 
     plan = (UDFS_RECOVERY_REPAIR_PLAN *)
            UdfsRecoveryMountAllocate(&io, sizeof(*plan));
-    if (!plan) return STATUS_INSUFFICIENT_RESOURCES;
+    if (!plan) {
+        UDFPrint(("UDFS recovery: repair-plan allocation failed\n"));
+        return STATUS_INSUFFICIENT_RESOURCES;
+    }
     KeQuerySystemTime((PLARGE_INTEGER)&now);
     RtlZeroMemory(&timestamp, sizeof(timestamp));
     UDFTimeToUDF(now, &timestamp);
+    UdfsRecoveryPhaseBegin(&io, &phase);
     status = UdfsRecoveryPrepareRepair(&reader, &before,
                                         (const uint8_t *)&timestamp, plan);
+    UdfsRecoveryPhaseEnd(&io, &phase, "plan", status);
     if (status == UdfsRecoveryProbeUnsupported) {
         UDFPrint(("UDFS recovery: ownership class not repairable; read-only policy\n"));
         UdfsRecoveryMountFree(&io, plan);
@@ -185,7 +273,10 @@ UDFRecoverDirtyVolumeBeforeLoad(PIRP_CONTEXT IrpContext, PVCB Vcb)
     UDFPrint(("UDFS recovery: %lu referenced-free blocks, %lu bitmap sectors\n",
               (ULONG)before.ReferencedFreeMetadataBlocks,
               (ULONG)plan->BitmapEditCount));
+    UDFPrint(("UDFS recovery: metadata-only repair; unflushed file contents are not recovered\n"));
+    UdfsRecoveryPhaseBegin(&io, &phase);
     status = UdfsRecoveryApplyRepair(&reader, plan, &after);
+    UdfsRecoveryPhaseEnd(&io, &phase, "apply/reprobe", status);
     UdfsRecoveryMountFree(&io, plan);
     if (status != UdfsRecoveryProbeValidLayout) {
         UDFPrint(("UDFS recovery: apply/reprobe failed %u\n", (ULONG)status));
