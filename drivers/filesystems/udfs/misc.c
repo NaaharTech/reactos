@@ -439,7 +439,7 @@ UDFCreateCcb()
 * Return Value: A pointer to the IrpContext structure OR NULL.
 *
 *************************************************************************/
-_Ret_valid_ PIRP_CONTEXT
+_Ret_maybenull_ PIRP_CONTEXT
 UDFCreateIrpContext(
     _In_ PIRP Irp,
     _In_ BOOLEAN Wait
@@ -500,29 +500,14 @@ UDFCreateIrpContext(
         NewIrpContext->RealDevice = IrpSp->FileObject->DeviceObject;
     }
 
-    // TODO: fix
-    if (0 && IrpSp->FileObject != NULL) {
-
-        PFILE_OBJECT FileObject = IrpSp->FileObject;
-
-        NewIrpContext->RealDevice = FileObject->DeviceObject;
-
-        //
-        //  See if the request is Write Through. Look for both FileObjects opened
-        //  as write through, and non-cached requests with the SL_WRITE_THROUGH flag set.
-        //
-        //  The latter can only originate from kernel components. (Note - NtWriteFile()
-        //  does redundantly set the SL_W_T flag for all requests it issues on write
-        //  through file objects)
-        //
-
-        if (IsFileWriteThrough( FileObject, NewIrpContext->Vcb ) ||
-            ( (IrpSp->MajorFunction == IRP_MJ_WRITE) &&
-              BooleanFlagOn( Irp->Flags, IRP_NOCACHE) &&
-              BooleanFlagOn( IrpSp->Flags, SL_WRITE_THROUGH))) {
-
-            SetFlag(NewIrpContext->Flags, IRP_CONTEXT_FLAG_WRITE_THROUGH);
-        }
+    // Carry write-through through the filesystem's own lower write IRPs.
+    // A write-through file object also marks ordinary NtWriteFile requests;
+    // a kernel caller can request it on a noncached write IRP directly.
+    if (IrpSp->MajorFunction == IRP_MJ_WRITE && IrpSp->FileObject != NULL &&
+        (BooleanFlagOn(IrpSp->FileObject->Flags, FO_WRITE_THROUGH) ||
+         (BooleanFlagOn(Irp->Flags, IRP_NOCACHE) &&
+          BooleanFlagOn(IrpSp->Flags, SL_WRITE_THROUGH)))) {
+        SetFlag(NewIrpContext->Flags, IRP_CONTEXT_FLAG_WRITE_THROUGH);
     }
 
     if (!UdfDeviceIsFsdo(IrpSp->DeviceObject)) {

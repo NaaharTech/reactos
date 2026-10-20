@@ -991,6 +991,7 @@ UDFSetBasicInformation(
 {
     NTSTATUS        RC = STATUS_SUCCESS;
     ULONG           NotifyFilter = 0;
+    PDIR_INDEX_ITEM DirNdx;
 
     AdPrint(("UDFSetBasicInformation\n"));
 
@@ -1108,11 +1109,13 @@ UDFSetBasicInformation(
                 Fcb->FcbState &= ~UDF_FCB_READ_ONLY;
             }
 
-            UDFAttributesToUDF(UDFDirIndex(UDFGetDirIndexByFileInfo(Fcb->FileInfo), Fcb->FileInfo->Index),
-                               NULL, PtrBuffer->FileAttributes);
-
-            (UDFDirIndex(UDFGetDirIndexByFileInfo(Fcb->FileInfo), Fcb->FileInfo->Index))
-                ->FI_Flags |= UDF_FI_FLAG_SYS_ATTR;
+            DirNdx = UDFDirIndex(UDFGetDirIndexByFileInfo(Fcb->FileInfo),
+                                 Fcb->FileInfo->Index);
+            UDFAttributesToUDF(DirNdx, NULL, PtrBuffer->FileAttributes);
+            /* A later open checks this cached value for READONLY.  Keep it
+             * in step with the FE and directory index updated above. */
+            Fcb->FileAttributes = DirNdx->SysAttr;
+            DirNdx->FI_Flags |= UDF_FI_FLAG_SYS_ATTR;
             // If the FSD supports file compression, we may wish to
             // note the user's preferences for compressing/not compressing
             // the file at this time.

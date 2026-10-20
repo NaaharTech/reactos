@@ -7,6 +7,7 @@ list(APPEND SOURCE
     udf_info/extent.c
     udf_info/mount.c
     udf_info/physical.c
+    udf_info/recovery_core.c
     udf_info/remap.c
     udf_info/udf_info.c
     cleanup.c
@@ -24,6 +25,7 @@ list(APPEND SOURCE
     namesup.c
     prefxsup.c
     pnp.c
+    recovery_mount.c
     read.c
     secursup.c
     shutdown.c

@@ -645,7 +645,7 @@ UDFOpenObjectByFileId(
 
     BOOLEAN UnlockFcbTable = FALSE;
     BOOLEAN FcbExisted = FALSE;
-    BOOLEAN ExistingFileInfoReferenced = FALSE;
+    PUDF_FILE_INFO OpenFileInfoReference = NULL;
 
     NODE_TYPE_CODE NodeTypeCode;
     TYPE_OF_OPEN TypeOfOpen;
@@ -669,9 +669,9 @@ UDFOpenObjectByFileId(
     // in HighPart, but on 32-bit systems this is a no-op since kernel
     // addresses already have bit 31 set.
     //
-    // Directory enumeration (dircntrl.cpp) reports the raw UDFGetNTFileId
-    // value WITHOUT FID_DIR_MASK. So the incoming FileId may not have
-    // FID_DIR_MASK even for directories.
+    // Directory enumeration reports the ICB address of each entry, setting
+    // FID_DIR_MASK for directories.  Older callers may still supply an ID
+    // without that bit, so the FCB lookup below accepts either form.
     //
 
     RtlCopyMemory(&FileId, IrpSp->FileObject->FileName.Buffer, sizeof(FILE_ID));
@@ -850,6 +850,14 @@ UDFOpenObjectByFileId(
                     try_return(Status);
                 }
 
+                /* Match named-open initialization: inline data must use the
+                 * extent walker, including Cache Manager paging requests. */
+                if (!IsDirectory &&
+                    ((((PFILE_ENTRY)FileInfo->Dloc->FileEntry)->icbTag.flags &
+                      ICB_FLAG_ALLOC_MASK) == ICB_FLAG_AD_IN_ICB)) {
+                    NextFcb->FcbState |= UDF_FCB_EMBEDDED_DATA;
+                }
+
                 // Set file times
                 UDFGetFileXTime(FileInfo,
                     &NextFcb->CreationTime.QuadPart,
@@ -870,14 +878,21 @@ UDFOpenObjectByFileId(
 
                 if (!UDFIsAStreamDir(FileInfo)) {
                     PDIR_INDEX_HDR hDirIndex = UDFGetDirIndexByFileInfo(FileInfo);
-                    if (hDirIndex) {
-                        NextFcb->FileAttributes = UDFAttributesToNT(
-                            UDFDirIndex(hDirIndex, FileInfo->Index), NULL);
-                        if (NextFcb->FileAttributes & FILE_ATTRIBUTE_READONLY) {
-                            NextFcb->FcbState |= UDF_FCB_READ_ONLY;
-                        }
+                    DIR_INDEX_ITEM AttributesIndex;
+                    PDIR_INDEX_ITEM DirNdx;
+                    RtlZeroMemory(&AttributesIndex, sizeof(AttributesIndex));
+                    DirNdx = hDirIndex ? UDFDirIndex(hDirIndex, FileInfo->Index) :
+                                        &AttributesIndex;
+                    NextFcb->FileAttributes = UDFAttributesToNT(
+                        DirNdx, FileInfo->Dloc->FileEntry);
+                    if (NextFcb->FileAttributes & FILE_ATTRIBUTE_READONLY) {
+                        NextFcb->FcbState |= UDF_FCB_READ_ONLY;
                     }
                 }
+
+                /* The fresh open owns this FI reference until a CCB accepts
+                 * it. A cached valid FCB is not an owner of a failed open. */
+                OpenFileInfoReference = FileInfo;
 
                 // Insert into table and mark valid
                 UDFInsertFcbIntoTable(IrpContext, NextFcb);
@@ -967,7 +982,7 @@ UDFOpenObjectByFileId(
                     try_return(Status = STATUS_FILE_CORRUPT_ERROR);
                 }
                 UDFReferenceFile__(NextFcb->FileInfo);
-                ExistingFileInfoReferenced = TRUE;
+                OpenFileInfoReference = NextFcb->FileInfo;
             }
 
             Status = UDFCompleteFcbOpen(IrpContext,
@@ -981,7 +996,7 @@ UDFOpenObjectByFileId(
                                          FILE_OPENED);
             if (NT_SUCCESS(Status)) {
                 // The successful CCB transfers this reference to cleanup.
-                ExistingFileInfoReferenced = FALSE;
+                OpenFileInfoReference = NULL;
             }
         }
 
@@ -989,8 +1004,8 @@ try_exit:   NOTHING;
 
     } _SEH2_FINALLY {
 
-        if (ExistingFileInfoReferenced) {
-            UDFCloseFile__(IrpContext, Vcb, NextFcb->FileInfo);
+        if (OpenFileInfoReference) {
+            UDFCloseFile__(IrpContext, Vcb, OpenFileInfoReference);
         }
 
         if (UnlockFcbTable) {

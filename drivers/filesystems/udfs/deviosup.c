@@ -1010,6 +1010,10 @@ UDFSingleAsync(
     IrpSp->Parameters.Read.Length = ByteCount;
     IrpSp->Parameters.Read.ByteOffset.QuadPart = ByteOffset;
     IrpSp->Flags |= SL_OVERRIDE_VERIFY_VOLUME;
+    if (IrpContext->MajorFunction == IRP_MJ_WRITE &&
+        FlagOn(IrpContext->Flags, IRP_CONTEXT_FLAG_WRITE_THROUGH)) {
+        IrpSp->Flags |= SL_WRITE_THROUGH;
+    }
 
     //
     //  Issue the I/O request.
@@ -1124,6 +1128,10 @@ UDFMultipleAsync(
         IrpSp->MajorFunction = IrpContext->MajorFunction;
         IrpSp->Parameters.Read.Length = IoRuns[UnwindRunCount].DiskByteCount;
         IrpSp->Parameters.Read.ByteOffset.QuadPart = IoRuns[UnwindRunCount].DiskOffset;
+        if (IrpContext->MajorFunction == IRP_MJ_WRITE &&
+            FlagOn(IrpContext->Flags, IRP_CONTEXT_FLAG_WRITE_THROUGH)) {
+            IrpSp->Flags |= SL_WRITE_THROUGH;
+        }
     }
 
     //

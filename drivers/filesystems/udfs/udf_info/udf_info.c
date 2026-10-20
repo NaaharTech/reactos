@@ -3510,29 +3510,19 @@ UDFCloseFile__(
             if (FileInfo->Dloc->DataLoc.Flags & EXTENT_FLAG_PREALLOCATED) {
                 FileInfo->Dloc->DataLoc.Flags |= EXTENT_FLAG_CUT_PREALLOCATED;
                 status = UDFResizeExtent(IrpContext, Vcb, PartNum, UDFGetFileSize(FileInfo), FALSE, &(FileInfo->Dloc->DataLoc));
-                FileInfo->Dloc->DataLoc.Flags &= ~(EXTENT_FLAG_PREALLOCATED | EXTENT_FLAG_CUT_PREALLOCATED);
-                if (NT_SUCCESS(status)) {
-                    AdPrint(("Dir pre-alloc truncated (Close)\n"));
-                    FileInfo->Dloc->DataLoc.Modified = TRUE;
-                }
+                FileInfo->Dloc->DataLoc.Flags &= ~EXTENT_FLAG_CUT_PREALLOCATED;
+                if (!NT_SUCCESS(status))
+                    return status;
+                FileInfo->Dloc->DataLoc.Flags &= ~EXTENT_FLAG_PREALLOCATED;
+                AdPrint(("Dir pre-alloc truncated (Close)\n"));
+                FileInfo->Dloc->DataLoc.Modified = TRUE;
             }
         }
 
         if (!NT_SUCCESS(status = UDFFlushFE(IrpContext, Vcb, FileInfo, PartNum))) {
             UDFPrint(("Error flushing FE\n"));
-//flush_recovery:
-            BrutePoint();
-            if (FileInfo->Index >= 2) {
-                PDIR_INDEX_ITEM DirNdx;
-                DirNdx = UDFDirIndex(UDFGetDirIndexByFileInfo(FileInfo), FileInfo->Index);
-                if (DirNdx) {
-                    UDFPrint(("Recovery: mark as deleted & flush FI\n"));
-                    DirNdx->FI_Flags |= UDF_FI_FLAG_FI_MODIFIED;
-                    DirNdx->FileCharacteristics |= FILE_DELETED;
-                    FileInfo->FileIdent->fileCharacteristics |= FILE_DELETED;
-                    UDFFlushFI(IrpContext, Vcb, FileInfo, PartNum);
-                }
-            }
+            /* A failed FE write is retryable.  Turning its FID into a
+             * deletion tombstone would make the file disappear on remount. */
             return status;
         }
     }
@@ -4921,7 +4911,14 @@ UDFFlushFE(
 retry_flush_FE:
     UDFPrint(("  FlushFE: %x\n", FileInfo->Dloc->FELoc.Mapping[0].extLocation));
 
-    UDFReTagDirectory(IrpContext, Vcb, FileInfo);
+    /* Retagging is meaningful only for directories.  It returns
+     * STATUS_NOT_A_DIRECTORY for an ordinary file, and a real I/O failure
+     * must stop this FE flush while its dirty state is still retained. */
+    if (FileInfo->Dloc->DirIndex) {
+        status = UDFReTagDirectory(IrpContext, Vcb, FileInfo);
+        if (!NT_SUCCESS(status))
+            return status;
+    }
     if (FileInfo->Dloc->DataLoc.Modified ||
        FileInfo->Dloc->AllocLoc.Modified) {
         ASSERT(PartNum != (uint32)(-1));
@@ -4953,6 +4950,10 @@ retry_flush_FE:
         } else if (NewAllocDescs) {
             ASSERT(AllocMode != ICB_FLAG_AD_IN_ICB);
             status = UDFPadLastSector(IrpContext, Vcb, &FileInfo->Dloc->AllocLoc);
+            if (!NT_SUCCESS(status)) {
+                MyFreePool__(NewAllocDescs);
+                return status;
+            }
             // ... and flush it
             status = UDFWriteExtent(IrpContext, Vcb, &FileInfo->Dloc->AllocLoc, 0, (uint32)(FileInfo->Dloc->AllocLoc.Length), FALSE, NewAllocDescs, &WrittenBytes);
             if (UDFAllocDescsStartInFEBlock(Vcb, FileInfo)) {
@@ -5232,38 +5233,23 @@ UDFFlushFile__(
        FileInfo->Dloc->DirIndex) {
         // if Lite Flush is used, keep preallocations
         if (!(FlushFlags & UDF_FLUSH_FLAGS_LITE)) {
-full_flush:
             if (FileInfo->Dloc->DataLoc.Flags & EXTENT_FLAG_PREALLOCATED) {
                 FileInfo->Dloc->DataLoc.Flags |= EXTENT_FLAG_CUT_PREALLOCATED;
                 status = UDFResizeExtent(IrpContext, Vcb, PartNum, UDFGetFileSize(FileInfo), FALSE, &(FileInfo->Dloc->DataLoc));
-                FileInfo->Dloc->DataLoc.Flags &= ~(EXTENT_FLAG_PREALLOCATED | EXTENT_FLAG_CUT_PREALLOCATED);
-                if (NT_SUCCESS(status)) {
-                    AdPrint(("Dir pre-alloc truncated (Flush)\n"));
-                    FileInfo->Dloc->DataLoc.Modified = TRUE;
-                }
+                FileInfo->Dloc->DataLoc.Flags &= ~EXTENT_FLAG_CUT_PREALLOCATED;
+                if (!NT_SUCCESS(status))
+                    return status;
+                FileInfo->Dloc->DataLoc.Flags &= ~EXTENT_FLAG_PREALLOCATED;
+                AdPrint(("Dir pre-alloc truncated (Flush)\n"));
+                FileInfo->Dloc->DataLoc.Modified = TRUE;
             }
         }
     }
     // flush FE
     if (!NT_SUCCESS(status = UDFFlushFE(IrpContext, Vcb, FileInfo, PartNum))) {
         UDFPrint(("Error flushing FE\n"));
-        BrutePoint();
-        if (FlushFlags & UDF_FLUSH_FLAGS_LITE) {
-            UDFPrint(("  flush pre-alloc\n"));
-            FlushFlags &= ~UDF_FLUSH_FLAGS_LITE;
-            goto full_flush;
-        }
-        if (FileInfo->Index >= 2) {
-            PDIR_INDEX_ITEM DirNdx;
-            DirNdx = UDFDirIndex(UDFGetDirIndexByFileInfo(FileInfo), FileInfo->Index);
-            if (DirNdx) {
-                UDFPrint(("Recovery: mark as deleted & flush FI\n"));
-                DirNdx->FI_Flags |= UDF_FI_FLAG_FI_MODIFIED;
-                DirNdx->FileCharacteristics |= FILE_DELETED;
-                FileInfo->FileIdent->fileCharacteristics |= FILE_DELETED;
-                UDFFlushFI(IrpContext, Vcb, FileInfo, PartNum);
-            }
-        }
+        /* Keep the FE and its FID dirty for a later flush.  The write
+         * failure does not authorize deleting the file's directory entry. */
         return status;
     }
     if (!NT_SUCCESS(status = UDFFlushFI(IrpContext, Vcb, FileInfo, PartNum)))

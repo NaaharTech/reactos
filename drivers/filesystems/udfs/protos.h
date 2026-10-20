@@ -577,6 +577,12 @@ UDFCompleteMount(
     IN PVCB Vcb
     );
 
+NTSTATUS
+UDFRecoverDirtyVolumeBeforeLoad(
+    IN PIRP_CONTEXT IrpContext,
+    IN PVCB Vcb
+    );
+
 VOID
 UDFCloseResidual(
     IN PIRP_CONTEXT IrpContext,

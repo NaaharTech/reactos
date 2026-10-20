@@ -380,6 +380,7 @@ UDFQueryDirectory(
     ULONG                       BytesRemainingInBuffer;
     PHASH_ENTRY                 cur_hashes = NULL;
     PDIR_INDEX_ITEM             DirNdx;
+    FILE_ID                     EntryFileId;
 
     Vcb = Fcb->Vcb;
     ASSERT_VCB(Vcb);
@@ -538,6 +539,29 @@ UDFQueryDirectory(
                 }
                 try_return(Status);
             }
+
+            if (FileInformationClass == FileIdBothDirectoryInformation ||
+                FileInformationClass == FileIdFullDirectoryInformation) {
+                uint32 PhysLba = UDFPartLbaToPhys(Vcb, &DirNdx->FileEntryLoc);
+                uint32 PartitionRoot = UDFPartStart(Vcb, -2);
+
+                if (PhysLba == LBA_OUT_OF_EXTENT || PhysLba < PartitionRoot) {
+                    if (NextEntry != 0) {
+                        ReturnNextEntry = FALSE;
+                        try_return(Status = STATUS_SUCCESS);
+                    }
+                    try_return(Status = STATUS_FILE_CORRUPT_ERROR);
+                }
+
+                /* The cached DirNdx->FileInfo may be absent.  The FID's ICB
+                 * address still identifies this entry's FE, including after
+                 * a cold remount.  Match UDFFirstOpenFile's directory bit. */
+                EntryFileId = UDFMakeLargeInteger(
+                    ((LONGLONG)(PhysLba - PartitionRoot)) +
+                    ((LONGLONG)((UINT_PTR)Vcb) << 32));
+                if (DirInformation->FileAttributes & FILE_ATTRIBUTE_DIRECTORY)
+                    SetFlag(EntryFileId.HighPart, FID_DIR_MASK);
+            }
             DirInformation->FileIndex = NextMatch;
             FileNameBytes = DirInformation->FileNameLength;
 
@@ -615,12 +639,12 @@ UDFQueryDirectory(
 
                 case FileIdBothDirectoryInformation:
                     IdBothDirInfo = (PFILE_ID_BOTH_DIR_INFORMATION)(UserBuffer + NextEntry);
-                    IdBothDirInfo->FileId = UDFGetNTFileId(Vcb, Fcb->FileInfo);
+                    IdBothDirInfo->FileId = EntryFileId;
                     break;
 
                 case FileIdFullDirectoryInformation:
                     IdFullDirInfo = (PFILE_ID_FULL_DIR_INFORMATION)(UserBuffer + NextEntry);
-                    IdFullDirInfo->FileId = UDFGetNTFileId(Vcb, Fcb->FileInfo);
+                    IdFullDirInfo->FileId = EntryFileId;
                     break;
 
                 default:

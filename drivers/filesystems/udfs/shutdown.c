@@ -32,7 +32,7 @@
 *
 *  IRQL_PASSIVE_LEVEL
 *
-* Return Value: Irrelevant
+* Return Value: The first filesystem or lower-device shutdown failure.
 *
 *************************************************************************/
 NTSTATUS
@@ -45,6 +45,8 @@ UDFCommonShutdown(
     PVCB Vcb;
     PLIST_ENTRY Link;
     BOOLEAN VcbPresent = TRUE;
+    NTSTATUS Status = STATUS_SUCCESS;
+    NTSTATUS VolumeStatus;
 
     PAGED_CODE();
 
@@ -112,46 +114,63 @@ UDFCommonShutdown(
             {
             _SEH2_TRY {
 
-                UDFPurgeVolume(IrpContext, Vcb);
-                UDFFlushVolume(IrpContext, Vcb, 0);
+                /* Keep the cached file state until its metadata has reached
+                 * the volume.  The lock-volume path uses this same order. */
+                VolumeStatus = UDFFlushVolume(IrpContext, Vcb, 0);
+                if (NT_SUCCESS(VolumeStatus))
+                    VolumeStatus = UDFPurgeVolume(IrpContext, Vcb);
 
             } _SEH2_EXCEPT(EXCEPTION_EXECUTE_HANDLER) {
 
+                VolumeStatus = _SEH2_GetExceptionCode();
                 IrpContext->ExceptionStatus = STATUS_SUCCESS;
-                UDFPrint(("UDF: exception %08lx\n", _SEH2_GetExceptionCode()));
+                UDFPrint(("UDF: shutdown flush exception %08lx\n", VolumeStatus));
 
             } _SEH2_END;
             }
+
+            if (NT_SUCCESS(Status) && !NT_SUCCESS(VolumeStatus))
+                Status = VolumeStatus;
 
             {
             _SEH2_TRY {
 
                 IO_STATUS_BLOCK Iosb;
+                NTSTATUS LowerStatus;
+                PIRP NewIrp;
 
-                PIRP NewIrp = IoBuildSynchronousFsdRequest(IRP_MJ_SHUTDOWN,
-                                                           Vcb->TargetDeviceObject,
-                                                           NULL,
-                                                           0,
-                                                           NULL,
-                                                           &Event,
-                                                           &Iosb);
+                Iosb.Status = STATUS_UNSUCCESSFUL;
+                Iosb.Information = 0;
+                NewIrp = IoBuildSynchronousFsdRequest(IRP_MJ_SHUTDOWN,
+                                                      Vcb->TargetDeviceObject,
+                                                      NULL,
+                                                      0,
+                                                      NULL,
+                                                      &Event,
+                                                      &Iosb);
 
-                if (NewIrp != NULL) {
-
-                    if (NT_SUCCESS(IoCallDriver( Vcb->TargetDeviceObject, NewIrp ))) {
-
-                        (VOID) KeWaitForSingleObject(&Event,
-                                                     Executive,
-                                                     KernelMode,
-                                                     FALSE,
-                                                     NULL);
-
-                        KeClearEvent(&Event);
+                if (NewIrp == NULL) {
+                    LowerStatus = STATUS_INSUFFICIENT_RESOURCES;
+                } else {
+                    KeClearEvent(&Event);
+                    LowerStatus = IoCallDriver(Vcb->TargetDeviceObject, NewIrp);
+                    if (LowerStatus == STATUS_PENDING) {
+                        (VOID)KeWaitForSingleObject(&Event, Executive,
+                                                    KernelMode, FALSE, NULL);
+                        LowerStatus = Iosb.Status;
+                    } else if (NT_SUCCESS(LowerStatus)) {
+                        LowerStatus = Iosb.Status;
                     }
                 }
 
+                if (NT_SUCCESS(Status) && !NT_SUCCESS(LowerStatus))
+                    Status = LowerStatus;
+
             } _SEH2_EXCEPT(EXCEPTION_EXECUTE_HANDLER) {
 
+                if (NT_SUCCESS(Status))
+                    Status = _SEH2_GetExceptionCode();
+                IrpContext->ExceptionStatus = STATUS_SUCCESS;
             } _SEH2_END;
             }
 
@@ -183,9 +202,9 @@ UDFCommonShutdown(
             UdfData.UDFDeviceObject_HDD = NULL;
         }
 
-        UDFCompleteRequest(IrpContext, Irp, STATUS_SUCCESS);
+        UDFCompleteRequest(IrpContext, Irp, Status);
 
     } _SEH2_END; // end of "__finally" processing
 
-    return STATUS_SUCCESS;
+    return Status;
 } // end UDFCommonShutdown()

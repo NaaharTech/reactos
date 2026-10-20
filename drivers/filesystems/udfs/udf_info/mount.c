@@ -307,6 +307,7 @@ UDFUpdatePartDesc(
     uint32 i; // PartNdx
     tag* PTag;
     SIZE_T WrittenBytes;
+    NTSTATUS status;
 
     for(i=0; i<Vcb->PartitionMaps; i++)
     {
@@ -331,13 +332,21 @@ UDFUpdatePartDesc(
                 // Per-page mode: flush dirty bitmap pages through Cache Manager
                 UDFUnpinBitmapPage(Vcb);
                 IO_STATUS_BLOCK FlushIoStatus;
+                FlushIoStatus.Status = STATUS_SUCCESS;
+                FlushIoStatus.Information = 0;
                 CcFlushCache(&Vcb->BitmapNonpaged.SegmentObject, NULL, 0, &FlushIoStatus);
+                if (!NT_SUCCESS(FlushIoStatus.Status))
+                    return FlushIoStatus.Status;
             } else {
-                UDFUpdateXSpaceBitmaps(IrpContext, Vcb, i, phd);
+                status = UDFUpdateXSpaceBitmaps(IrpContext, Vcb, i, phd);
+                if (!NT_SUCCESS(status))
+                    return status;
             }
             PTag = (tag*)Buf;
             UDFSetUpTag(Vcb, PTag, PTag->descCRCLength + sizeof(tag), PTag->tagLocation, 0);
-            UDFWriteSectors(IrpContext, Vcb, TRUE, PTag->tagLocation, 1, FALSE, Buf, &WrittenBytes);
+            status = UDFWriteSectors(IrpContext, Vcb, TRUE, PTag->tagLocation, 1, FALSE, Buf, &WrittenBytes);
+            if (!NT_SUCCESS(status) || WrittenBytes != Vcb->SectorSize)
+                return NT_SUCCESS(status) ? STATUS_IO_DEVICE_ERROR : status;
         }
     }
     return STATUS_SUCCESS;
@@ -386,6 +395,7 @@ UDFUpdateLogicalVolInt(
     uint32*     partSize;
     BOOLEAN     equal = FALSE;
     LONGLONG NtTime;
+    uint32 OldIntegrityType;
 
     if (Vcb->CDR_Mode)
         return STATUS_SUCCESS;
@@ -469,10 +479,15 @@ UDFUpdateLogicalVolInt(
         sizeof(struct LogicalVolIntegrityDescImpUse)),
         PTag->tagLocation, 0);
 
+    OldIntegrityType = Vcb->IntegrityType;
     Vcb->IntegrityType = INTEGRITY_TYPE_OPEN; // make happy auto-dirty
     RC = UDFWriteSectors(IrpContext, Vcb, TRUE, PTag->tagLocation, len >> Vcb->SectorShift, FALSE, (int8*)(lvid), &WrittenBytes);
     // update it here to prevent recursion
-    Vcb->IntegrityType = lvid->integrityType;
+    Vcb->IntegrityType = NT_SUCCESS(RC) && WrittenBytes == len ?
+                         lvid->integrityType : OldIntegrityType;
+
+    if (NT_SUCCESS(RC) && WrittenBytes != len)
+        return STATUS_IO_DEVICE_ERROR;
 
     return RC;
 } // end UDFUpdateLogicalVolInt()
@@ -655,6 +670,8 @@ UDFUpdateLogicalVol(
 //    NTSTATUS status2 = STATUS_SUCCESS;
 
     status = UDFUpdateSparingTable(IrpContext, Vcb);
+    if (!NT_SUCCESS(status))
+        return status;
 
     lvd = (struct LogicalVolDesc*)MyAllocatePool__(NonPagedPool, max(Vcb->SectorSize, sizeof(struct LogicalVolDesc)) );
 
@@ -760,7 +777,7 @@ UDFUpdateVDS(
         if (vds[i].block) {
             status = UDFReadTagged(IrpContext, Vcb, Buf, vds[i].block, vds[i].block, &ident);
             if (!NT_SUCCESS(status))
-                continue;
+                break;
             // update XBMs
             if (i == VDS_POS_PARTITION_DESC) {
                 if (!(flags & 1))
@@ -771,20 +788,31 @@ UDFUpdateVDS(
                     DbgFreePool(Buf);
                     return STATUS_INSUFFICIENT_RESOURCES;
                 }
-                UDFUpdatePartDesc(IrpContext, Vcb, Buf);
+                status = UDFUpdatePartDesc(IrpContext, Vcb, Buf);
+                if (!NT_SUCCESS(status)) {
+                    DbgFreePool(Buf2);
+                    break;
+                }
                 for (j=vds[i].block+1; j<vds[VDS_POS_TERMINATING_DESC].block; j++) {
-                    UDFReadTagged(IrpContext, Vcb,Buf2, j, j, &ident);
-                    if (ident == TID_PARTITION_DESC)
-                        UDFUpdatePartDesc(IrpContext, Vcb, Buf2);
+                    status = UDFReadTagged(IrpContext, Vcb,Buf2, j, j, &ident);
+                    if (!NT_SUCCESS(status))
+                        break;
+                    if (ident == TID_PARTITION_DESC) {
+                        status = UDFUpdatePartDesc(IrpContext, Vcb, Buf2);
+                        if (!NT_SUCCESS(status))
+                            break;
+                    }
                 }
                 DbgFreePool(Buf2);
+                if (!NT_SUCCESS(status))
+                    break;
 //                continue;
             } else
             // update Vol Ident Desc when volume label was changed
             if (Vcb->VolIdentChanged && (i == VDS_POS_LOGICAL_VOL_DESC)) {
                 status = UDFUpdateLogicalVol(IrpContext, Vcb, vds[VDS_POS_LOGICAL_VOL_DESC], &Vcb->VolIdent);
                 if (!NT_SUCCESS(status))
-                    continue;
+                    break;
             }
         }
     }
@@ -912,6 +940,7 @@ UDFUpdateNonAllocated(
     EXTENT_AD Ext;
     PEXTENT_MAP Map = NULL;
     PEXTENT_INFO DataLoc;
+    NTSTATUS status;
 
     UDFPrint(("UDFUpdateNonAllocated:\n"));
     if (!Vcb->NonAllocFileInfo) {
@@ -954,7 +983,9 @@ UDFUpdateNonAllocated(
     }
     UDFPackMapping(Vcb, DataLoc);
     DataLoc->Length = UDFGetExtentLength(DataLoc->Mapping);
-    UDFFlushFile__(IrpContext, Vcb, Vcb->NonAllocFileInfo, 0);
+    status = UDFFlushFile__(IrpContext, Vcb, Vcb->NonAllocFileInfo, 0);
+    if (!NT_SUCCESS(status))
+        return status;
 
     // ensure that BAD space is marked as USED
     UDFMarkSpaceAsXXX(Vcb, 0, &(DataLoc->Mapping[0]), AS_USED); // mark as used
@@ -973,6 +1004,7 @@ UDFUmount__(
     )
 {
     uint32 flags = 0;
+    NTSTATUS status;
 
     if ((Vcb->VcbState & VCB_STATE_VOLUME_READ_ONLY)
         || !Vcb->Modified)
@@ -985,24 +1017,25 @@ UDFUmount__(
         return UDFRecordVAT(IrpContext, Vcb);
     }
 
-    UDFFlushAllCachedAllocations(Vcb, UDF_PREALLOC_CLASS_DIR);
+    status = UDFFlushAllCachedAllocations(Vcb, UDF_PREALLOC_CLASS_DIR);
+    if (!NT_SUCCESS(status))
+        goto clear_assume;
 
     // synchronize BAD Block bitmap and NonAllocatable
-    UDFUpdateNonAllocated(IrpContext, Vcb);
+    status = UDFUpdateNonAllocated(IrpContext, Vcb);
+    if (!NT_SUCCESS(status))
+        goto clear_assume;
 
     UDFAcquireResourceExclusive(&(Vcb->BitMapResource1),TRUE);
 
     // RAM mode
     if (Vcb->VolIdentChanged) {
-#ifdef UDF_DBG
-        if (!NT_SUCCESS(UDFUpdateVolIdent(IrpContext, Vcb, Vcb->PVolDescAddr, &Vcb->VolIdent)))
-            UDFPrint(("Error updating VolIdent (1)\n"));
-        if (!NT_SUCCESS(UDFUpdateVolIdent(IrpContext, Vcb, Vcb->PVolDescAddr2, &Vcb->VolIdent)))
-            UDFPrint(("Error updating VolIdent (2)\n"));
-#else
-        UDFUpdateVolIdent(IrpContext, Vcb, Vcb->PVolDescAddr, &Vcb->VolIdent);
-        UDFUpdateVolIdent(IrpContext, Vcb, Vcb->PVolDescAddr2, &Vcb->VolIdent);
-#endif // UDF_DBG
+        status = UDFUpdateVolIdent(IrpContext, Vcb, Vcb->PVolDescAddr, &Vcb->VolIdent);
+        if (!NT_SUCCESS(status))
+            goto release_bitmap;
+        status = UDFUpdateVolIdent(IrpContext, Vcb, Vcb->PVolDescAddr2, &Vcb->VolIdent);
+        if (!NT_SUCCESS(status))
+            goto release_bitmap;
     }
 
     UDF_CHECK_BITMAP_RESOURCE(Vcb);
@@ -1022,21 +1055,18 @@ UDFUmount__(
         }
     }
 
-#ifdef UDF_DBG
-    if (!NT_SUCCESS(UDFUpdateVDS(IrpContext, Vcb, Vcb->VDS1, Vcb->VDS1 + Vcb->VDS1_Len, flags)))
-        UDFPrint(("Error updating Main VDS\n"));
-    if (!NT_SUCCESS(UDFUpdateVDS(IrpContext, Vcb, Vcb->VDS2, Vcb->VDS2 + Vcb->VDS2_Len, flags)))
-        UDFPrint(("Error updating Reserve VDS\n"));
-#else
-    UDFUpdateVDS(IrpContext, Vcb, Vcb->VDS1, Vcb->VDS1 + Vcb->VDS1_Len, flags);
-    UDFUpdateVDS(IrpContext, Vcb, Vcb->VDS2, Vcb->VDS2 + Vcb->VDS2_Len, flags);
-#endif // UDF_DBG
-
-    Vcb->VolIdentChanged = FALSE;
+    status = UDFUpdateVDS(IrpContext, Vcb, Vcb->VDS1, Vcb->VDS1 + Vcb->VDS1_Len, flags);
+    if (!NT_SUCCESS(status))
+        goto release_bitmap;
+    status = UDFUpdateVDS(IrpContext, Vcb, Vcb->VDS2, Vcb->VDS2 + Vcb->VDS2_Len, flags);
+    if (!NT_SUCCESS(status))
+        goto release_bitmap;
 
     // Update Integrity Desc if any
     if (Vcb->LVid && Vcb->origIntegrityType == INTEGRITY_TYPE_CLOSE) {
-        UDFUpdateLogicalVolInt(IrpContext, Vcb, TRUE);
+        status = UDFUpdateLogicalVolInt(IrpContext, Vcb, TRUE);
+        if (!NT_SUCCESS(status))
+            goto release_bitmap;
     }
 
     if (flags & 1) {
@@ -1047,13 +1077,16 @@ UDFUmount__(
         Vcb->BitmapModified = FALSE;
     }
 
+    Vcb->VolIdentChanged = FALSE;
+
 //skip_update_bitmap:
 
-    Vcb->VcbState &= ~UDF_VCB_ASSUME_ALL_USED;
-
+release_bitmap:
     UDFReleaseResource(&(Vcb->BitMapResource1));
 
-    return STATUS_SUCCESS;
+clear_assume:
+    Vcb->VcbState &= ~UDF_VCB_ASSUME_ALL_USED;
+    return status;
 } // end UDFUmount__()
 
 /*************************************************************************/

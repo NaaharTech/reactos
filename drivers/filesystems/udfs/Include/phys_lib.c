@@ -151,6 +151,15 @@ UDFSendSectorIoChunk(
         Status = Irp->IoStatus.Status;
     }
 
+    /* A successful IRP with fewer bytes than requested did not transfer the
+     * complete sector range.  Do not report that metadata was persisted. */
+    if (NT_SUCCESS(Status) &&
+        (!NT_SUCCESS(Irp->IoStatus.Status) ||
+         Irp->IoStatus.Information != ByteCount)) {
+        Status = NT_SUCCESS(Irp->IoStatus.Status) ?
+                 STATUS_IO_DEVICE_ERROR : Irp->IoStatus.Status;
+    }
+
     //  Free MDL chain.
 
     while (Irp->MdlAddress != NULL) {
@@ -1097,6 +1106,10 @@ UDFWriteSectors(
         UDFSetModified(Vcb);
         if (Vcb->LVid && !Direct) {
             status = UDFUpdateLogicalVolInt(IrpContext, Vcb, FALSE);
+            if (!NT_SUCCESS(status)) {
+                *WrittenBytes = 0;
+                return status;
+            }
         }
     }
 
@@ -1113,7 +1126,6 @@ UDFWriteSectors(
 
     *WrittenBytes = NT_SUCCESS(status) ? ByteCount : 0;
 
-    ASSERT(NT_SUCCESS(status));
     return status;
 } // end UDFWriteSectors()
 

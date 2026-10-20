@@ -451,6 +451,12 @@ UDFMountVolume(
         //     ****  Read registry settings  ****
         UDFReadRegKeys(Vcb, FALSE, FALSE);
 
+        // Check and, only for the verified bounded class, repair an unclean
+        // disk before loading its bitmap/LVID into the VCB. A failed ordered
+        // commit must abort this mount so stale allocation state is not used.
+        RC = UDFRecoverDirtyVolumeBeforeLoad(IrpContext, Vcb);
+        if (!NT_SUCCESS(RC)) try_return(RC);
+
         Vcb->MountPhErrorCount = 0;
 
         UDFAcquireResourceExclusive(&(Vcb->BitMapResource1),TRUE);
@@ -1085,8 +1091,14 @@ Return Value:
     //  remaining after the purge then we can allow the volume to be locked.
     //
 
-    UDFFlushVolume(IrpContext, Vcb, 0);
-    UDFPurgeVolume(IrpContext, Vcb);
+    Status = UDFFlushVolume(IrpContext, Vcb, 0);
+    if (!NT_SUCCESS(Status)) {
+        return Status;
+    }
+    Status = UDFPurgeVolume(IrpContext, Vcb);
+    if (!NT_SUCCESS(Status)) {
+        return Status;
+    }
 
     //
     //  Now back out of our synchronization and wait for the lazy writer

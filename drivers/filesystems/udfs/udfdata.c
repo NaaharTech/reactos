@@ -128,6 +128,10 @@ Return Value:
                 }
 
                 IrpContext = UDFCreateIrpContext(Irp, Wait);
+                if (IrpContext == NULL) {
+                    Irp->IoStatus.Information = 0;
+                    ExRaiseStatus(STATUS_INSUFFICIENT_RESOURCES);
+                }
 
                 // Update the thread context information.
 

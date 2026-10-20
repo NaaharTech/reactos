@@ -433,6 +433,68 @@ UDFFindNextFI(
 #define UDFFindNextFI(a,b,c)  0
 #endif //UDF_CHECK_UTIL
 
+/* A directory index is also used while mounting an unclean volume.  Never
+ * construct a partial namespace by skipping a malformed FID: recovery must
+ * see the complete stream or reject it.  Check lengths before reading the
+ * variable part so a corrupt record cannot move the scan beyond the extent. */
+static NTSTATUS
+UDFValidateDirectoryFid(
+    IN PVCB Vcb,
+    IN PEXTENT_INFO ExtInfo,
+    IN const int8* Buffer,
+    IN uint32 Offset,
+    IN uint32 Length,
+    OUT uint32* RecordLength
+    )
+{
+    const FILE_IDENT_DESC* FileId;
+    const uint8* Bytes;
+    uint32 RawLength, AlignedLength, PhysicalLba, ExpectedLocation, i;
+    uint32 RefPartNum;
+    uint8 Checksum = 0;
+
+    if (Offset > Length || Length - Offset < sizeof(FILE_IDENT_DESC))
+        return STATUS_FILE_CORRUPT_ERROR;
+    FileId = (const FILE_IDENT_DESC*)(Buffer + Offset);
+    Bytes = (const uint8*)FileId;
+    RawLength = sizeof(FILE_IDENT_DESC) + FileId->lengthOfImpUse +
+                FileId->lengthFileIdent;
+    AlignedLength = (RawLength + 3) & ~((uint32)3);
+    if (AlignedLength > Length - Offset ||
+        FileId->descTag.tagIdent != TID_FILE_IDENT_DESC ||
+        (FileId->descTag.descVersion != 2 &&
+         FileId->descTag.descVersion != 3) ||
+        FileId->fileVersionNum != 1 ||
+        (FileId->fileCharacteristics & ~((uint8)0x1f)) ||
+        FileId->descTag.descCRCLength < RawLength - sizeof(tag) ||
+        FileId->descTag.descCRCLength > AlignedLength - sizeof(tag))
+        return STATUS_FILE_CORRUPT_ERROR;
+
+    for (i = 0; i < sizeof(tag); i++) {
+        if (i != 4)
+            Checksum += Bytes[i];
+    }
+    if (Checksum != FileId->descTag.tagChecksum ||
+        UDFCrc((uint8*)Bytes + sizeof(tag),
+               FileId->descTag.descCRCLength, 0) != FileId->descTag.descCRC)
+        return STATUS_CRC_ERROR;
+
+    PhysicalLba = UDFExtentOffsetToLba(Vcb, ExtInfo->Mapping, Offset,
+                                       NULL, NULL, NULL, NULL);
+    if (PhysicalLba == LBA_OUT_OF_EXTENT)
+        return STATUS_FILE_CORRUPT_ERROR;
+    RefPartNum = UDFGetRefPartNumByPhysLba(Vcb, PhysicalLba);
+    if (RefPartNum >= Vcb->PartitionMaps)
+        return STATUS_FILE_CORRUPT_ERROR;
+    ExpectedLocation = UDFPhysLbaToPart(Vcb, RefPartNum, PhysicalLba);
+    if (ExpectedLocation == LBA_OUT_OF_EXTENT ||
+        FileId->descTag.tagLocation != ExpectedLocation)
+        return STATUS_FILE_CORRUPT_ERROR;
+
+    *RecordLength = AlignedLength;
+    return STATUS_SUCCESS;
+}
+
 /*
     This routine scans directory extent & builds index table for FileIdents
  */
@@ -447,6 +509,7 @@ UDFIndexDirectory(
     PDIR_INDEX_ITEM DirNdx;
     PFILE_IDENT_DESC FileId;
     uint32 Offset = 0;
+    uint32 RecordLength;
 //    uint32 prevOffset = 0;
     uint32 DelCount = 0;
     uint_di Count = 0;
@@ -465,7 +528,7 @@ UDFIndexDirectory(
     // allocate buffer for the whole directory
     ASSERT((uint32)(ExtInfo->Length));
 
-    if (!ExtInfo->Length) {
+    if (!ExtInfo->Length || ExtInfo->Length > 0xffffffffu) {
 
         return STATUS_FILE_CORRUPT_ERROR;
     }
@@ -488,33 +551,25 @@ UDFIndexDirectory(
 //    prevOffset = 0;
     while(Offset<ExtInfo->Length) {
         DirPrint(("  Offset %x\n", Offset));
-        if (!FileId->descTag.tagIdent) {
-            DirPrint(("  term item\n"));
-            break;
-        }
-        if (FileId->descTag.tagIdent != TID_FILE_IDENT_DESC) {
-            DirPrint(("  Inv. tag %x\n", FileId->descTag.tagIdent));
-            Offset = UDFFindNextFI(buff, prevOffset, (ULONG)(ExtInfo->Length));
-            if (!Offset) {
-                DirPrint(("  can't find next\n"));
-                break;
-            } else {
-                DirPrint(("  found next offs %x\n", Offset));
-                FileId = (PFILE_IDENT_DESC)((buff)+Offset);
-            }
+        status = UDFValidateDirectoryFid(Vcb, ExtInfo, buff, Offset,
+                                         (uint32)ExtInfo->Length,
+                                         &RecordLength);
+        if (!NT_SUCCESS(status)) {
+            DbgFreePool(buff);
+            return status;
         }
         if (((ULONG)Offset & (Vcb->SectorSize-1)) > (Vcb->SectorSize-sizeof(FILE_IDENT_DESC))) {
             DirPrint(("  badly aligned\n", Offset));
         }
 //        prevOffset = Offset;
-        Offset += (FileId->lengthFileIdent + FileId->lengthOfImpUse + sizeof(FILE_IDENT_DESC) + 3) & (~((uint32)3));
+        Offset += RecordLength;
         FileId = (PFILE_IDENT_DESC)((buff)+Offset);
         Count++;
-        if (Offset+sizeof(FILE_IDENT_DESC) > ExtInfo->Length) {
+        if (ExtInfo->Length - Offset < sizeof(FILE_IDENT_DESC)) {
             if (Offset != ExtInfo->Length) {
-                UDFPrint(("  Trash at the end of Dir\n"));
+                DbgFreePool(buff);
+                return STATUS_FILE_CORRUPT_ERROR;
             }
-//            BrutePoint();
             break;
         }
     }
@@ -565,23 +620,15 @@ UDFIndexDirectory(
     FileId = (PFILE_IDENT_DESC)buff;
     status = STATUS_SUCCESS;
 //    prevOffset = 0;
-    while((Offset<ExtInfo->Length) && FileId->descTag.tagIdent) {
+    while(Offset<ExtInfo->Length) {
         // add new entry to index list
-        if (FileId->descTag.tagIdent != TID_FILE_IDENT_DESC) {
-            UDFPrint(("  Invalid tagIdent %x (expected %x) offst %x\n", FileId->descTag.tagIdent, TID_FILE_IDENT_DESC, Offset));
-            DirPrint(("    FileId: filen %x, iulen %x, charact %x\n",
-                FileId->lengthFileIdent, FileId->lengthOfImpUse, FileId->fileCharacteristics));
-            DirPrint(("    loc: @%x\n", UDFExtentOffsetToLba(Vcb, ExtInfo->Mapping, Offset, NULL, NULL, NULL, NULL)));
-            KdDump(FileId, sizeof(FileId->descTag));
-            Offset = UDFFindNextFI(buff, prevOffset, (ULONG)(ExtInfo->Length));
-            if (!Offset) {
-                DbgFreePool(buff);
-                UDFDirIndexFree(hDirNdx);
-                return STATUS_FILE_CORRUPT_ERROR;
-            } else {
-                DirPrint(("  found next offs %x\n", Offset));
-                FileId = (PFILE_IDENT_DESC)((buff)+Offset);
-            }
+        status = UDFValidateDirectoryFid(Vcb, ExtInfo, buff, Offset,
+                                         (uint32)ExtInfo->Length,
+                                         &RecordLength);
+        if (!NT_SUCCESS(status)) {
+            DbgFreePool(buff);
+            UDFDirIndexFree(hDirNdx);
+            return status;
         }
         DirNdx = UDFDirIndex(hDirNdx,Count);
         // allocate buffer & fill it with decompressed unicode filename
@@ -590,7 +637,7 @@ UDFIndexDirectory(
             hDirNdx->DelCount++;
         }
         DirPrint(("  FileId: offs %x, filen %x, iulen %x\n", Offset, FileId->lengthFileIdent, FileId->lengthOfImpUse));
-        DirNdx->Length = (FileId->lengthFileIdent + FileId->lengthOfImpUse + sizeof(FILE_IDENT_DESC) + 3) & (~((uint32)3));
+        DirNdx->Length = RecordLength;
         DirPrint(("  DirNdx: Length %x, Charact %x\n", DirNdx->Length, FileId->fileCharacteristics));
         if (FileId->fileCharacteristics & FILE_PARENT) {
             DirPrint(("  parent\n"));
@@ -654,11 +701,12 @@ UDFIndexDirectory(
         Offset += DirNdx->Length;
         FileId = (PFILE_IDENT_DESC)(((int8*)FileId)+DirNdx->Length);
         Count++;
-        if (Offset+sizeof(FILE_IDENT_DESC) > ExtInfo->Length) {
+        if (ExtInfo->Length - Offset < sizeof(FILE_IDENT_DESC)) {
             if (Offset != ExtInfo->Length) {
-                UDFPrint(("  Trash at the end of Dir (2)\n"));
+                DbgFreePool(buff);
+                UDFDirIndexFree(hDirNdx);
+                return STATUS_FILE_CORRUPT_ERROR;
             }
-//            BrutePoint();
             break;
         }
     } // while()
@@ -688,7 +736,7 @@ UDFReTagDirectory(
     uint32 l;
     uint32 Offset;
     int8* Buf;
-    NTSTATUS status;
+    NTSTATUS status = STATUS_SUCCESS;
     SIZE_T WrittenBytes;
     PUDF_FILE_INFO curFileInfo;
     PDIR_INDEX_ITEM DirNdx;
@@ -744,9 +792,9 @@ UDFReTagDirectory(
         }
 
         status = UDFWriteFile__(IrpContext, Vcb, FileInfo, Offset, l, FALSE, Buf, &WrittenBytes);
-        if (!NT_SUCCESS(status)) {
+        if (!NT_SUCCESS(status) || WrittenBytes != l) {
             DbgFreePool(Buf);
-            return status;
+            return NT_SUCCESS(status) ? STATUS_IO_DEVICE_ERROR : status;
         }
         if (curFileInfo) {
             DirNdx->FI_Flags |= UDF_FI_FLAG_FI_MODIFIED;
