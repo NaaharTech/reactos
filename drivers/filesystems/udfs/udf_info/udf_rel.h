@@ -66,6 +66,7 @@ typedef struct _EXTENT_INFO {
 #define EXTENT_FLAG_ALLOC_STD             0x00
 #define EXTENT_FLAG_ALLOC_SEQUENTIAL      0x01
 #define EXTENT_FLAG_ALLOC_MASK            0x03
+#define EXTENT_FLAG_IGNORE_HINT           0x04
 #define EXTENT_FLAG_PREALLOCATED          0x80
 #define EXTENT_FLAG_CUT_PREALLOCATED      0x40
 #define EXTENT_FLAG_VERIFY                0x20

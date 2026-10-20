@@ -432,6 +432,16 @@ UDFPhysLbaToMetadata(
     return LBA_OUT_OF_EXTENT;
 }
 
+typedef struct _UDF_METADATA_GROWTH_PROFILE {
+    ULONGLONG ScanTicks;
+    ULONGLONG AllocateTicks;
+    ULONGLONG ZeroTicks;
+    ULONGLONG CommitTicks;
+    uint32 ScanCalls;
+    uint32 AllocateCalls;
+    uint32 AlignmentRejects;
+} UDF_METADATA_GROWTH_PROFILE;
+
 /* Search free runs once instead of allocating and rolling back each
    overlapping alignment window on a large physical partition.  Keep the
    bitmap lock across discovery and reservation so the selected run cannot
@@ -445,11 +455,13 @@ UDFAllocAlignedMetadataRun(
     IN uint32 PhysEnd,
     IN uint32 Align,
     OUT PEXTENT_INFO ExtInfo,
-    OUT uint32* AllocStart
+    OUT uint32* AllocStart,
+    IN OUT UDF_METADATA_GROWTH_PROFILE* Profile
     )
 {
     uint32 searchStart, runStart, runLength, candidate, remainder;
     NTSTATUS status = STATUS_DISK_FULL;
+    LARGE_INTEGER phaseStart;
 
     ExtInfo->Mapping = NULL;
     ExtInfo->Length = 0;
@@ -460,8 +472,13 @@ UDFAllocAlignedMetadataRun(
     UDFAcquireResourceExclusive(&(Vcb->BitMapResource1), TRUE);
     searchStart = PhysStart;
     while (searchStart <= PhysEnd - Blocks) {
+        phaseStart = KeQueryPerformanceCounter(NULL);
         runStart = (uint32)UDFFindMinSuitableExtent(Vcb, Blocks,
-                      searchStart, PhysEnd, &runLength, 0);
+                      searchStart, PhysEnd, &runLength,
+                      EXTENT_FLAG_IGNORE_HINT);
+        Profile->ScanTicks += KeQueryPerformanceCounter(NULL).QuadPart -
+                              phaseStart.QuadPart;
+        Profile->ScanCalls++;
         if (runLength < Blocks)
             break;
         if (runStart < searchStart || runStart >= PhysEnd ||
@@ -473,15 +490,20 @@ UDFAllocAlignedMetadataRun(
         candidate = runStart;
         remainder = (candidate - PhysStart) % Align;
         if (remainder && Align - remainder > runLength - Blocks) {
+            Profile->AlignmentRejects++;
             searchStart = runStart + runLength;
             continue;
         }
         if (remainder)
             candidate += Align - remainder;
+        phaseStart = KeQueryPerformanceCounter(NULL);
         status = UDFAllocFreeExtent(IrpContext, Vcb,
                      ((int64)Blocks) << Vcb->SectorShift,
                      candidate, candidate + Blocks, ExtInfo,
                      EXTENT_FLAG_VERIFY);
+        Profile->AllocateTicks += KeQueryPerformanceCounter(NULL).QuadPart -
+                                  phaseStart.QuadPart;
+        Profile->AllocateCalls++;
         if (NT_SUCCESS(status)) {
             *AllocStart = candidate;
             break;
@@ -510,6 +532,7 @@ UDFGrowMetadataFile(
     uint32 newBitmapBytes, physStart, physEnd, candidate, mirrorCandidate, i;
     uint32 mainMapBytes, mirrorMapBytes;
     BOOLEAN duplicate;
+    BOOLEAN mirrorSpaceExhausted = FALSE;
     PCHAR newBitmap = NULL;
     int8* zeroBuffer = NULL;
     PEXTENT_MAP mainMap = NULL, mirrorMap = NULL;
@@ -517,6 +540,9 @@ UDFGrowMetadataFile(
     EXTENT_INFO physical, physicalMirror;
     SIZE_T written;
     NTSTATUS status = STATUS_DISK_FULL;
+    UDF_METADATA_GROWTH_PROFILE profile;
+    LARGE_INTEGER frequency, growthStart, phaseStart;
+    BOOLEAN profileStarted = FALSE, commitStarted = FALSE;
 
     if (!Vcb->MetadataFileInfo || !Vcb->MetadataMirrorFileInfo ||
         !Vcb->MetadataBitmapFileInfo)
@@ -577,10 +603,14 @@ UDFGrowMetadataFile(
 
     physical.Mapping = NULL;
     physicalMirror.Mapping = NULL;
+    candidate = mirrorCandidate = 0;
+    RtlZeroMemory(&profile, sizeof(profile));
+    growthStart = KeQueryPerformanceCounter(&frequency);
+    profileStarted = TRUE;
     physStart = UDFPartStart(Vcb, Vcb->MetadataPhysRef);
     physEnd = UDFPartEnd(Vcb, Vcb->MetadataPhysRef);
     status = UDFAllocAlignedMetadataRun(IrpContext, Vcb, grow,
-                 physStart, physEnd, align, &physical, &candidate);
+                 physStart, physEnd, align, &physical, &candidate, &profile);
     if (!NT_SUCCESS(status))
         goto cleanup;
     if (!physical.Mapping) {
@@ -599,11 +629,14 @@ UDFGrowMetadataFile(
     if (duplicate) {
         status = UDFAllocAlignedMetadataRun(IrpContext, Vcb, grow,
                      physStart, physEnd, align, &physicalMirror,
-                     &mirrorCandidate);
-        if (!NT_SUCCESS(status))
+                     &mirrorCandidate, &profile);
+        if (!NT_SUCCESS(status)) {
+            mirrorSpaceExhausted = (status == STATUS_DISK_FULL);
             goto release_physical;
+        }
         if (!physicalMirror.Mapping) {
             status = STATUS_DISK_FULL;
+            mirrorSpaceExhausted = TRUE;
             goto release_physical;
         }
         if (physicalMirror.Mapping[0].extLocation != mirrorCandidate ||
@@ -616,12 +649,15 @@ UDFGrowMetadataFile(
     }
 
     // Metadata File ADs must describe aligned, recorded allocation units.
+    phaseStart = KeQueryPerformanceCounter(NULL);
     for (i = 0; i < grow; i += 8) {
         uint32 chunk = min((uint32)8, grow - i);
         status = UDFWriteSectors(IrpContext, Vcb, TRUE, candidate + i,
                                  chunk, FALSE, zeroBuffer, &written);
         if (!NT_SUCCESS(status) || written != ((SIZE_T)chunk << Vcb->SectorShift)) {
             if (NT_SUCCESS(status)) status = STATUS_IO_DEVICE_ERROR;
+            profile.ZeroTicks += KeQueryPerformanceCounter(NULL).QuadPart -
+                                 phaseStart.QuadPart;
             goto release_physical;
         }
         if (duplicate) {
@@ -629,10 +665,14 @@ UDFGrowMetadataFile(
                                      chunk, FALSE, zeroBuffer, &written);
             if (!NT_SUCCESS(status) || written != ((SIZE_T)chunk << Vcb->SectorShift)) {
                 if (NT_SUCCESS(status)) status = STATUS_IO_DEVICE_ERROR;
+                profile.ZeroTicks += KeQueryPerformanceCounter(NULL).QuadPart -
+                                     phaseStart.QuadPart;
                 goto release_physical;
             }
         }
     }
+    profile.ZeroTicks += KeQueryPerformanceCounter(NULL).QuadPart -
+                         phaseStart.QuadPart;
 
     RtlCopyMemory(mainMap, oldMainMap, mainMapBytes - sizeof(EXTENT_MAP));
     RtlCopyMemory(mirrorMap, oldMirrorMap, mirrorMapBytes - sizeof(EXTENT_MAP));
@@ -666,6 +706,8 @@ UDFGrowMetadataFile(
         physicalMirror.Mapping = NULL;
     }
 
+    phaseStart = KeQueryPerformanceCounter(NULL);
+    commitStarted = TRUE;
     status = UDFFlushFile__(IrpContext, Vcb, Vcb->MetadataFileInfo, 0);
     if (!NT_SUCCESS(status)) goto failed_after_commit;
     status = UDFFlushFile__(IrpContext, Vcb, Vcb->MetadataMirrorFileInfo, 0);
@@ -695,10 +737,30 @@ release_physical:
     }
     UDFMarkSpaceAsXXX(Vcb, 0, physical.Mapping, AS_DISCARDED);
     MyFreePool__(physical.Mapping);
+    /* No new metadata mapping has been published. Once the first physical
+     * extent is released, an unavailable second mirror extent is ordinary
+     * ENOSPC. Failed zero writes and malformed mappings still fail closed. */
+    if (!mirrorSpaceExhausted)
+        Vcb->VcbState |= VCB_STATE_VOLUME_READ_ONLY;
+    goto cleanup;
 failed_after_commit:
     if (!NT_SUCCESS(status))
         Vcb->VcbState |= VCB_STATE_VOLUME_READ_ONLY;
 cleanup:
+    if (profileStarted) {
+        LARGE_INTEGER end = KeQueryPerformanceCounter(NULL);
+        if (commitStarted)
+            profile.CommitTicks = end.QuadPart - phaseStart.QuadPart;
+        /* One bounded line per metadata growth. Ticks and frequency avoid
+         * discarding sub-millisecond scan and allocation times. */
+        UDFPrint(("UDF metadata growth req=%x grow=%x status=%x main=%x mirror=%x scans=%x allocs=%x align_reject=%x ticks(scan/alloc/zero/commit/total)=%I64x/%I64x/%I64x/%I64x/%I64x freq=%I64x\n",
+                  RequestedBlocks, grow, status, candidate, mirrorCandidate,
+                  profile.ScanCalls, profile.AllocateCalls,
+                  profile.AlignmentRejects, profile.ScanTicks,
+                  profile.AllocateTicks, profile.ZeroTicks,
+                  profile.CommitTicks, end.QuadPart - growthStart.QuadPart,
+                  frequency.QuadPart));
+    }
     if (newBitmap) DbgFreePool(newBitmap);
     if (zeroBuffer) DbgFreePool(zeroBuffer);
     if (mainMap) MyFreePool__(mainMap);
@@ -1027,7 +1089,11 @@ UDFFindMinSuitableExtent(
     }
 
 #define _bitmap_freebit(off) (Vcb->BitmapFcb ? UDFIsBitmapBitFree(Vcb, hint - off) : UDFGetFreeBit((uint32*)Vcb->FSBM_Bitmap, hint - off))
-    if (hint < lbnStart || hint >= lbnLim) {
+    /* The metadata-growth caller must traverse physical runs in increasing
+     * order. Wrapping from SectorHint can select an unalignable later run,
+     * then skip an earlier suitable run when it advances SearchStart. */
+    if ((AllocFlags & EXTENT_FLAG_IGNORE_HINT) ||
+        hint < lbnStart || hint >= lbnLim) {
         hint = lbnStart;
     } else if (
         hint > lbnStart && _bitmap_freebit(0)) {
