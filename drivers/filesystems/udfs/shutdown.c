@@ -117,8 +117,16 @@ UDFCommonShutdown(
                 /* Keep the cached file state until its metadata has reached
                  * the volume.  The lock-volume path uses this same order. */
                 VolumeStatus = UDFFlushVolume(IrpContext, Vcb, 0);
-                if (NT_SUCCESS(VolumeStatus))
+                if (NT_SUCCESS(VolumeStatus)) {
                     VolumeStatus = UDFPurgeVolume(IrpContext, Vcb);
+                    /* Teardown during purge can flush an FE and reopen the
+                     * LVID. Finish that generation before lower shutdown. */
+                    if (NT_SUCCESS(VolumeStatus) && Vcb->Modified) {
+                        VolumeStatus = (Vcb->VcbState & VCB_STATE_VOLUME_READ_ONLY) ?
+                                       STATUS_IO_DEVICE_ERROR :
+                                       UDFFlushVolume(IrpContext, Vcb, 0);
+                    }
+                }
 
             } _SEH2_EXCEPT(EXCEPTION_EXECUTE_HANDLER) {
 

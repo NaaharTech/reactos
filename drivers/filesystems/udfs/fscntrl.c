@@ -1135,6 +1135,17 @@ Return Value:
 
     UDFFspClose(Vcb);
 
+    /* Purge and delayed closes can write metadata after the first full
+     * flush. A successful volume lock must leave their LVID generation
+     * closed and durable as well. */
+    if (Vcb->Modified) {
+        if (Vcb->VcbState & VCB_STATE_VOLUME_READ_ONLY)
+            return STATUS_IO_DEVICE_ERROR;
+        Status = UDFFlushVolume(IrpContext, Vcb, 0);
+        if (!NT_SUCCESS(Status))
+            return Status;
+    }
+
     //
     //  If the volume is already explicitly locked then fail.  We use the
     //  Vpb locked flag as an 'explicit lock' flag in the same way as Fat.
@@ -1281,7 +1292,9 @@ UDFDismountVolume(
 
     } else {
 
-        UDFFlushVolume(IrpContext, Vcb, 0);
+        Status = UDFFlushVolume(IrpContext, Vcb, 0);
+        if (!NT_SUCCESS(Status))
+            goto dismount_done;
 
         // Invalidate the volume right now.
         //
@@ -1312,6 +1325,7 @@ UDFDismountVolume(
         Status = STATUS_SUCCESS;
     }
 
+ dismount_done:
      // Release all of our resources
 
      UDFReleaseVcb(IrpContext, Vcb);
