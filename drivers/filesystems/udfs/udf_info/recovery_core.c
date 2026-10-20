@@ -430,6 +430,29 @@ BitmapBitIsSet(const RECOVERY_BITMAP *bitmap, uint32_t index)
         index & (RECOVERY_BITMAP_PAGE_BITS - 1)) : page->SetBits != 0;
 }
 
+/* Byte indices never straddle a sparse page. The caller masks the unused
+ * high bits of the final byte, including a uniformly set final page. */
+static uint8_t
+BitmapReadByte(const RECOVERY_BITMAP *bitmap, uint32_t byteIndex)
+{
+    const RECOVERY_BITMAP_PAGE *page =
+        &bitmap->Pages[byteIndex / RECOVERY_BITMAP_PAGE_BYTES];
+    return page->Data ? page->Data[byteIndex % RECOVERY_BITMAP_PAGE_BYTES] :
+           (page->SetBits ? 0xff : 0);
+}
+
+static uint32_t
+FirstByteBit(uint8_t value)
+{
+    uint32_t bit = 0;
+    /* Used only for a nonzero mismatch mask. */
+    while (!(value & 1)) {
+        value >>= 1;
+        bit++;
+    }
+    return bit;
+}
+
 static UDFS_RECOVERY_PROBE_STATUS
 BitmapSetRange(const UDFS_RECOVERY_READER *reader, RECOVERY_BITMAP *bitmap,
                uint32_t first, uint32_t count, uint32_t *alreadySet)
@@ -1070,24 +1093,28 @@ GraphRun(const UDFS_RECOVERY_READER *reader, UDFS_RECOVERY_PROBE *result,
         goto done;
     }
 
-    for (i = 0; i < result->PartitionBlocks; ++i) {
-        uint32_t byteOffset = 24 + (i >> 3);
-        uint8_t value;
+    for (i = 0; i < (result->PartitionBlocks + 7ULL) / 8; ++i) {
+        uint32_t byteOffset = 24 + i;
+        uint32_t first = i * 8, remaining = result->PartitionBlocks - first;
+        uint8_t value, owned, referencedFree, unowned;
+        uint8_t mask = remaining < 8 ? (uint8_t)((1U << remaining) - 1) : 0xff;
         status = ReadCachedByte(reader, result, &graph.PhysicalBitmapCache,
                     result->PartitionStart + result->PhysicalBitmapLbn +
                     byteOffset / UDFS_RECOVERY_SECTOR_SIZE,
                     byteOffset % UDFS_RECOVERY_SECTOR_SIZE, &value);
         if (status != UdfsRecoveryProbeValidLayout) goto done;
-        if ((value >> (i & 7)) & 1) {
-            if (BitmapBitIsSet(&graph.PhysicalOwned, i)) {
-                if (!result->ReferencedFreePhysicalBlocks)
-                    result->FirstReferencedFreePhysicalLbn = i;
-                result->ReferencedFreePhysicalBlocks++;
-            }
-        } else if (!BitmapBitIsSet(&graph.PhysicalOwned, i)) {
+        owned = BitmapReadByte(&graph.PhysicalOwned, i);
+        referencedFree = value & owned & mask;
+        unowned = (uint8_t)~(value | owned) & mask;
+        if (referencedFree) {
+            if (!result->ReferencedFreePhysicalBlocks)
+                result->FirstReferencedFreePhysicalLbn = first + FirstByteBit(referencedFree);
+            result->ReferencedFreePhysicalBlocks += CountByteBits(referencedFree);
+        }
+        if (unowned) {
             if (!result->UnownedPhysicalBlocks)
-                result->FirstUnownedPhysicalLbn = i;
-            result->UnownedPhysicalBlocks++;
+                result->FirstUnownedPhysicalLbn = first + FirstByteBit(unowned);
+            result->UnownedPhysicalBlocks += CountByteBits(unowned);
         }
     }
     for (i = 0; i < result->MetadataBlocks; ++i) {
@@ -1488,15 +1515,17 @@ UdfsRecoveryProbeLayout(const UDFS_RECOVERY_READER *reader,
         goto done;
     }
 
-    for (i = 0; i < result->PartitionBlocks; ++i) {
-        uint32_t byteOffset = 24 + (i >> 3);
+    for (i = 0; i < (result->PartitionBlocks + 7ULL) / 8; ++i) {
+        uint32_t byteOffset = 24 + i;
+        uint32_t remaining = result->PartitionBlocks - i * 8;
         uint8_t value;
         status = ReadCachedByte(reader, result, physicalCache,
                     result->PartitionStart + result->PhysicalBitmapLbn +
                     byteOffset / UDFS_RECOVERY_SECTOR_SIZE,
                     byteOffset % UDFS_RECOVERY_SECTOR_SIZE, &value);
         if (status != UdfsRecoveryProbeValidLayout) goto done;
-        result->PhysicalFreeBlocks += (value >> (i & 7)) & 1;
+        if (remaining < 8) value &= (uint8_t)((1U << remaining) - 1);
+        result->PhysicalFreeBlocks += CountByteBits(value);
     }
 
     for (i = 0; i < result->MetadataBlocks; ++i) {
