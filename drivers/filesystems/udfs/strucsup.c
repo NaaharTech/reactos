@@ -365,6 +365,9 @@ UDFTeardownStructures(
         // Loop until we find an Fcb we can't remove.
         //
         do {
+            BOOLEAN FinalFlushPending = !Delete &&
+                CurrentFcb->FileInfo &&
+                !(CurrentFcb->FcbState & UDF_FCB_DELETED);
 
             //
             // If the reference count is non-zero then break.
@@ -424,6 +427,21 @@ UDFTeardownStructures(
                     UDFAcquireFcbExclusive(IrpContext, ParentFcb, FALSE);
                 }
 
+                /* The old late flush ran with this parent FCB acquired.
+                 * Preserve that lock ordering, but write before detaching
+                 * the first name link so a failure still has a retry owner.
+                 * VcbMutex is not held during the metadata I/O. */
+                if (FinalFlushPending) {
+                    if (!NT_SUCCESS(UDFFlushFile__(IrpContext, Vcb,
+                                                   CurrentFcb->FileInfo, 0))) {
+                        UDFReleaseFcb(IrpContext, ParentFcb);
+                        ParentFcb = NULL;
+                        Abort = TRUE;
+                        break;
+                    }
+                    FinalFlushPending = FALSE;
+                }
+
                 //
                 // Lock the Vcb so we can look at references.
                 //
@@ -477,16 +495,12 @@ UDFTeardownStructures(
                 break;
             }
 
-            //
-            // Flush metadata to disk while FCB is still in FcbTable.
-            // Concurrent create during flush finds FCB via table lookup.
-            // After flush + table removal, on-disk FE is up-to-date for any
-            // subsequent disk read by a create that misses the table.
-            //
-            if (!Delete &&
-                CurrentFcb->FileInfo &&
-                !(CurrentFcb->FcbState & UDF_FCB_DELETED)) {
-                UDFFlushFile__(IrpContext, Vcb, CurrentFcb->FileInfo, 0);
+            /* Root/internal FCBs may have no parent LCB.  Their old final
+             * flush also ran without a parent lock. */
+            if (FinalFlushPending &&
+                !NT_SUCCESS(UDFFlushFile__(IrpContext, Vcb,
+                                           CurrentFcb->FileInfo, 0))) {
+                break;
             }
 
             //
