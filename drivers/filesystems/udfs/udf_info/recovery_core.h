@@ -43,6 +43,8 @@ typedef enum _UDFS_RECOVERY_PROBE_STATUS {
 typedef struct _UDFS_RECOVERY_PROBE {
     UDFS_RECOVERY_PROBE_STATUS Status;
     uint32_t FailureLba;
+    uint32_t AnchorLba;
+    uint32_t VdsStartLba;
     uint32_t PartitionStart;
     uint32_t PartitionBlocks;
     uint32_t PhysicalBitmapLbn;

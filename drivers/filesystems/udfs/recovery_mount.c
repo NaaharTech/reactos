@@ -112,6 +112,8 @@ UDFRecoverDirtyVolumeBeforeLoad(PIRP_CONTEXT IrpContext, PVCB Vcb)
     UNREFERENCED_PARAMETER(IrpContext);
     if (Vcb->SectorSize != UDFS_RECOVERY_SECTOR_SIZE ||
         Vcb->SessionStartLba != 0 ||
+        !Vcb->TrackMap ||
+        Vcb->TrackMap[Vcb->LastTrackNum].FirstLba != 0 ||
         Vcb->SessionEndLba == UINT32_MAX ||
         Vcb->TargetDeviceObject->DeviceType != FILE_DEVICE_DISK)
         return STATUS_SUCCESS;

@@ -1158,7 +1158,6 @@ done:
 }
 
 typedef struct _RECOVERY_LAYOUT_WORK {
-    uint8_t Anchor[UDFS_RECOVERY_SECTOR_SIZE];
     uint8_t Sector[UDFS_RECOVERY_SECTOR_SIZE];
     uint8_t Pd[UDFS_RECOVERY_SECTOR_SIZE];
     uint8_t Lvd[UDFS_RECOVERY_SECTOR_SIZE];
@@ -1170,47 +1169,139 @@ typedef struct _RECOVERY_LAYOUT_WORK {
     RECOVERY_EXTENT_LIST Lists[3];
 } RECOVERY_LAYOUT_WORK;
 
+/* Only the single-session disk class is supported. Keep the ordinary mount's
+ * anchor order (duplicate session/track candidates omitted), and never select
+ * another anchor merely because an accepted anchor's ownership graph fails. */
+static UDFS_RECOVERY_PROBE_STATUS
+ReadRecoveryDescriptors(const UDFS_RECOVERY_READER *reader,
+                        UDFS_RECOVERY_PROBE *result, uint32_t start,
+                        uint32_t bytes, uint8_t *sector,
+                        uint8_t *pd, uint8_t *lvd)
+{
+    UDFS_RECOVERY_PROBE_STATUS status;
+    uint32_t i, count;
+    int havePd = 0, haveLvd = 0, havePvd = 0;
+
+    if (!bytes || (bytes & (UDFS_RECOVERY_SECTOR_SIZE - 1)))
+        return UdfsRecoveryProbeCorrupt;
+    if (bytes > 256 * UDFS_RECOVERY_SECTOR_SIZE)
+        return UdfsRecoveryProbeUnsupported;
+    count = bytes / UDFS_RECOVERY_SECTOR_SIZE;
+    if (start >= reader->SectorCount || count > reader->SectorCount - start)
+        return UdfsRecoveryProbeCorrupt;
+    for (i = 0; i < count; ++i) {
+        uint16_t kind;
+        result->FailureLba = start + i;
+        status = ReadSector(reader, result, start + i, sector);
+        if (status != UdfsRecoveryProbeValidLayout) return status;
+        kind = Read16(sector);
+        status = ValidateTag(sector, kind, start + i);
+        if (status != UdfsRecoveryProbeValidLayout) return status;
+        switch (kind) {
+        case 1:
+            if (havePvd) return UdfsRecoveryProbeUnsupported;
+            havePvd = 1;
+            break;
+        case 4:
+        case 7:
+            break;
+        case 5:
+            if (havePd) return UdfsRecoveryProbeUnsupported;
+            if (Read16(sector + 10) < 196 - 16)
+                return UdfsRecoveryProbeCorrupt;
+            memcpy(pd, sector, UDFS_RECOVERY_SECTOR_SIZE);
+            havePd = 1;
+            break;
+        case 6:
+            if (haveLvd) return UdfsRecoveryProbeUnsupported;
+            /* Include the complete supported partition map in the CRC. */
+            if (Read16(sector + 10) < 510 - 16)
+                return UdfsRecoveryProbeCorrupt;
+            memcpy(lvd, sector, UDFS_RECOVERY_SECTOR_SIZE);
+            haveLvd = 1;
+            break;
+        case 8:
+            if (!havePd || !haveLvd || !havePvd)
+                return UdfsRecoveryProbeCorrupt;
+            result->VdsStartLba = start;
+            result->FailureLba = 0;
+            return UdfsRecoveryProbeValidLayout;
+        default:
+            /* In particular, do not silently ignore a VDS continuation and
+             * validate a different descriptor set from the ordinary mount. */
+            return UdfsRecoveryProbeUnsupported;
+        }
+    }
+    return UdfsRecoveryProbeCorrupt;
+}
+
+static UDFS_RECOVERY_PROBE_STATUS
+SelectRecoveryDescriptors(const UDFS_RECOVERY_READER *reader,
+                          UDFS_RECOVERY_PROBE *result, uint8_t *sector,
+                          uint8_t *pd, uint8_t *lvd)
+{
+    UDFS_RECOVERY_PROBE_STATUS status = UdfsRecoveryProbeCorrupt;
+    uint32_t last = reader->SectorCount - 1;
+    uint32_t anchors[8];
+    uint32_t i, mainStart, mainBytes, reserveStart, reserveBytes;
+
+    anchors[0] = 256;
+    anchors[1] = 512;
+    anchors[2] = last - 256;
+    anchors[3] = last - 255;
+    anchors[4] = last - 258;
+    anchors[5] = last - 2;
+    anchors[6] = last;
+    anchors[7] = last - 512;
+    for (i = 0; i < 8; ++i) {
+        if (!anchors[i] || anchors[i] > last) continue;
+        result->FailureLba = anchors[i];
+        status = ReadSector(reader, result, anchors[i], sector);
+        if (status == UdfsRecoveryProbeValidLayout)
+            status = ValidateTag(sector, 2, anchors[i]);
+        if (status == UdfsRecoveryProbeUnsupported) return status;
+        if (status != UdfsRecoveryProbeValidLayout) continue;
+        result->AnchorLba = anchors[i];
+        /* A valid earlier anchor remains authoritative, even if its VDS is
+         * unusable. Falling through to a later one could recover a stale view. */
+        if (Read16(sector + 10) < 32 - 16)
+            return UdfsRecoveryProbeCorrupt;
+        mainBytes = Read32(sector + 16);
+        mainStart = Read32(sector + 20);
+        reserveBytes = Read32(sector + 24);
+        reserveStart = Read32(sector + 28);
+        status = ReadRecoveryDescriptors(reader, result, mainStart, mainBytes,
+                                          sector, pd, lvd);
+        if (status != UdfsRecoveryProbeCorrupt &&
+            status != UdfsRecoveryProbeIoError)
+            return status;
+        return ReadRecoveryDescriptors(reader, result, reserveStart,
+                                         reserveBytes, sector, pd, lvd);
+    }
+    return status;
+}
+
 UDFS_RECOVERY_PROBE_STATUS
 UdfsRecoveryPeekIntegrity(const UDFS_RECOVERY_READER *reader,
                           uint8_t *integrityType)
 {
     uint8_t sector[UDFS_RECOVERY_SECTOR_SIZE];
+    uint8_t pd[UDFS_RECOVERY_SECTOR_SIZE];
     uint8_t lvd[UDFS_RECOVERY_SECTOR_SIZE];
     UDFS_RECOVERY_PROBE scratch;
     UDFS_RECOVERY_PROBE_STATUS status;
-    uint32_t vdsLength, vdsStart, extentBytes, extentLba;
+    uint32_t extentBytes, extentLba;
     uint32_t i, count;
-    int haveLvd = 0, haveLvid = 0;
+    int haveLvid = 0;
 
     if (!reader || !reader->ReadSector || !integrityType ||
         reader->SectorCount <= 256)
         return UdfsRecoveryProbeInvalidInput;
     *integrityType = 0xff;
     memset(&scratch, 0, sizeof(scratch));
-    status = ReadSector(reader, &scratch, 256, sector);
+    status = SelectRecoveryDescriptors(reader, &scratch, sector, pd, lvd);
     if (status != UdfsRecoveryProbeValidLayout) return status;
-    status = ValidateTag(sector, 2, 256);
-    if (status != UdfsRecoveryProbeValidLayout) return status;
-    vdsLength = Read32(sector + 16);
-    vdsStart = Read32(sector + 20);
-    if (!vdsLength || vdsLength > 256 * UDFS_RECOVERY_SECTOR_SIZE)
-        return UdfsRecoveryProbeUnsupported;
-    count = (vdsLength + UDFS_RECOVERY_SECTOR_SIZE - 1) /
-            UDFS_RECOVERY_SECTOR_SIZE;
-    if (vdsStart >= reader->SectorCount ||
-        count > reader->SectorCount - vdsStart)
-        return UdfsRecoveryProbeCorrupt;
-    for (i = 0; i < count; ++i) {
-        status = ReadSector(reader, &scratch, vdsStart + i, sector);
-        if (status != UdfsRecoveryProbeValidLayout) return status;
-        if (Read16(sector) != 6) continue;
-        status = ValidateTag(sector, 6, vdsStart + i);
-        if (status != UdfsRecoveryProbeValidLayout) return status;
-        if (haveLvd) return UdfsRecoveryProbeUnsupported;
-        memcpy(lvd, sector, UDFS_RECOVERY_SECTOR_SIZE);
-        haveLvd = 1;
-    }
-    if (!haveLvd || Read32(lvd + 212) != UDFS_RECOVERY_SECTOR_SIZE ||
+    if (Read32(lvd + 212) != UDFS_RECOVERY_SECTOR_SIZE ||
         Read32(lvd + 268) != 2 || Read32(lvd + 264) != 70 ||
         lvd[440] != 1 || lvd[441] != 6 ||
         lvd[446] != 2 || lvd[447] != 64 ||
@@ -1252,15 +1343,14 @@ UdfsRecoveryProbeLayout(const UDFS_RECOVERY_READER *reader,
                         UDFS_RECOVERY_PROBE *result)
 {
     RECOVERY_LAYOUT_WORK *work;
-    uint8_t *anchor, *sector, *pd, *lvd;
+    uint8_t *sector, *pd, *lvd;
     uint8_t *mainSector, *mirrorSector, *prevailingLvid;
     RECOVERY_SECTOR_CACHE *physicalCache, *metadataCache;
     RECOVERY_EXTENT_LIST *mainFile, *mirrorFile, *bitmapFile;
     UDFS_RECOVERY_PROBE_STATUS status;
-    uint32_t vdsLength, vdsStart, vdsSectors, i, partitionNumber;
+    uint32_t i, partitionNumber;
     uint32_t mapLength, bitmapBytes, bitmapExtentBytes;
     const uint8_t *metadataMap;
-    int havePd = 0, haveLvd = 0;
 
     if (!result) return UdfsRecoveryProbeInvalidInput;
     memset(result, 0, sizeof(*result));
@@ -1279,7 +1369,6 @@ UdfsRecoveryProbeLayout(const UDFS_RECOVERY_READER *reader,
         return result->Status;
     }
     memset(work, 0, sizeof(*work));
-    anchor = work->Anchor;
     sector = work->Sector;
     pd = work->Pd;
     lvd = work->Lvd;
@@ -1292,42 +1381,9 @@ UdfsRecoveryProbeLayout(const UDFS_RECOVERY_READER *reader,
     mirrorFile = &work->Lists[1];
     bitmapFile = &work->Lists[2];
 
-    status = ReadSector(reader, result, 256, anchor);
+    status = SelectRecoveryDescriptors(reader, result, sector, pd, lvd);
     if (status != UdfsRecoveryProbeValidLayout) goto done;
-    status = ValidateTag(anchor, 2, 256);
-    if (status != UdfsRecoveryProbeValidLayout) goto done;
-    vdsLength = Read32(anchor + 16);
-    vdsStart = Read32(anchor + 20);
-    if (!vdsLength || vdsLength > 256 * UDFS_RECOVERY_SECTOR_SIZE) {
-        status = UdfsRecoveryProbeUnsupported;
-        goto done;
-    }
-    vdsSectors = (vdsLength + UDFS_RECOVERY_SECTOR_SIZE - 1) /
-                 UDFS_RECOVERY_SECTOR_SIZE;
-    if (vdsStart >= reader->SectorCount ||
-        vdsSectors > reader->SectorCount - vdsStart) {
-        status = UdfsRecoveryProbeCorrupt;
-        goto done;
-    }
-    for (i = 0; i < vdsSectors; ++i) {
-        uint16_t kind;
-        status = ReadSector(reader, result, vdsStart + i, sector);
-        if (status != UdfsRecoveryProbeValidLayout) goto done;
-        kind = Read16(sector);
-        if (kind != 5 && kind != 6) continue;
-        status = ValidateTag(sector, kind, vdsStart + i);
-        if (status != UdfsRecoveryProbeValidLayout) goto done;
-        if (kind == 5) {
-            if (havePd) { status = UdfsRecoveryProbeUnsupported; goto done; }
-            memcpy(pd, sector, UDFS_RECOVERY_SECTOR_SIZE);
-            havePd = 1;
-        } else {
-            if (haveLvd) { status = UdfsRecoveryProbeUnsupported; goto done; }
-            memcpy(lvd, sector, UDFS_RECOVERY_SECTOR_SIZE);
-            haveLvd = 1;
-        }
-    }
-    if (!havePd || !haveLvd || Read32(lvd + 212) != UDFS_RECOVERY_SECTOR_SIZE) {
+    if (Read32(lvd + 212) != UDFS_RECOVERY_SECTOR_SIZE) {
         status = UdfsRecoveryProbeUnsupported;
         goto done;
     }
