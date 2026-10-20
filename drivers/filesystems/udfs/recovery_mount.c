@@ -128,7 +128,12 @@ UDFRecoverDirtyVolumeBeforeLoad(PIRP_CONTEXT IrpContext, PVCB Vcb)
     reader.Free = UdfsRecoveryMountFree;
     reader.SectorCount = Vcb->SessionEndLba + 1;
     status = UdfsRecoveryPeekIntegrity(&reader, &integrityType);
-    if (status != UdfsRecoveryProbeValidLayout || integrityType != 0)
+    if (status != UdfsRecoveryProbeValidLayout) {
+        UDFPrint(("UDFS recovery: descriptor/integrity probe refused %u; existing mount policy\n",
+                  (ULONG)status));
+        return STATUS_SUCCESS;
+    }
+    if (integrityType != 0)
         return STATUS_SUCCESS;
     /* A dirty write-protected device remains available through the existing
      * read-only policy. Do not turn an optional repair into a mount failure. */
@@ -137,6 +142,9 @@ UDFRecoverDirtyVolumeBeforeLoad(PIRP_CONTEXT IrpContext, PVCB Vcb)
         STATUS_MEDIA_WRITE_PROTECTED)
         return STATUS_SUCCESS;
     status = UdfsRecoveryProbeLayout(&reader, &before);
+    UDFPrint(("UDFS recovery: anchor %lx VDS %lx, probe %u at %lx\n",
+              (ULONG)before.AnchorLba, (ULONG)before.VdsStartLba,
+              (ULONG)status, (ULONG)before.FailureLba));
     /* The probe has not written anything yet. Incomplete validation keeps
      * the pre-existing dirty/read-only mount policy. */
     if (status == UdfsRecoveryProbeNoMemory ||
