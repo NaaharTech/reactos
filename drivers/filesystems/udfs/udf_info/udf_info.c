@@ -1711,15 +1711,16 @@ UDFUnlinkFile__(
     uint8 OldFiFlags = 0;
     uint32 OldFeFlags = 0;
     long_ad OldIcb;
+    FILE_ID RemovedFileId;
+    BOOLEAN RemoveFileId;
 
     AdPrint(("UDFUnlinkFile__:\n"));
     if (!FileInfo) return STATUS_SUCCESS;
 
     ValidateFileInfo(FileInfo);
-
-    // now we can't call this if there is no OS-specific File Desc. present
-    if (FileInfo->Fcb)
-        UDFRemoveFileId__(Vcb, FileInfo);
+    RemoveFileId = FileInfo->Fcb != NULL;
+    if (RemoveFileId)
+        RemovedFileId = UDFGetNTFileId(Vcb, FileInfo);
 
     // check references
     Dloc = FileInfo->Dloc;
@@ -1989,6 +1990,10 @@ cleanup_SDir:
         }
     }
 
+    /* A refused or failed unlink leaves the namespace entry reachable.
+     * Drop its by-ID path cache only after the namespace change succeeds. */
+    if (RemoveFileId)
+        UDFRemoveFileId(Vcb, RemovedFileId);
     return STATUS_SUCCESS;
 } // end UDFUnlinkFile__()
 
