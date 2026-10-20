@@ -268,7 +268,8 @@ UDFCommonCleanup(
                      * into an in-memory deletion or deferred block release. */
                     UnlinkError = RC;
                     DeleteAttempted = FALSE;
-                    Fcb->FcbState &= ~UDF_FCB_DELETE_ON_CLOSE;
+                    Fcb->FcbState &= ~(UDF_FCB_DELETE_ON_CLOSE |
+                                       UDF_FCB_DELETE_PARENT);
                     FileObject->DeletePending = FALSE;
                     goto delete_attempt_done;
                 }
@@ -276,11 +277,6 @@ UDFCommonCleanup(
                 if ((lc <= 1) &&
                    !UDFIsSDirDeleted(Fcb->FileInfo->Dloc->SDirInfo)) {
                     RC = UDFMarkStreamsForDeletion(IrpContext, Vcb, Fcb, TRUE);
-                }
-
-                if ((Fcb->FcbState & UDF_FCB_DELETE_PARENT) && Fcb->ParentFcb) {
-                    ASSERT(!(Fcb->ParentFcb->FcbState & UDF_FCB_ROOT_DIRECTORY));
-                    Fcb->ParentFcb->FcbState |= UDF_FCB_DELETE_ON_CLOSE;
                 }
 
                 // Defer block freeing to teardown when this is the last link.
@@ -298,7 +294,9 @@ UDFCommonCleanup(
                      * retain the FE allocation and must not report removal. */
                     UnlinkError = RC;
                     DeleteAttempted = FALSE;
-                    Fcb->FcbState &= ~UDF_FCB_DELETE_ON_CLOSE;
+                    Fcb->FcbState &= ~(UDF_FCB_DELETE_ON_CLOSE |
+                                       UDF_FCB_DELETE_PARENT);
+                    FileObject->DeletePending = FALSE;
                     if (!HadFreeDeferred && NextFileInfo->Dloc)
                         NextFileInfo->Dloc->FE_Flags &= ~UDF_FE_FLAG_FREE_DEFERRED;
                 } else if (RC == STATUS_CANNOT_DELETE) {
@@ -316,16 +314,17 @@ UDFCommonCleanup(
 
                     } else {
 
-                        // Can't delete due to references/permissions/other.
-                        BrutePoint();
-                        ForcedCleanUp = TRUE;
-                        Fcb->FcbState |= UDF_FCB_DELETED;
-                        // Remove LCB from parent's splay trees immediately.
-                        // Parent is held exclusive (AcquiredParentFCB).
-                        if (Ccb->Lcb && Ccb->Lcb->ParentFcb) {
-                            UdfRemoveNameLinks(Ccb->Lcb->ParentFcb, Ccb->Lcb);
-                        }
-                        RC = STATUS_SUCCESS;
+                        /* No namespace commit occurred. Keep the FID, FE,
+                         * allocation and prefix available for a later open.
+                         * In particular, a reference refusal is not a
+                         * successful delete of the last ordinary link. */
+                        UnlinkError = RC;
+                        DeleteAttempted = FALSE;
+                        Fcb->FcbState &= ~(UDF_FCB_DELETE_ON_CLOSE |
+                                           UDF_FCB_DELETE_PARENT);
+                        FileObject->DeletePending = FALSE;
+                        if (!HadFreeDeferred && NextFileInfo->Dloc)
+                            NextFileInfo->Dloc->FE_Flags &= ~UDF_FE_FLAG_FREE_DEFERRED;
                     }
 
                 } else {
@@ -352,6 +351,11 @@ UDFCommonCleanup(
 
 delete_attempt_done:
             if (DeleteAttempted) {
+                /* A failed unlink must not schedule deletion of its parent. */
+                if ((Fcb->FcbState & UDF_FCB_DELETE_PARENT) && Fcb->ParentFcb) {
+                    ASSERT(!(Fcb->ParentFcb->FcbState & UDF_FCB_ROOT_DIRECTORY));
+                    Fcb->ParentFcb->FcbState |= UDF_FCB_DELETE_ON_CLOSE;
+                }
                 // Prevent SetEOF operations on completely deleted data streams
                 if (lc < 1) {
                     Fcb->NtReqFCBFlags |= UDF_NTREQ_FCB_DELETED;
