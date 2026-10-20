@@ -528,11 +528,11 @@ UDFGrowMetadataFile(
     IN uint32 RequestedBlocks
     )
 {
-    uint32 unit, align, grow, oldBlocks, newBlocks, oldMapBytes;
+    uint32 unit, align, grow, preferredGrow, minGrow, nextGrow, fallbacks = 0;
+    uint32 oldBlocks, newBlocks, oldMapBytes;
     uint32 newBitmapBytes, physStart, physEnd, candidate, mirrorCandidate, i;
     uint32 mainMapBytes, mirrorMapBytes;
     BOOLEAN duplicate;
-    BOOLEAN mirrorSpaceExhausted = FALSE;
     PCHAR newBitmap = NULL;
     int8* zeroBuffer = NULL;
     PEXTENT_MAP mainMap = NULL, mirrorMap = NULL;
@@ -574,11 +574,16 @@ UDFGrowMetadataFile(
     align = Vcb->MetadataAlignUnit ? Vcb->MetadataAlignUnit : 1;
     // A fixed 512-block increment exhausts the Metadata File Entry's short
     // AD space on large directories long before the physical partition fills.
-    // Geometric growth keeps the number of ADs bounded for large volumes.
+    // Prefer geometric growth to bound AD count, but a fragmented disk may
+    // have only smaller aligned runs. Fall back before reporting ENOSPC.
+    if (!RequestedBlocks)
+        return STATUS_INVALID_PARAMETER;
     grow = max(RequestedBlocks, max((uint32)512, oldBlocks / 2));
     if (grow > MAXULONG - (unit - 1))
         return STATUS_DISK_FULL;
+    minGrow = ((RequestedBlocks + unit - 1) / unit) * unit;
     grow = ((grow + unit - 1) / unit) * unit;
+    preferredGrow = grow;
     if (oldBlocks > MAXULONG - grow)
         return STATUS_DISK_FULL;
     newBlocks = oldBlocks + grow;
@@ -609,44 +614,77 @@ UDFGrowMetadataFile(
     profileStarted = TRUE;
     physStart = UDFPartStart(Vcb, Vcb->MetadataPhysRef);
     physEnd = UDFPartEnd(Vcb, Vcb->MetadataPhysRef);
-    status = UDFAllocAlignedMetadataRun(IrpContext, Vcb, grow,
-                 physStart, physEnd, align, &physical, &candidate, &profile);
-    if (!NT_SUCCESS(status))
-        goto cleanup;
-    if (!physical.Mapping) {
-        status = STATUS_DISK_FULL;
-        goto cleanup;
-    }
-    if (physical.Mapping[0].extLocation != candidate ||
-        physical.Mapping[1].extLength) {
-        status = STATUS_FILE_CORRUPT_ERROR;
-        goto release_physical;
-    }
-
-    // Duplicated metadata requires a second, disjoint physical allocation.
-    // Its recorded AD has the same logical length as the primary AD.
-    mirrorCandidate = candidate;
-    if (duplicate) {
+    for (;;) {
         status = UDFAllocAlignedMetadataRun(IrpContext, Vcb, grow,
-                     physStart, physEnd, align, &physicalMirror,
-                     &mirrorCandidate, &profile);
+                     physStart, physEnd, align, &physical, &candidate, &profile);
         if (!NT_SUCCESS(status)) {
-            mirrorSpaceExhausted = (status == STATUS_DISK_FULL);
-            goto release_physical;
+            if (physical.Mapping) {
+                status = STATUS_FILE_CORRUPT_ERROR;
+                goto release_physical;
+            }
+            if (status == STATUS_DISK_FULL)
+                goto reduce_growth;
+            goto cleanup;
         }
-        if (!physicalMirror.Mapping) {
+        if (!physical.Mapping) {
             status = STATUS_DISK_FULL;
-            mirrorSpaceExhausted = TRUE;
-            goto release_physical;
+            goto reduce_growth;
         }
-        if (physicalMirror.Mapping[0].extLocation != mirrorCandidate ||
-            physicalMirror.Mapping[1].extLength ||
-            (mirrorCandidate < candidate + grow &&
-             candidate < mirrorCandidate + grow)) {
+        if (physical.Mapping[0].extLocation != candidate ||
+            physical.Mapping[1].extLength) {
             status = STATUS_FILE_CORRUPT_ERROR;
             goto release_physical;
         }
+
+        // Duplicated metadata requires a second, disjoint physical allocation.
+        // Its recorded AD has the same logical length as the primary AD.
+        mirrorCandidate = candidate;
+        if (duplicate) {
+            status = UDFAllocAlignedMetadataRun(IrpContext, Vcb, grow,
+                         physStart, physEnd, align, &physicalMirror,
+                         &mirrorCandidate, &profile);
+            if (!NT_SUCCESS(status)) {
+                if (status == STATUS_DISK_FULL)
+                    goto release_and_reduce_growth;
+                goto release_physical;
+            }
+            if (!physicalMirror.Mapping) {
+                status = STATUS_DISK_FULL;
+                goto release_and_reduce_growth;
+            }
+            if (physicalMirror.Mapping[0].extLocation != mirrorCandidate ||
+                physicalMirror.Mapping[1].extLength ||
+                (mirrorCandidate < candidate + grow &&
+                 candidate < mirrorCandidate + grow)) {
+                status = STATUS_FILE_CORRUPT_ERROR;
+                goto release_physical;
+            }
+        }
+        break;
+
+release_and_reduce_growth:
+        if (physicalMirror.Mapping) {
+            UDFMarkSpaceAsXXX(Vcb, 0, physicalMirror.Mapping, AS_DISCARDED);
+            MyFreePool__(physicalMirror.Mapping);
+            physicalMirror.Mapping = NULL;
+        }
+        UDFMarkSpaceAsXXX(Vcb, 0, physical.Mapping, AS_DISCARDED);
+        MyFreePool__(physical.Mapping);
+        physical.Mapping = NULL;
+reduce_growth:
+        if (grow <= minGrow)
+            goto cleanup;
+        nextGrow = max(minGrow, (grow / 2 / unit) * unit);
+        if (nextGrow >= grow) {
+            status = STATUS_DISK_FULL;
+            goto cleanup;
+        }
+        grow = nextGrow;
+        fallbacks++;
     }
+    newBlocks = oldBlocks + grow;
+    newBitmapBytes = max((newBlocks >> 3) + ((newBlocks & 7) != 0),
+                         Vcb->MetadataBitmapByteCount);
 
     // Metadata File ADs must describe aligned, recorded allocation units.
     phaseStart = KeQueryPerformanceCounter(NULL);
@@ -737,11 +775,8 @@ release_physical:
     }
     UDFMarkSpaceAsXXX(Vcb, 0, physical.Mapping, AS_DISCARDED);
     MyFreePool__(physical.Mapping);
-    /* No new metadata mapping has been published. Once the first physical
-     * extent is released, an unavailable second mirror extent is ordinary
-     * ENOSPC. Failed zero writes and malformed mappings still fail closed. */
-    if (!mirrorSpaceExhausted)
-        Vcb->VcbState |= VCB_STATE_VOLUME_READ_ONLY;
+    /* Non-ENOSPC and post-reservation failures still fail closed. */
+    Vcb->VcbState |= VCB_STATE_VOLUME_READ_ONLY;
     goto cleanup;
 failed_after_commit:
     if (!NT_SUCCESS(status))
@@ -753,8 +788,9 @@ cleanup:
             profile.CommitTicks = end.QuadPart - phaseStart.QuadPart;
         /* One bounded line per metadata growth. Ticks and frequency avoid
          * discarding sub-millisecond scan and allocation times. */
-        UDFPrint(("UDF metadata growth req=%x grow=%x status=%x main=%x mirror=%x scans=%x allocs=%x align_reject=%x ticks(scan/alloc/zero/commit/total)=%I64x/%I64x/%I64x/%I64x/%I64x freq=%I64x\n",
-                  RequestedBlocks, grow, status, candidate, mirrorCandidate,
+        UDFPrint(("UDF metadata growth req=%x preferred=%x grow=%x fallback=%x status=%x main=%x mirror=%x scans=%x allocs=%x align_reject=%x ticks(scan/alloc/zero/commit/total)=%I64x/%I64x/%I64x/%I64x/%I64x freq=%I64x\n",
+                  RequestedBlocks, preferredGrow, grow, fallbacks, status,
+                  candidate, mirrorCandidate,
                   profile.ScanCalls, profile.AllocateCalls,
                   profile.AlignmentRejects, profile.ScanTicks,
                   profile.AllocateTicks, profile.ZeroTicks,
