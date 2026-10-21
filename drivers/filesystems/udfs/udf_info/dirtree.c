@@ -818,6 +818,10 @@ UDFReTagDirectoryWindows(PIRP_CONTEXT IrpContext, PVCB Vcb,
     while ((entry = UDFDirIndexScan(ScanContext, NULL))) {
         offset = entry->Offset;
         length = entry->Length;
+        /* Length0/Offset0 denotes an index-only node, not a disk FID.
+         * Leave its owner/dirty state intact for later materialization. */
+        if (!length && !offset)
+            continue;
         if (UDFReTagOwnsUnwrittenFid(FileInfo,entry)) {
             UDFReTagCountPending(Vcb);
             continue; // Retain this FI's complete buffer and dirty flag.
@@ -968,6 +972,8 @@ UDFReTagDirectory(
     }
 
     while((DirNdx = UDFDirIndexScan(&ScanContext, NULL))) {
+        if (!DirNdx->Length && !DirNdx->Offset)
+            continue;
         /* The low-memory/general fallback must use the same ownership
          * rule; it must not fabricate a FID from a short-success EOF read. */
         if (UDFReTagOwnsUnwrittenFid(FileInfo,DirNdx)) {

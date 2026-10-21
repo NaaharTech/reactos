@@ -134,6 +134,7 @@ UDFUserFsCtrlRequest(
             values = Irp->AssociatedIrp.SystemBuffer;
             RtlCopyMemory(values,vcb->MetadataBatchDiag,sizeof(vcb->MetadataBatchDiag));
             RtlZeroMemory(values+48,16*sizeof(ULONG));
+            values[58] = vcb->MetadataBatchDiag[58]; // successful batched FIDs, not an FCB snapshot
             UDFLockFcbTable(IrpContext,vcb);
             UDFLockVcb(IrpContext,vcb);
             while ((next = UDFGetNextFcb(IrpContext,vcb,&restart))) {

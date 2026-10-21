@@ -249,6 +249,260 @@ UDFReleaseMetadataOwner(PIRP_CONTEXT IrpContext, PVCB Vcb, PFCB Fcb)
     return status;
 }
 
+
+/* A volume cohort already owns all of these regular-file Main/Paging
+ * resources and has committed their complete FEs. Publish only contiguous
+ * in-range FIDs under their canonical directory Main resource. No cache or
+ * reference survives this call; unsupported entries remain for tree flush. */
+#define UDF_FID_WINDOW_BYTES 16384
+
+typedef struct _UDF_FID_WINDOW_ITEM {
+    uint32 Owner;
+    uint32 Offset;
+    uint32 Length;
+    PDIR_INDEX_ITEM Index;
+} UDF_FID_WINDOW_ITEM;
+
+typedef struct _UDF_FID_PUBLISH_WINDOW {
+    uint32 Order[UDF_FE_BATCH_CAPACITY];
+    UDF_FID_WINDOW_ITEM Item[UDF_FE_BATCH_CAPACITY];
+    int8 Bytes[UDF_FID_WINDOW_BYTES];
+} UDF_FID_PUBLISH_WINDOW;
+
+static BOOLEAN
+UDFNewFidRecorded(PVCB Vcb, PUDF_FILE_INFO Directory, int64 Offset, SIZE_T Length)
+{
+    SIZE_T available;
+    uint32 flags, lba;
+    if (Offset < 0 || Directory->Dloc->DataLoc.Offset ||
+        Directory->Dloc->DataLoc.Length < Offset ||
+        Length > (uint64)(Directory->Dloc->DataLoc.Length - Offset))
+        return FALSE;
+    while (Length) {
+        lba = UDFExtentOffsetToLba(Vcb, Directory->Dloc->DataLoc.Mapping,
+                                  Offset, NULL, &available, &flags, NULL);
+        if (lba == LBA_OUT_OF_EXTENT || !available ||
+            flags != EXTENT_RECORDED_ALLOCATED)
+            return FALSE;
+        available = min(available, Length);
+        Offset += available;
+        Length -= available;
+    }
+    return TRUE;
+}
+
+static PDIR_INDEX_ITEM
+UDFNewFidReady(PVCB Vcb, UDF_FE_OWNER* Owner, PUDF_FILE_INFO Directory)
+{
+    PUDF_FILE_INFO fi = Owner->FileInfo;
+    PDIR_INDEX_HDR header;
+    PDIR_INDEX_ITEM index;
+    uint32 frame, count;
+    if (!Owner->Staged || !Owner->MainHeld || !Owner->PagingHeld ||
+        Owner->Fcb->FileInfo != fi || !UDFNewFileCacheable(Vcb, fi) ||
+        fi->Dloc != Owner->Dloc || fi->ParentFile != Directory ||
+        Owner->Partition >= Vcb->PartitionMaps ||
+        Owner->Dloc->FELoc.Mapping[0].extLocation != Owner->Lba ||
+        UDFNewEntryDirty(fi) ||
+        RtlCompareMemory(Owner->Bytes, Owner->Dloc->FileEntry, 512) != 512 ||
+        !fi->FileIdent || fi->FileIdentLen < sizeof(FILE_IDENT_DESC) ||
+        fi->FileIdentLen > UDF_FID_WINDOW_BYTES ||
+        fi->FileIdent->descTag.tagIdent != TID_FILE_IDENT_DESC ||
+        (uint32)sizeof(FILE_IDENT_DESC) + fi->FileIdent->lengthOfImpUse +
+            fi->FileIdent->lengthFileIdent > fi->FileIdentLen ||
+        fi->FileIdent->icb.extLocation.partitionReferenceNum != Owner->Partition ||
+        fi->FileIdent->icb.extLocation.logicalBlockNum !=
+            UDFPhysLbaToPart(Vcb,Owner->Partition,Owner->Lba))
+        return NULL;
+    header = Directory->Dloc->DirIndex;
+    frame = fi->Index >> UDF_DIR_INDEX_FRAME_SH;
+    if (!header || frame >= header->FrameCount)
+        return NULL;
+    count = frame + 1 == header->FrameCount ?
+        header->LastFrameCount : UDF_DIR_INDEX_FRAME;
+    if ((fi->Index & (UDF_DIR_INDEX_FRAME - 1)) >= count)
+        return NULL;
+    if (!((PDIR_INDEX_ITEM*)(header + 1))[frame])
+        return NULL;
+    index = UDFDirIndex(header, fi->Index);
+    if (!index || index->FileInfo != fi || index->Length != fi->FileIdentLen ||
+        !FlagOn(index->FI_Flags,UDF_FI_FLAG_FI_MODIFIED) ||
+        FlagOn(index->FileCharacteristics,FILE_DELETED | FILE_PARENT) ||
+        index->FileEntryLoc.logicalBlockNum != fi->FileIdent->icb.extLocation.logicalBlockNum ||
+        index->FileEntryLoc.partitionReferenceNum != fi->FileIdent->icb.extLocation.partitionReferenceNum ||
+        !UDFNewFidRecorded(Vcb,Directory,index->Offset,index->Length))
+        return NULL;
+    return index;
+}
+
+static NTSTATUS
+UDFPublishNewVolumeIdentifiers(UDF_FE_WRITEBACK* Batch)
+{
+    PVCB vcb = Batch->Vcb;
+    PIRP_CONTEXT context = Batch->IrpContext;
+    UDF_FID_PUBLISH_WINDOW* window;
+    PFCB parent = NULL;
+    uint32 count = 0, i, j, first, limit;
+    NTSTATUS status = STATUS_SUCCESS;
+    BOOLEAN parentHeld = FALSE;
+
+    ASSERT_EXCLUSIVE_VCB(vcb);
+    if (vcb->SparingTable)
+        return STATUS_SUCCESS;
+    window = MyAllocatePool__(NonPagedPool,sizeof(*window));
+    if (!window)
+        return STATUS_SUCCESS; // Mandatory tree flush uses scalar FlushFI.
+    _SEH2_TRY {
+        /* Group by canonical parent first. Offset/index inspection below
+         * happens only after that directory resource has been acquired. */
+        for (i = 0; i < Batch->Count; i++) {
+            UDF_FE_OWNER* owner = &Batch->Owner[i];
+            if (owner->Staged && owner->MainHeld && owner->PagingHeld &&
+                owner->Fcb->FileInfo == owner->FileInfo &&
+                UDFNewFileCacheable(vcb,owner->FileInfo) &&
+                FlagOn(owner->FileInfo->ParentFile->Fcb->FcbState,
+                       UDF_FCB_DIRECTORY | UDF_FCB_ROOT_DIRECTORY)) {
+                uintptr_t key = (uintptr_t)owner->FileInfo->ParentFile->Fcb;
+                for (j = count; j && (uintptr_t)Batch->Owner[
+                        window->Order[j-1]].FileInfo->ParentFile->Fcb > key; j--)
+                    window->Order[j] = window->Order[j-1];
+                window->Order[j] = i;
+                count++;
+            }
+        }
+        first = 0;
+        while (first < count && NT_SUCCESS(status)) {
+            PUDF_FILE_INFO directory;
+            uint32 entries = 0, partition;
+            BOOLEAN tagged = FALSE;
+            parent = Batch->Owner[window->Order[first]].FileInfo->ParentFile->Fcb;
+            for (limit = first + 1; limit < count &&
+                    Batch->Owner[window->Order[limit]].FileInfo->ParentFile->Fcb == parent; limit++);
+            UDFAcquireFcbExclusive(context,parent,FALSE);
+            parentHeld = TRUE;
+            directory = parent->FileInfo;
+            if (directory && directory->Fcb == parent && directory->Dloc &&
+                directory->Dloc->CommonFcb == parent && directory->Dloc->DirIndex &&
+                directory->Dloc->FELoc.Mapping && !directory->Dloc->DataLoc.Offset &&
+                !parent->FcbCleanup && UDFIsADirectory(directory) &&
+                !UDFIsAStreamDir(directory) && !UDFHasAStreamDir(directory) &&
+                !FlagOn(parent->FcbState,UDF_FCB_DELETED | UDF_FCB_DELETE_ON_CLOSE)) {
+                partition = UDFGetRefPartNumByPhysLba(vcb,
+                    directory->Dloc->FELoc.Mapping[0].extLocation);
+                if (partition < vcb->PartitionMaps) {
+                    status = UDFFlushDirectoryAppend(context,vcb,directory);
+                    if (NT_SUCCESS(status)) {
+                        for (i = first; i < limit; i++) {
+                            uint32 owner = window->Order[i];
+                            PDIR_INDEX_ITEM index = UDFNewFidReady(vcb,&Batch->Owner[owner],directory);
+                            if (!index)
+                                continue;
+                            for (j = entries; j && window->Item[j-1].Offset > index->Offset; j--)
+                                window->Item[j] = window->Item[j-1];
+                            window->Item[j].Owner = owner;
+                            window->Item[j].Index = index;
+                            window->Item[j].Offset = index->Offset;
+                            window->Item[j].Length = index->Length;
+                            entries++;
+                        }
+                    }
+                    for (i = 0; i < entries && NT_SUCCESS(status); ) {
+                        uint32 end = i + 1, length = window->Item[i].Length;
+                        SIZE_T written = 0;
+                        PEXTENT_MAP mapping;
+                        int64 logicalLength;
+                        BOOLEAN previous = FlagOn(context->Flags,IRP_CONTEXT_FLAG_METADATA_PUBLISH) != 0;
+                        while (end < entries && window->Item[end].Offset ==
+                                (uint64)window->Item[i].Offset + length &&
+                                window->Item[end].Length <= UDF_FID_WINDOW_BYTES - length) {
+                            length += window->Item[end++].Length;
+                        }
+                        if (end == i + 1) {
+                            i = end;
+                            continue;
+                        }
+                        /* Finish any required in-ICB -> external retag before
+                         * preparing final FID bytes, so it cannot immediately
+                         * re-dirty the just-published generations afterward. */
+                        if (!tagged) {
+                            status = UDFReTagDirectory(context,vcb,directory);
+                            if (!NT_SUCCESS(status))
+                                break;
+                            tagged = TRUE;
+                        }
+                        length = 0;
+                        for (j = i; j < end; j++) {
+                            UDF_FID_WINDOW_ITEM* item = &window->Item[j];
+                            UDF_FE_OWNER* owner = &Batch->Owner[item->Owner];
+                            PFILE_IDENT_DESC fid = (PFILE_IDENT_DESC)(window->Bytes + length);
+                            uint32 lba;
+                            if (UDFNewFidReady(vcb,owner,directory) != item->Index) {
+                                status = STATUS_FILE_CORRUPT_ERROR;
+                                break;
+                            }
+                            lba = UDFExtentOffsetToLba(vcb,directory->Dloc->DataLoc.Mapping,
+                                                       item->Offset,NULL,NULL,NULL,NULL);
+                            RtlCopyMemory(fid,owner->FileInfo->FileIdent,item->Length);
+                            fid->fileCharacteristics = item->Index->FileCharacteristics;
+                            UDFSetUpTag(vcb,&fid->descTag,(uint16)item->Length,
+                                       UDFPhysLbaToPart(vcb,partition,lba),0);
+                            length += item->Length;
+                        }
+                        if (!NT_SUCCESS(status))
+                            break;
+                        mapping = directory->Dloc->DataLoc.Mapping;
+                        logicalLength = directory->Dloc->DataLoc.Length;
+                        if (FlagOn(context->Flags,IRP_CONTEXT_FLAG_METADATA_WRITER) ||
+                            context->MajorFunction == IRP_MJ_FLUSH_BUFFERS)
+                            SetFlag(context->Flags,IRP_CONTEXT_FLAG_METADATA_PUBLISH);
+                        _SEH2_TRY {
+                            status = UDFWriteFile__(context,vcb,directory,
+                                window->Item[i].Offset,length,FALSE,window->Bytes,&written);
+                        } _SEH2_FINALLY {
+                            if (!previous)
+                                ClearFlag(context->Flags,IRP_CONTEXT_FLAG_METADATA_PUBLISH);
+                        } _SEH2_END;
+                        if (NT_SUCCESS(status) && written != length)
+                            status = STATUS_IO_DEVICE_ERROR;
+                        if (!NT_SUCCESS(status))
+                            break; // Every FI in this window remains dirty/NEW.
+                        if (directory->Dloc->DataLoc.Mapping != mapping ||
+                            directory->Dloc->DataLoc.Length != logicalLength) {
+                            status = STATUS_FILE_CORRUPT_ERROR;
+                            break;
+                        }
+                        length = 0;
+                        for (j = i; j < end; j++) {
+                            UDF_FID_WINDOW_ITEM* item = &window->Item[j];
+                            UDF_FE_OWNER* owner = &Batch->Owner[item->Owner];
+                            if (UDFNewFidReady(vcb,owner,directory) != item->Index) {
+                                status = STATUS_FILE_CORRUPT_ERROR;
+                                break;
+                            }
+                            RtlCopyMemory(owner->FileInfo->FileIdent,window->Bytes+length,item->Length);
+                            item->Index->FI_Flags &= ~UDF_FI_FLAG_FI_MODIFIED;
+                            owner->Dloc->FE_Flags &= ~UDF_FE_FLAG_NEW_UNPUBLISHED;
+                            UDF_METADATA_COUNT(vcb,31);
+                            UDF_METADATA_COUNT(vcb,35);
+                            UDF_METADATA_COUNT(vcb,58);
+                            length += item->Length;
+                        }
+                        i = end;
+                    }
+                }
+            }
+            UDFReleaseFcb(context,parent);
+            parentHeld = FALSE;
+            first = limit;
+        }
+    } _SEH2_FINALLY {
+        if (parentHeld)
+            UDFReleaseFcb(context,parent);
+        MyFreePool__(window);
+    } _SEH2_END;
+    return status;
+}
+
 static NTSTATUS
 UDFWritebackNewFileBatchInternal(PIRP_CONTEXT IrpContext, PVCB Vcb,
     PFCB CurrentFcb, UDF_FE_VOLUME_SNAPSHOT* Snapshot, PBOOLEAN More)
@@ -430,6 +684,8 @@ UDFWritebackNewFileBatchInternal(PIRP_CONTEXT IrpContext, PVCB Vcb,
                 } _SEH2_END;
             }
         }
+        if (volume && NT_SUCCESS(status))
+            status = UDFPublishNewVolumeIdentifiers(batch);
     } _SEH2_FINALLY {
         if (vcbHeld) {
             UDFUnlockVcb(IrpContext, Vcb);
