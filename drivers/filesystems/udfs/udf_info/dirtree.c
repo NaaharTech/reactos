@@ -887,13 +887,12 @@ UDFReTagDirectoryWindows(PIRP_CONTEXT IrpContext, PVCB Vcb,
             UDFReTagFailureReason(Vcb,32,offset,length,FileInfo->Dloc->DataLoc.Length);
             return NT_SUCCESS(status) ? STATUS_IO_DEVICE_ERROR : status;
         }
-        for (i = 0; i < count; i++) {
-            entry = Window->Entry[i];
-            /* Re-read this index owner after I/O; do not retain a child FI
-             * pointer across the synchronous lower request. */
-            if (entry->FileInfo)
-                entry->FI_Flags |= UDF_FI_FLAG_FI_MODIFIED;
-        }
+        /* The retagged descriptors have reached the normal paired writer.
+         * Keep genuine pending FID changes dirty, but do not mark a clean
+         * FID dirty solely for its already-written tag. FlushFI and batched
+         * FID publication rebuild that tag before any later content write;
+         * neither depends on the cached FileIdent tag being current here.
+         * Do not mutate child buffers under only the directory ownership. */
     }
     return STATUS_SUCCESS;
 }
