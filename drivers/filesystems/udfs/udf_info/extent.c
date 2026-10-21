@@ -3101,8 +3101,11 @@ UDFWriteExtent(
             Extent = ExtInfo->Mapping;
             UDFCheckSpaceAllocation(Vcb, 0, Extent, AS_USED); // check if used
             if (reread_lba) {
+                SIZE_T UnrecordedLength = to_write;
                 Lba = UDFExtentOffsetToLba(Vcb, Extent, Offset, &sect_offs, &to_write, &flags, NULL);
-                to_write = min(to_write, Length);
+                /* Conversion can merge an already recorded neighbor. Its
+                 * bytes must not enter this zero-initialization window. */
+                to_write = min(to_write, UnrecordedLength);
             }
             SIZE_T PartialWriteLen = min(to_write, Length);
             /* A partial write into a newly recorded single sector must leave
