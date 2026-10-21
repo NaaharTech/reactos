@@ -791,6 +791,7 @@ struct VCB {
     LONG MetadataWritebackError;
 #ifdef UDF_METADATA_BATCH_DIAGNOSTICS
     LONG MetadataBatchDiag[64];
+    LONG DirectoryAppendDiag[16]; // private lab counters, separate ABI
 #endif
     PCHAR           BSBM_Bitmap;     // 0 - normal, 1 - bad-block
 

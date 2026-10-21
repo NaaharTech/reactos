@@ -119,6 +119,29 @@ UDFUserFsCtrlRequest(
 
 #ifdef UDF_METADATA_BATCH_DIAGNOSTICS
     if (IrpSp->Parameters.FileSystemControl.FsControlCode ==
+        CTL_CODE(FILE_DEVICE_FILE_SYSTEM,0x8e2,METHOD_BUFFERED,FILE_READ_ACCESS)) {
+        PFCB fcb; PCCB ccb; NTSTATUS status;
+        Irp->IoStatus.Information = 0;
+        if (UDFDecodeFileObject(IrpSp->FileObject,&fcb,&ccb) != UserVolumeOpen)
+            status = STATUS_INVALID_PARAMETER;
+        else if (!Irp->AssociatedIrp.SystemBuffer ||
+                 IrpSp->Parameters.FileSystemControl.OutputBufferLength < sizeof(fcb->Vcb->DirectoryAppendDiag))
+            status = STATUS_BUFFER_TOO_SMALL;
+        else {
+            PVCB vcb = fcb->Vcb;
+            PULONG values = Irp->AssociatedIrp.SystemBuffer;
+            UDFAcquireVcbExclusive(IrpContext,vcb,FALSE);
+            RtlCopyMemory(values,vcb->DirectoryAppendDiag,sizeof(vcb->DirectoryAppendDiag));
+            values[0] = 1;
+            values[1] = InterlockedCompareExchange(&vcb->DirectoryAppendBytes,0,0);
+            UDFReleaseVcb(IrpContext,vcb);
+            Irp->IoStatus.Information = sizeof(vcb->DirectoryAppendDiag);
+            status = STATUS_SUCCESS;
+        }
+        UDFCompleteRequest(IrpContext,Irp,status);
+        return status;
+    }
+    if (IrpSp->Parameters.FileSystemControl.FsControlCode ==
         CTL_CODE(FILE_DEVICE_FILE_SYSTEM,0x8e1,METHOD_BUFFERED,FILE_READ_ACCESS)) {
         PFCB fcb, next; PCCB ccb; NTSTATUS status;
         PVOID restart = NULL; PULONG values;

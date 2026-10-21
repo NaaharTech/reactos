@@ -15,7 +15,7 @@ typedef struct _UDF_DIR_APPEND_CACHE {
     ERESOURCE Resource;
     int64 Offset;
     ULONG Length;
-    int8 Buffer[UDF_DIR_APPEND_CAPACITY];
+    int8* Buffer;
 } UDF_DIR_APPEND_CACHE;
 
 static BOOLEAN
@@ -38,35 +38,81 @@ UDFDirectoryAppendAllocated(PVCB Vcb, PUDF_DATALOC_INFO Dloc,
     return TRUE;
 }
 
+#ifdef UDF_METADATA_BATCH_DIAGNOSTICS
+#define UDF_DIR_STAT(Vcb, Index) InterlockedIncrement(&(Vcb)->DirectoryAppendDiag[Index])
+static VOID
+UDFDirectoryAppendPeak(PVCB Vcb, ULONG Index, LONG Value)
+{
+    LONG old;
+    do {
+        old = InterlockedCompareExchange(&Vcb->DirectoryAppendDiag[Index],0,0);
+        if (old >= Value)
+            break;
+    } while (InterlockedCompareExchange(&Vcb->DirectoryAppendDiag[Index],Value,old) != old);
+}
+#else
+#define UDF_DIR_STAT(Vcb, Index) ((void)0)
+#endif
+
+static BOOLEAN
+UDFChargeDirectoryAppend(PVCB Vcb, LONG Bytes)
+{
+    LONG used;
+    ASSERT(Bytes > 0 && Bytes <= UDF_DIR_APPEND_BUDGET);
+    do {
+        used = InterlockedCompareExchange(&Vcb->DirectoryAppendBytes,0,0);
+        if (used < 0 || used > UDF_DIR_APPEND_BUDGET - Bytes) {
+            UDF_DIR_STAT(Vcb,6);
+            return FALSE;
+        }
+    } while (InterlockedCompareExchange(&Vcb->DirectoryAppendBytes,used+Bytes,used) != used);
+#ifdef UDF_METADATA_BATCH_DIAGNOSTICS
+    UDFDirectoryAppendPeak(Vcb,2,used+Bytes);
+#endif
+    return TRUE;
+}
+
 static UDF_DIR_APPEND_CACHE*
 UDFAllocateDirectoryAppend(PVCB Vcb, PUDF_DATALOC_INFO Dloc)
 {
-    LONG used;
     UDF_DIR_APPEND_CACHE* cache;
-
     if (Dloc->DirectoryAppend)
         return Dloc->DirectoryAppend;
-    do {
-        used = InterlockedCompareExchange(&Vcb->DirectoryAppendBytes, 0, 0);
-        if (used > UDF_DIR_APPEND_BUDGET - UDF_DIR_APPEND_CAPACITY)
-            return NULL;
-    } while (InterlockedCompareExchange(&Vcb->DirectoryAppendBytes,
-                used + UDF_DIR_APPEND_CAPACITY, used) != used);
-    cache = MyAllocatePool__(NonPagedPool, sizeof(*cache));
+    if (!UDFChargeDirectoryAppend(Vcb,sizeof(*cache)))
+        return NULL;
+    cache = MyAllocatePool__(NonPagedPool,sizeof(*cache));
     if (!cache) {
-        InterlockedExchangeAdd(&Vcb->DirectoryAppendBytes, -UDF_DIR_APPEND_CAPACITY);
+        UDF_DIR_STAT(Vcb,5);
+        InterlockedExchangeAdd(&Vcb->DirectoryAppendBytes,-(LONG)sizeof(*cache));
         return NULL;
     }
-    RtlZeroMemory(cache, sizeof(*cache));
+    RtlZeroMemory(cache,sizeof(*cache));
     if (!NT_SUCCESS(ExInitializeResourceLite(&cache->Resource))) {
+        UDF_DIR_STAT(Vcb,5);
         MyFreePool__(cache);
-        InterlockedExchangeAdd(&Vcb->DirectoryAppendBytes, -UDF_DIR_APPEND_CAPACITY);
+        InterlockedExchangeAdd(&Vcb->DirectoryAppendBytes,-(LONG)sizeof(*cache));
         return NULL;
     }
-    /* Existing directory/VCB resource ownership serializes publication. The
-     * cache resource also protects reader snapshots and short-I/O retries. */
+    /* Keep the control/resource alive until the same Dloc teardown as before:
+     * a reader may already have captured its address before taking shared.
+     * Only the payload may be returned under this resource's exclusive lock. */
     Dloc->DirectoryAppend = cache;
+#ifdef UDF_METADATA_BATCH_DIAGNOSTICS
+    UDFDirectoryAppendPeak(Vcb,8,InterlockedIncrement(&Vcb->DirectoryAppendDiag[7]));
+#endif
     return cache;
+}
+
+static VOID
+UDFReturnDirectoryAppendBuffer(PVCB Vcb, UDF_DIR_APPEND_CACHE* Cache)
+{
+    ASSERT(!Cache->Length);
+    if (Cache->Buffer) {
+        MyFreePool__(Cache->Buffer);
+        Cache->Buffer = NULL;
+        InterlockedExchangeAdd(&Vcb->DirectoryAppendBytes,-UDF_DIR_APPEND_CAPACITY);
+        UDF_DIR_STAT(Vcb,4);
+    }
 }
 
 BOOLEAN
@@ -100,7 +146,9 @@ UDFFlushDirectoryAppend(PIRP_CONTEXT IrpContext, PVCB Vcb,
             status = STATUS_IO_DEVICE_ERROR;
         if (NT_SUCCESS(status)) {
             cache->Length = 0;
+            UDFReturnDirectoryAppendBuffer(Vcb,cache);
         } else {
+            UDF_DIR_STAT(Vcb,15);
             /* Keep the complete generation, including a possibly written
              * prefix. Retrying it is idempotent on the unchanged mapping. */
             FileInfo->Dloc->DataLoc.Modified = TRUE;
@@ -153,7 +201,24 @@ UDFTryDirectoryAppend(PIRP_CONTEXT IrpContext, PVCB Vcb,
         !(((PFILE_IDENT_DESC)Buffer)->fileCharacteristics & (FILE_DELETED | FILE_PARENT)) &&
         UDFDirectoryAppendAllocated(Vcb, dloc, Offset, Length)) {
         eligible = TRUE;
+        UDF_DIR_STAT(Vcb,9);
     }
+#ifdef UDF_METADATA_BATCH_DIAGNOSTICS
+    /* Reasons sampled only for complete directory-FID requests. These are
+     * admission diagnostics, not an exclusive classification of all writes. */
+    else if (dloc->DirIndex && Buffer && Length >= sizeof(FILE_IDENT_DESC) &&
+             ((PFILE_IDENT_DESC)Buffer)->descTag.tagIdent == TID_FILE_IDENT_DESC) {
+        if (dloc->DataLoc.Offset)
+            UDF_DIR_STAT(Vcb,11);
+        else if (dloc->DirIndex->DIFlags & UDF_DI_FLAG_INIT_IN_ICB)
+            UDF_DIR_STAT(Vcb,10);
+        else if (Offset != dloc->DataLoc.Length)
+            UDF_DIR_STAT(Vcb,12);
+        else if (Offset >= 0 && (uint64)Offset <= MAXLONGLONG - (uint64)Length &&
+                 (uint64)Offset + Length > (uint64)allocated)
+            UDF_DIR_STAT(Vcb,13);
+    }
+#endif
     if (cache) {
         UDFAcquireResourceShared(&cache->Resource, TRUE);
         if (cache->Length && (!eligible ||
@@ -176,6 +241,21 @@ UDFTryDirectoryAppend(PIRP_CONTEXT IrpContext, PVCB Vcb,
         return STATUS_SUCCESS; // Memory/budget failure preserves the old I/O path.
 
     UDFAcquireResourceExclusive(&cache->Resource, TRUE);
+    if (!cache->Buffer) {
+        ASSERT(!cache->Length);
+        if (!UDFChargeDirectoryAppend(Vcb,UDF_DIR_APPEND_CAPACITY)) {
+            UDFReleaseResource(&cache->Resource);
+            return STATUS_SUCCESS;
+        }
+        cache->Buffer = MyAllocatePool__(NonPagedPool,UDF_DIR_APPEND_CAPACITY);
+        if (!cache->Buffer) {
+            UDF_DIR_STAT(Vcb,5);
+            InterlockedExchangeAdd(&Vcb->DirectoryAppendBytes,-UDF_DIR_APPEND_CAPACITY);
+            UDFReleaseResource(&cache->Resource);
+            return STATUS_SUCCESS; // Scalar fallback, unchanged logical EOF.
+        }
+        UDF_DIR_STAT(Vcb,3);
+    }
     if (!cache->Length)
         cache->Offset = Offset;
     ASSERT(cache->Offset + cache->Length == Offset);
@@ -188,6 +268,7 @@ UDFTryDirectoryAppend(PIRP_CONTEXT IrpContext, PVCB Vcb,
     dloc->FE_Flags |= UDF_FE_FLAG_FE_MODIFIED;
     *WrittenBytes = Length;
     *Handled = TRUE;
+    UDF_DIR_STAT(Vcb,14);
     UDFReleaseResource(&cache->Resource);
     return STATUS_SUCCESS;
 }
@@ -238,9 +319,13 @@ UDFReleaseDirectoryAppend(PVCB Vcb, PUDF_DATALOC_INFO Dloc)
     if (cache->Length) {
         return FALSE;
     }
+    UDFReturnDirectoryAppendBuffer(Vcb,cache);
     ExDeleteResourceLite(&cache->Resource);
     MyFreePool__(cache);
     Dloc->DirectoryAppend = NULL;
-    InterlockedExchangeAdd(&Vcb->DirectoryAppendBytes, -UDF_DIR_APPEND_CAPACITY);
+    InterlockedExchangeAdd(&Vcb->DirectoryAppendBytes,-(LONG)sizeof(*cache));
+#ifdef UDF_METADATA_BATCH_DIAGNOSTICS
+    InterlockedDecrement(&Vcb->DirectoryAppendDiag[7]);
+#endif
     return TRUE;
 }
