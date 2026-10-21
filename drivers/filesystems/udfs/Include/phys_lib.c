@@ -1226,11 +1226,14 @@ UDFWriteInSector(
                  TRUE, tmp_buff, FALSE);
     if (!NT_SUCCESS(status)) goto done;
 
-    /* Metadata flushes can repeat an unchanged sub-sector update.  The read
-       above has already established the on-disk bytes, so a matching write
-       would only issue another synchronous sector I/O.  In CDR_Mode writes
-       advance the next writable address even when the bytes compare equal. */
+    /* Equal primary bytes do not establish that an independent metadata
+       mirror committed this generation. A failed or short completion can
+       follow a completed primary write, before the paired mirror write.
+       Keep the paired writer on retry even when this primary slice matches.
+       In CDR_Mode, equal writes still advance the next writable address. */
     if (!Vcb->CDR_Mode &&
+        (!(Vcb->MetadataFlags & UDF_METADATA_DUPLICATED) ||
+         UDFPhysLbaToMetadata(Vcb, Lba) == LBA_OUT_OF_EXTENT) &&
         RtlCompareMemory(tmp_buff + Offset, Buffer, Length) == Length) {
         *WrittenBytes = Length;
         goto done;
