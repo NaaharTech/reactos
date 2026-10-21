@@ -59,6 +59,9 @@ DriverEntry(
     BOOLEAN         InternalMMInitialized = FALSE;
     HKEY            hUdfRootKey;
 
+    UDFPrint(("UDF DriverEntry: DriverObject %p, RegistryPath %wZ\n",
+              DriverObject, RegistryPath));
+
     _SEH2_TRY {
         _SEH2_TRY {
 
@@ -86,6 +89,7 @@ DriverEntry(
             UDFPrint(("UDF: Init memory manager\n"));
             // Initialize internal memory management
             if (!MyAllocInit()) {
+                UDFPrint(("UDF DriverEntry: MyAllocInit failed\n"));
                 try_return(RC = STATUS_INSUFFICIENT_RESOURCES);
             }
             InternalMMInitialized = TRUE;
@@ -210,14 +214,17 @@ DriverEntry(
             FilterCallbacks.PreAcquireForSectionSynchronization = UDFFilterCallbackAcquireForCreateSection;
 
             RC = FsRtlRegisterFileSystemFilterCallbacks(DriverObject, &FilterCallbacks);
-            if (!NT_SUCCESS(RC))
+            if (!NT_SUCCESS(RC)) {
+                UDFPrint(("UDF DriverEntry: FsRtlRegisterFileSystemFilterCallbacks failed %08lx\n", RC));
                 try_return(RC);
+            }
 
             UDFPrint(("UDF: Create CD dev obj\n"));
             if (!NT_SUCCESS(RC = UDFCreateFsDeviceObject(UDF_FS_NAME_CD,
                                     DriverObject,
                                     FILE_DEVICE_CD_ROM_FILE_SYSTEM,
                                     &(UdfData.UDFDeviceObject_CD)))) {
+                UDFPrint(("UDF DriverEntry: CD device creation failed %08lx\n", RC));
                 // failed to create a device object, leave ...
                 try_return(RC);
             }
@@ -227,6 +234,7 @@ DriverEntry(
                                     DriverObject,
                                     FILE_DEVICE_DISK_FILE_SYSTEM,
                                     &(UdfData.UDFDeviceObject_HDD)))) {
+                UDFPrint(("UDF DriverEntry: HDD device creation failed %08lx\n", RC));
                 // failed to create a device object, leave ...
                 try_return(RC);
             }
@@ -273,6 +281,7 @@ DriverEntry(
         }
     } _SEH2_END;
 
+    UDFPrint(("UDF DriverEntry: returning %08lx\n", RC));
     return(RC);
 } // end DriverEntry()
 
@@ -425,6 +434,7 @@ UDFCreateFsDeviceObject(
             FALSE,
             DeviceObject))) {
                 // failed to create a device object, leave ...
+        UDFPrint(("UDFCreateFsDeviceObject: IoCreateDevice failed %08lx\n", RC));
         return(RC);
     }
 

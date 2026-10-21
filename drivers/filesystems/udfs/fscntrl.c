@@ -340,6 +340,7 @@ UDFMountVolume(
 
     if (!NT_SUCCESS(RC)) {
 
+        UDFPrint(("UDFMountVolume: CHECK_VERIFY failed %08lx on %p\n", RC, DeviceObjectWeTalkTo));
         UDFCompleteRequest(IrpContext, Irp, RC);
         return RC;
     }
@@ -355,9 +356,14 @@ UDFMountVolume(
 
     if (!NT_SUCCESS(RC)) {
 
+        UDFPrint(("UDFMountVolume: GET_DRIVE_GEOMETRY failed %08lx on %p\n",
+                  RC, DeviceObjectWeTalkTo));
         UDFCompleteRequest(IrpContext, Irp, RC);
         return RC;
     }
+    UDFPrint(("UDFMountVolume: device %p type %lu sector size %lu sectors/track %lu\n",
+              DeviceObjectWeTalkTo, DeviceObjectWeTalkTo->DeviceType,
+              DiskGeometry.BytesPerSector, DiskGeometry.SectorsPerTrack));
 
     // Acquire the global resource to do mount operations.
 
@@ -446,7 +452,10 @@ UDFMountVolume(
 
         DeviceNotTouched = FALSE;
         RC = UDFGetDiskInfo(IrpContext, DeviceObjectWeTalkTo, Vcb);
-        if (!NT_SUCCESS(RC)) try_return(RC);
+        if (!NT_SUCCESS(RC)) {
+            UDFPrint(("UDFMountVolume: UDFGetDiskInfo failed %08lx\n", RC));
+            try_return(RC);
+        }
 
         //     ****  Read registry settings  ****
         UDFReadRegKeys(Vcb, FALSE, FALSE);
@@ -455,7 +464,10 @@ UDFMountVolume(
         // disk before loading its bitmap/LVID into the VCB. A failed ordered
         // commit must abort this mount so stale allocation state is not used.
         RC = UDFRecoverDirtyVolumeBeforeLoad(IrpContext, Vcb);
-        if (!NT_SUCCESS(RC)) try_return(RC);
+        if (!NT_SUCCESS(RC)) {
+            UDFPrint(("UDFMountVolume: recovery failed %08lx\n", RC));
+            try_return(RC);
+        }
 
         Vcb->MountPhErrorCount = 0;
 
@@ -467,6 +479,7 @@ UDFMountVolume(
 
         if (!NT_SUCCESS(RC)) {
 
+            UDFPrint(("UDFMountVolume: UDFGetDiskInfoAndVerify failed %08lx\n", RC));
             try_return(RC);
 
         } else {
@@ -477,6 +490,7 @@ UDFMountVolume(
             RC = UDFCompleteMount(IrpContext, Vcb);
             UDFReleaseResource(&(Vcb->BitMapResource1));
             if (!NT_SUCCESS(RC)) {
+                UDFPrint(("UDFMountVolume: UDFCompleteMount failed %08lx\n", RC));
                 // We must have Vcb->VcbReference = 1 for UDFBlankMount()
                 // Thus, we should not decrement it here
                 // Also, if we shall not perform BlankMount,

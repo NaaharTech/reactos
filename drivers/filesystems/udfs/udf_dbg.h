@@ -22,6 +22,7 @@
 
 #ifdef UDF_DBG
 
+#define USE_KD_PRINT
 //#define TRACK_SYS_ALLOCS
 //#define TRACK_SYS_ALLOC_CALLERS
 
