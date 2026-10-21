@@ -540,7 +540,7 @@ UDFIndexDirectory(
     ExtInfo->Flags |= EXTENT_FLAG_ALLOC_SEQUENTIAL;
 
     // read FileIdents
-    status = UDFReadExtent(IrpContext, Vcb, ExtInfo, 0, (uint32)(ExtInfo->Length), FALSE, buff);
+    status = UDFReadFile__(IrpContext, Vcb, FileInfo, 0, (uint32)(ExtInfo->Length), FALSE, buff);
     if (!NT_SUCCESS(status)) {
         DbgFreePool(buff);
         return status;
@@ -1183,6 +1183,8 @@ UDFRemoveDloc(
 {
     LONG i;
 
+    if (!UDFReleaseDirectoryAppend(Vcb, Dloc))
+        return STATUS_CANNOT_DELETE;
     UDFAcquireResourceExclusive(&(Vcb->DlocResource),TRUE);
 
     if ((i = UDFFindDlocInMem(Vcb, Dloc)) == (-1)) {
@@ -1237,6 +1239,8 @@ UDFFreeDloc(
 {
     LONG i;
 
+    if (!UDFReleaseDirectoryAppend(Vcb, Dloc))
+        return;
     UDFAcquireResourceExclusive(&(Vcb->DlocResource),TRUE);
 
     if ((i = UDFFindDlocInMem(Vcb, Dloc)) != (-1)) {

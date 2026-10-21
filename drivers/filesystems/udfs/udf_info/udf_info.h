@@ -805,6 +805,18 @@ UDFCreateFile__(
     OUT PUDF_FILE_INFO* _FileInfo
     );
 
+// A Dloc owns unpublished, contiguous directory appends until FE flush.
+NTSTATUS UDFTryDirectoryAppend(PIRP_CONTEXT IrpContext, PVCB Vcb,
+    PUDF_FILE_INFO FileInfo, int64 Offset, SIZE_T Length, BOOLEAN Direct,
+    int8* Buffer, PSIZE_T WrittenBytes, PBOOLEAN Handled);
+NTSTATUS UDFFlushDirectoryAppend(PIRP_CONTEXT IrpContext, PVCB Vcb,
+    PUDF_FILE_INFO FileInfo);
+NTSTATUS UDFReadDirectoryAppend(PIRP_CONTEXT IrpContext, PVCB Vcb,
+    PUDF_FILE_INFO FileInfo, int64 Offset, SIZE_T Length, BOOLEAN Direct,
+    int8* Buffer);
+BOOLEAN UDFDirectoryAppendPending(PUDF_FILE_INFO FileInfo);
+BOOLEAN UDFReleaseDirectoryAppend(PVCB Vcb, PUDF_DATALOC_INFO Dloc);
+
 // read data from file described with FileInfo
 /*
     This routine reads data from file described by FileInfo
@@ -823,6 +835,9 @@ UDFReadFile__(
 {
     ValidateFileInfo(FileInfo);
 
+    if (FileInfo->Dloc->DirectoryAppend)
+        return UDFReadDirectoryAppend(IrpContext, Vcb, FileInfo,
+                                       Offset, Length, Direct, Buffer);
     return UDFReadExtent(IrpContext, Vcb, &FileInfo->Dloc->DataLoc, Offset, Length, Direct, Buffer);
 } // end UDFReadFile__()*/
 

@@ -61,6 +61,7 @@ UDFCommonFlush(
     BOOLEAN             AcquiredVCB = FALSE;
     BOOLEAN             AcquiredFCB = FALSE;
     BOOLEAN             AcquiredParentFcb = FALSE;
+    PFCB                HeldParentFcb = NULL;
     IO_STATUS_BLOCK     FsIoStatus;
 
     PAGED_CODE();
@@ -166,6 +167,7 @@ UDFCommonFlush(
                 UDF_CHECK_PAGING_IO_RESOURCE(Fcb->FileInfo->ParentFile->Fcb);
                 UDFAcquireFcbExclusive(IrpContext, Fcb->FileInfo->ParentFile->Fcb, FALSE);
                 AcquiredParentFcb = TRUE;
+                HeldParentFcb = Fcb->FileInfo->ParentFile->Fcb;
             }
 
             // Request the Cache Manager to perform a flush operation.
@@ -173,6 +175,40 @@ UDFCommonFlush(
             // entire file stream.
             UDFFlushAFile(IrpContext, Fcb, Ccb, &FsIoStatus, 0);
             Status = FsIoStatus.Status;
+
+            /* A file flush must also commit append generations that make its
+             * name reachable. Keep the established child -> parent order.
+             * Each held parent owns its next ancestor through the LCB; acquire
+             * that ancestor before releasing the current resource. At most
+             * 64 buffers can exist under the per-volume memory budget. */
+            if (NT_SUCCESS(Status) && AcquiredParentFcb) {
+                PUDF_FILE_INFO directory = Fcb->FileInfo->ParentFile;
+                ULONG hops = 0;
+                while (directory->Dloc->DirectoryAppend) {
+                    Status = UDFFlushFile__(IrpContext, Vcb, directory,
+                                           UDF_FLUSH_FLAGS_LITE);
+                    UDFRememberFlushStatus(&FsIoStatus, Status);
+                    if (!NT_SUCCESS(Status))
+                        break;
+                    PUDF_FILE_INFO ancestor = directory->ParentFile;
+                    if (!ancestor || !ancestor->Fcb ||
+                        !ancestor->Dloc->DirectoryAppend ||
+                        ancestor->Fcb == HeldParentFcb)
+                        break;
+                    if (++hops >= 64) {
+                        Status = STATUS_FILE_CORRUPT_ERROR;
+                        UDFRememberFlushStatus(&FsIoStatus, Status);
+                        break;
+                    }
+                    UDF_CHECK_PAGING_IO_RESOURCE(ancestor->Fcb);
+                    UDFAcquireFcbExclusive(IrpContext, ancestor->Fcb, FALSE);
+                    PFCB previous = HeldParentFcb;
+                    HeldParentFcb = ancestor->Fcb;
+                    UDFReleaseFcb(IrpContext, previous);
+                    directory = ancestor;
+                }
+                Status = FsIoStatus.Status;
+            }
 
             // Some log-based FSD implementations may wish to flush their
             // log files at this time. Finally, we should update the time-stamp
@@ -187,7 +223,7 @@ try_exit:   NOTHING;
 
         // Release in reverse order of acquisition (parent first, then child)
         if (AcquiredParentFcb) {
-            UDFReleaseFcb(IrpContext, Fcb->FileInfo->ParentFile->Fcb);
+            UDFReleaseFcb(IrpContext, HeldParentFcb);
             AcquiredParentFcb = FALSE;
         }
 

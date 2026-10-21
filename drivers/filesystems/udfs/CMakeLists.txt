@@ -15,6 +15,7 @@ list(APPEND SOURCE
     create.c
     devcntrl.c
     deviosup.c
+    dirappend.c
     dircntrl.c
     fastio.c
     fileinfo.c

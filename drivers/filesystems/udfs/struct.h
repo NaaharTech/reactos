@@ -783,6 +783,7 @@ struct VCB {
 
     PCHAR           FSBM_OldBitmap;  // 0 - free, 1 - used
     ULONG           BitmapModified;
+    LONG            DirectoryAppendBytes; // bounded pending-directory buffers
     PCHAR           BSBM_Bitmap;     // 0 - normal, 1 - bad-block
 
     // Bitmap cache stream (per-page CcPinRead)

@@ -1577,6 +1577,14 @@ UDFWriteFile__(
         DataPartNum = Vcb->MetadataPhysRef;
     (*WrittenBytes) = 0;
 
+    {
+        BOOLEAN handled;
+        status = UDFTryDirectoryAppend(IrpContext, Vcb, FileInfo, Offset,
+                                      Length, Direct, Buffer, WrittenBytes, &handled);
+        if (!NT_SUCCESS(status) || handled)
+            return status;
+    }
+
     AdPrint(("UDFWriteFile__ FE %x, FileInfo %x, ExtInfo %x, Mapping %x\n",
         Dloc->FELoc.Mapping[0].extLocation, FileInfo, &(Dloc->DataLoc), Dloc->DataLoc.Mapping));
 
@@ -2254,7 +2262,7 @@ UDFOpenFile__(
     FileInfo->FileIdent = (PFILE_IDENT_DESC)MyAllocatePoolTag__(NonPagedPool, DirNdx->Length, MEM_FID_TAG);
     if (!(FileInfo->FileIdent)) return STATUS_INSUFFICIENT_RESOURCES;
     FileInfo->FileIdentLen = DirNdx->Length;
-    if (!NT_SUCCESS(status = UDFReadExtent(IrpContext, Vcb, &DirInfo->Dloc->DataLoc, DirNdx->Offset,
+    if (!NT_SUCCESS(status = UDFReadFile__(IrpContext, Vcb, DirInfo, DirNdx->Offset,
                              DirNdx->Length, FALSE, (int8*)(FileInfo->FileIdent)) ))
         return status;
     if (FileInfo->FileIdent->descTag.tagIdent != TID_FILE_IDENT_DESC) {
@@ -2423,7 +2431,7 @@ UDFOpenFileInfoFromDirContext(
     FileInfo->FileIdent = (PFILE_IDENT_DESC)MyAllocatePoolTag__(NonPagedPool, DirNdx->Length, MEM_FID_TAG);
     if (!(FileInfo->FileIdent)) return STATUS_INSUFFICIENT_RESOURCES;
     FileInfo->FileIdentLen = DirNdx->Length;
-    if (!NT_SUCCESS(status = UDFReadExtent(IrpContext, Vcb, &DirInfo->Dloc->DataLoc, DirNdx->Offset,
+    if (!NT_SUCCESS(status = UDFReadFile__(IrpContext, Vcb, DirInfo, DirNdx->Offset,
                              DirNdx->Length, FALSE, (int8*)(FileInfo->FileIdent))))
         return status;
     if (FileInfo->FileIdent->descTag.tagIdent != TID_FILE_IDENT_DESC) {
@@ -2628,6 +2636,12 @@ UDFCleanUpFile__(
 //        BrutePoint();
         return UDF_FREE_NOTHING;
     }
+
+    /* A failed append flush still owns its entire generation. Keep the FI
+     * reachable from the parent scan for explicit retry instead of freeing
+     * its mapping or discarding its buffer during last-close teardown. */
+    if (UDFDirectoryAppendPending(FileInfo))
+        return UDF_FREE_NOTHING;
 
     IsASDir = UDFIsAStreamDir(FileInfo);
 
@@ -3113,7 +3127,7 @@ CreateUndel:
             FileInfo->FileIdent = (PFILE_IDENT_DESC)MyAllocatePoolTag__(NonPagedPool, DirNdx->Length, MEM_FID_TAG);
             if (!(FileInfo->FileIdent)) try_return (status = STATUS_INSUFFICIENT_RESOURCES);
             FileInfo->FileIdentLen = DirNdx->Length;
-            if (!NT_SUCCESS(status = UDFReadExtent(IrpContext, Vcb, &DirInfo->Dloc->DataLoc, DirNdx->Offset,
+            if (!NT_SUCCESS(status = UDFReadFile__(IrpContext, Vcb, DirInfo, DirNdx->Offset,
                                      DirNdx->Length, FALSE, (int8*)(FileInfo->FileIdent))))
                 try_return (status);
             FileInfo->FileIdent->fileCharacteristics = 0;
@@ -3458,6 +3472,9 @@ UDFCloseFile__(
     if (FileInfo->RefCount ||
        FileInfo->OpenCount ||
        !(FileInfo->Dloc->FELoc.Mapping)) return STATUS_SUCCESS;
+    status = UDFFlushDirectoryAppend(IrpContext, Vcb, FileInfo);
+    if (!NT_SUCCESS(status))
+        return status;
 //    ASSERT(FileInfo->Dloc->FELoc.Mapping[0].extLocation);
     PartNum = UDFGetRefPartNumByPhysLba(Vcb, FileInfo->Dloc->FELoc.Mapping[0].extLocation);
     if (PartNum == (uint32)-1) {
@@ -3902,6 +3919,7 @@ UDFRecordDirectory__(
     ((icbtag*)(DirInfo->Dloc->FileEntry+1))->fileType = UDF_FILE_TYPE_DIRECTORY;
     // init temporary FileInfo
     RtlZeroMemory(&FileInfo, sizeof(UDF_FILE_INFO));
+    RtlZeroMemory(&Dloc, sizeof(Dloc));
     FileInfo.Dloc = &Dloc;
     FileInfo.Dloc->FileEntry = DirInfo->ParentFile->Dloc->FileEntry;
     FileInfo.Dloc->FileEntryLen = DirInfo->ParentFile->Dloc->FileEntryLen;
@@ -3971,6 +3989,10 @@ UDFResizeFile__(
     UDFPrint(("UDFResizeFile__: FI %x, -> %I64x\n", FileInfo, NewLength));
     ValidateFileInfo(FileInfo);
 //    ASSERT(FileInfo->RefCount >= 1);
+
+    status = UDFFlushDirectoryAppend(IrpContext, Vcb, FileInfo);
+    if (!NT_SUCCESS(status))
+        return status;
 
     if ((NewLength >> Vcb->SectorShift) > Vcb->TotalAllocUnits) {
         UDFPrint(("STATUS_DISK_FULL\n"));
@@ -4773,8 +4795,9 @@ UDFWriteFEBlock(
     uint16 AllocMode;
     uint32 TailLen, WriteLen;
     int64 InfoLen;
-    SIZE_T WrittenBytes;
+    SIZE_T WrittenBytes = 0;
     uint32 lba = Dloc->FELoc.Mapping[0].extLocation;
+    NTSTATUS status;
 
     UDFSetAllocDescLen(Vcb, FileInfo);
     UDFSetRecordedBlocks(Vcb, FileInfo);
@@ -4811,10 +4834,17 @@ UDFWriteFEBlock(
     UDFSetUpTag(Vcb, Dloc->FileEntry, (uint16)(FELen + TailLen), UDFPhysLbaToPart(Vcb, PartNum, lba), 0);
     UDFPrint(("Desc CRC Len %x\n", Dloc->FileEntry->descCRCLength));
 
-    return UDFWriteExtent(IrpContext, Vcb, &Dloc->FELoc, 
+    status = UDFWriteExtent(IrpContext, Vcb, &Dloc->FELoc,
         0, WriteLen, FALSE, 
         FEBuf, &WrittenBytes
     );
+    if (NT_SUCCESS(status) && WrittenBytes != WriteLen)
+        status = STATUS_IO_DEVICE_ERROR;
+    if (NT_SUCCESS(status)) {
+        Dloc->DirectoryCommittedLength = Dloc->DataLoc.Length;
+        Dloc->DirectoryCommitKnown = TRUE;
+    }
+    return status;
 } 
 
 static
@@ -4914,6 +4944,11 @@ UDFFlushFE(
     }
 #endif // UDF_DBG
 retry_flush_FE:
+    /* Append payload and its recorded mapping must be committed before AD
+     * serialization and before a longer directory FE becomes visible. */
+    status = UDFFlushDirectoryAppend(IrpContext, Vcb, FileInfo);
+    if (!NT_SUCCESS(status))
+        return status;
     UDFPrint(("  FlushFE: %x\n", FileInfo->Dloc->FELoc.Mapping[0].extLocation));
 
     /* Retagging is meaningful only for directories.  It returns
@@ -5199,6 +5234,9 @@ UDFFlushFile__(
     NTSTATUS status;
     uint32 PartNum;
 
+    status = UDFFlushDirectoryAppend(IrpContext, Vcb, FileInfo);
+    if (!NT_SUCCESS(status))
+        return status;
     ASSERT(FileInfo->Dloc->FELoc.Mapping[0].extLocation);
     PartNum = UDFGetRefPartNumByPhysLba(Vcb, FileInfo->Dloc->FELoc.Mapping[0].extLocation);
     if (PartNum == (uint32)-1) {
@@ -6283,6 +6321,9 @@ UDFConvertFEToExtended(
 
     if (!FileInfo) return STATUS_INVALID_PARAMETER;
     ValidateFileInfo(FileInfo);
+    status = UDFFlushDirectoryAppend(IrpContext, Vcb, FileInfo);
+    if (!NT_SUCCESS(status))
+        return status;
     if (FileInfo->Dloc->FileEntry->tagIdent == TID_EXTENDED_FILE_ENTRY) return STATUS_SUCCESS;
     if (FileInfo->Dloc->FileEntry->tagIdent != TID_FILE_ENTRY) return STATUS_INVALID_PARAMETER;
 
