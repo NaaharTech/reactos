@@ -723,6 +723,177 @@ UDFIndexDirectory(
 } // end UDFIndexDirectory()
 
 
+/* Retag owns the directory generation until the parent FE is serialized.
+ * Combine only contiguous FID payloads inside this same call; never defer a
+ * write beyond it or fill a gap from an unrelated/stale sector snapshot. */
+#define UDF_RETAG_WINDOW_BYTES 16384
+#define UDF_RETAG_WINDOW_FIDS  64
+
+typedef struct _UDF_RETAG_WINDOW {
+    PDIR_INDEX_ITEM Entry[UDF_RETAG_WINDOW_FIDS];
+    int8 Bytes[UDF_RETAG_WINDOW_BYTES];
+} UDF_RETAG_WINDOW;
+
+#ifdef UDF_METADATA_BATCH_DIAGNOSTICS
+/* Private diagnostic only: OR reason bits, last FID offset/length and low32
+ * logical length. Query runs after this single-thread workload completes. */
+static void
+UDFReTagFailureReason(PVCB Vcb, uint32 Reason, uint32 Offset,
+                     uint32 Length, int64 LogicalLength)
+{
+    LONG old, value;
+    do {
+        old = InterlockedCompareExchange(&Vcb->MetadataBatchDiag[26],0,0);
+        value = (LONG)(((uint32)old & 0xffff) | Reason |
+                      ((Length > 0xffff ? 0xffff : Length) << 16));
+    } while (InterlockedCompareExchange(&Vcb->MetadataBatchDiag[26],value,old) != old);
+    InterlockedExchange(&Vcb->MetadataBatchDiag[18],(LONG)Offset);
+    InterlockedExchange(&Vcb->MetadataBatchDiag[27],(LONG)LogicalLength);
+}
+/* Bits6..15 count owned pending FIDs, saturating at1023. Preserve the
+ * existing low6reason OR and high16last-failure-length diagnostic fields. */
+static void
+UDFReTagCountPending(PVCB Vcb)
+{
+    LONG old, value;
+    do {
+        old = InterlockedCompareExchange(&Vcb->MetadataBatchDiag[26],0,0);
+        if (((uint32)old & 0xffc0) == 0xffc0)
+            return;
+        value = old + 0x40;
+    } while (InterlockedCompareExchange(&Vcb->MetadataBatchDiag[26],value,old) != old);
+}
+#else
+#define UDFReTagFailureReason(v,r,o,l,n) ((void)0)
+#define UDFReTagCountPending(v) ((void)0)
+#endif
+
+/* Directory indexes can reserve a named FID before its complete payload
+ * reaches DataLoc.Length. Its owning FI remains responsible for publishing
+ * it through UDFFlushFI (including FE-before-FID), not through retag reads
+ * past EOF. Never accept a partially present record or an unowned hole. */
+static BOOLEAN
+UDFReTagOwnsUnwrittenFid(PUDF_FILE_INFO Directory, PDIR_INDEX_ITEM Entry)
+{
+    PUDF_FILE_INFO owner;
+    PDIR_INDEX_HDR index = Directory->Dloc->DirIndex;
+    uint_di frame, rel;
+    if (Directory->Dloc->DataLoc.Length < 0 ||
+        (uint64)Entry->Offset < (uint64)Directory->Dloc->DataLoc.Length ||
+        !(Entry->FI_Flags & UDF_FI_FLAG_FI_MODIFIED) ||
+        !(owner = Entry->FileInfo) || !owner->Dloc ||
+        !owner->ParentFile || owner->ParentFile->Dloc != Directory->Dloc ||
+        !owner->FileIdent || owner->FileIdentLen != Entry->Length ||
+        owner->FileIdentLen < sizeof(FILE_IDENT_DESC) ||
+        owner->FileIdentLen > 0xffff || owner->Index < 2)
+        return FALSE;
+    frame = owner->Index >> UDF_DIR_INDEX_FRAME_SH;
+    rel = owner->Index & (UDF_DIR_INDEX_FRAME-1);
+    if (frame >= index->FrameCount ||
+        (frame == index->FrameCount-1 && rel >= index->LastFrameCount) ||
+        UDFDirIndex(index,owner->Index) != Entry ||
+        owner->FileIdent->descTag.tagIdent != TID_FILE_IDENT_DESC ||
+        owner->FileIdent->icb.extLocation.logicalBlockNum !=
+            Entry->FileEntryLoc.logicalBlockNum ||
+        owner->FileIdent->icb.extLocation.partitionReferenceNum !=
+            Entry->FileEntryLoc.partitionReferenceNum ||
+        (uint64)sizeof(FILE_IDENT_DESC) + owner->FileIdent->lengthOfImpUse +
+            owner->FileIdent->lengthFileIdent > owner->FileIdentLen)
+        return FALSE;
+    return TRUE;
+}
+
+static NTSTATUS
+UDFReTagDirectoryWindows(PIRP_CONTEXT IrpContext, PVCB Vcb,
+    PUDF_FILE_INFO FileInfo, uint16 RefPartNum,
+    PUDF_DIR_SCAN_CONTEXT ScanContext, UDF_RETAG_WINDOW* Window)
+{
+    PDIR_INDEX_ITEM entry, next;
+    UDF_DIR_SCAN_CONTEXT lookahead;
+    uint32 count, length, offset, i, lba;
+    PUDF_FILE_INFO curFileInfo;
+    SIZE_T written;
+    NTSTATUS status;
+
+    while ((entry = UDFDirIndexScan(ScanContext, NULL))) {
+        offset = entry->Offset;
+        length = entry->Length;
+        if (UDFReTagOwnsUnwrittenFid(FileInfo,entry)) {
+            UDFReTagCountPending(Vcb);
+            continue; // Retain this FI's complete buffer and dirty flag.
+        }
+        if (length < sizeof(tag) || length > UDF_RETAG_WINDOW_BYTES) {
+            UDFReTagFailureReason(Vcb,length ? 2 : 1,offset,length,
+                                 FileInfo->Dloc->DataLoc.Length);
+            return STATUS_FILE_CORRUPT_ERROR;
+        }
+        if (FileInfo->Dloc->DataLoc.Length < 0 ||
+            (uint64)offset + length > (uint64)FileInfo->Dloc->DataLoc.Length) {
+            UDFReTagFailureReason(Vcb,4,offset,length,FileInfo->Dloc->DataLoc.Length);
+            return STATUS_FILE_CORRUPT_ERROR;
+        }
+        Window->Entry[0] = entry;
+        count = 1;
+        while (count < UDF_RETAG_WINDOW_FIDS) {
+            /* Do not consume the first entry of the next window. The scan
+             * and its index pointers remain under the caller's directory
+             * ownership; no table cursor escapes across released locks. */
+            lookahead = *ScanContext;
+            next = UDFDirIndexScan(&lookahead, NULL);
+            if (!next || (uint64)next->Offset != (uint64)offset + length ||
+                next->Length < sizeof(tag) ||
+                next->Length > UDF_RETAG_WINDOW_BYTES - length ||
+                (uint64)next->Offset + next->Length >
+                    (uint64)FileInfo->Dloc->DataLoc.Length)
+                break;
+            Window->Entry[count++] = next;
+            length += next->Length;
+            *ScanContext = lookahead;
+        }
+        UDF_METADATA_COUNT(Vcb,28);
+        status = UDFReadFile__(IrpContext,Vcb,FileInfo,offset,length,FALSE,Window->Bytes);
+        if (!NT_SUCCESS(status)) {
+            UDFReTagFailureReason(Vcb,16,offset,length,FileInfo->Dloc->DataLoc.Length);
+            return status;
+        }
+        for (i = 0; i < count; i++) {
+            entry = Window->Entry[i];
+            lba = UDFExtentOffsetToLba(Vcb,FileInfo->Dloc->DataLoc.Mapping,
+                                      entry->Offset,NULL,NULL,NULL,NULL);
+            if (lba == LBA_OUT_OF_EXTENT) {
+                UDFReTagFailureReason(Vcb,8,entry->Offset,entry->Length,
+                                     FileInfo->Dloc->DataLoc.Length);
+                return STATUS_FILE_CORRUPT_ERROR;
+            }
+            UDFSetUpTag(Vcb,(tag*)(Window->Bytes + entry->Offset - offset),
+                       (uint16)entry->Length,UDFPhysLbaToPart(Vcb,RefPartNum,lba),0);
+            UDF_METADATA_COUNT(Vcb,23);
+            curFileInfo = entry->FileInfo;
+            if (curFileInfo && curFileInfo->FileIdent) {
+                FileInfo->Dloc->FELoc.Modified = TRUE;
+                FileInfo->Dloc->FE_Flags |= UDF_FE_FLAG_FE_MODIFIED;
+            }
+        }
+        /* Same lower mapping/primary/mirror and short-I/O checks as the
+         * previous per-FID path. No FID points to a not-yet-flushed new FE. */
+        UDF_METADATA_COUNT(Vcb,24);
+        status = UDFWriteFile__(IrpContext,Vcb,FileInfo,offset,length,FALSE,
+                                Window->Bytes,&written);
+        if (!NT_SUCCESS(status) || written != length) {
+            UDFReTagFailureReason(Vcb,32,offset,length,FileInfo->Dloc->DataLoc.Length);
+            return NT_SUCCESS(status) ? STATUS_IO_DEVICE_ERROR : status;
+        }
+        for (i = 0; i < count; i++) {
+            entry = Window->Entry[i];
+            /* Re-read this index owner after I/O; do not retain a child FI
+             * pointer across the synchronous lower request. */
+            if (entry->FileInfo)
+                entry->FI_Flags |= UDF_FI_FLAG_FI_MODIFIED;
+        }
+    }
+    return STATUS_SUCCESS;
+}
+
 /*
     This routine rebuilds tags for all entries from Dir.
  */
@@ -771,14 +942,55 @@ UDFReTagDirectory(
     RefPartNum = (uint16)UDFGetRefPartNumByPhysLba(Vcb, FileInfo->Dloc->FELoc.Mapping[0].extLocation);
     ASSERT(RefPartNum != -1);
 
-    while((DirNdx = UDFDirIndexScan(&ScanContext, NULL))) {
+    /* The general optical/in-ICB path stays unchanged. Failure to obtain
+     * the optional larger buffer uses the original per-FID implementation. */
+    if (Vcb->VcbCondition == VcbMounted && !Vcb->CDR_Mode &&
+        Vcb->SectorSize == 512 && !FileInfo->Dloc->DataLoc.Offset &&
+        (Vcb->UdfRevision == 0x201 || Vcb->UdfRevision == 0x250) &&
+        Vcb->TargetDeviceObject &&
+        Vcb->TargetDeviceObject->DeviceType == FILE_DEVICE_DISK &&
+        !FlagOn(Vcb->VcbState, VCB_STATE_VOLUME_READ_ONLY | UDF_VCB_FLAGS_DEAD)) {
+        UDF_RETAG_WINDOW* window = DbgAllocatePool(PagedPool,sizeof(*window));
+        if (window) {
+            _SEH2_TRY {
+                status = UDFReTagDirectoryWindows(IrpContext,Vcb,FileInfo,
+                                                 RefPartNum,&ScanContext,window);
+            } _SEH2_FINALLY {
+                DbgFreePool(window);
+                DbgFreePool(Buf);
+            } _SEH2_END;
+            if (!NT_SUCCESS(status)) {
+                UDF_METADATA_COUNT(Vcb,29);
+                return status;
+            }
+            goto retag_complete;
+        }
+    }
 
+    while((DirNdx = UDFDirIndexScan(&ScanContext, NULL))) {
+        /* The low-memory/general fallback must use the same ownership
+         * rule; it must not fabricate a FID from a short-success EOF read. */
+        if (UDFReTagOwnsUnwrittenFid(FileInfo,DirNdx)) {
+            UDFReTagCountPending(Vcb);
+            continue;
+        }
+        if (FileInfo->Dloc->DataLoc.Length < 0 ||
+            (uint64)DirNdx->Offset + DirNdx->Length >
+                (uint64)FileInfo->Dloc->DataLoc.Length) {
+            UDFReTagFailureReason(Vcb,4,DirNdx->Offset,DirNdx->Length,
+                                 FileInfo->Dloc->DataLoc.Length);
+            UDF_METADATA_COUNT(Vcb,29);
+            DbgFreePool(Buf);
+            return STATUS_FILE_CORRUPT_ERROR;
+        }
+        UDF_METADATA_COUNT(Vcb,28);
         status = UDFReadFile__(IrpContext, Vcb, FileInfo, Offset = DirNdx->Offset,
                                                    l = DirNdx->Length, FALSE, Buf);
         if (!NT_SUCCESS(status)) {
             DbgFreePool(Buf);
             return status;
         }
+        UDF_METADATA_COUNT(Vcb,23);
         curFileInfo = DirNdx->FileInfo;
         // write modified
         UDFSetUpTag(Vcb, (tag*)Buf, (uint16)l,
@@ -791,6 +1003,7 @@ UDFReTagDirectory(
             FileInfo->Dloc->FE_Flags |= UDF_FE_FLAG_FE_MODIFIED;
         }
 
+        UDF_METADATA_COUNT(Vcb,24);
         status = UDFWriteFile__(IrpContext, Vcb, FileInfo, Offset, l, FALSE, Buf, &WrittenBytes);
         if (!NT_SUCCESS(status) || WrittenBytes != l) {
             DbgFreePool(Buf);
@@ -803,6 +1016,7 @@ UDFReTagDirectory(
     // resize DirIndex
     DbgFreePool(Buf);
 
+retag_complete:
     hDirNdx->DIFlags &= ~UDF_DI_FLAG_INIT_IN_ICB;
     hDirNdx->DIFlags |= (FileInfo->Dloc->DataLoc.Offset ? UDF_DI_FLAG_INIT_IN_ICB : 0);
     return status;
