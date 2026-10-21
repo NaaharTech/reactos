@@ -156,6 +156,7 @@ UDFRecoverDirtyVolumeBeforeLoad(PIRP_CONTEXT IrpContext, PVCB Vcb)
     uint8_t integrityType;
     UDF_TIME_STAMP timestamp;
     LONGLONG now;
+    const char *rejectionReason;
 #if defined(UDF_DBG) && defined(USE_KD_PRINT)
     UDFS_RECOVERY_PHASE phase;
 #endif
@@ -228,6 +229,35 @@ UDFRecoverDirtyVolumeBeforeLoad(PIRP_CONTEXT IrpContext, PVCB Vcb)
               (ULONG)before.FilesVisited, (ULONG)before.DirectoriesVisited,
               (ULONG)before.PartitionBlocks, (ULONG)before.FailureObjectRef,
               (ULONG)before.FailureObjectLbn));
+    UDFPrint(("UDFS recovery: metadata main/mirror/bitmap FE %lx/%lx/%lx, duplicated %u, blocks %lu extents %lu/%lu\n",
+              (ULONG)before.MetadataMainFeLbn,
+              (ULONG)before.MetadataMirrorFeLbn,
+              (ULONG)before.MetadataBitmapFeLbn,
+              (ULONG)before.MetadataDuplicated, (ULONG)before.MetadataBlocks,
+              (ULONG)before.MainExtents, (ULONG)before.MirrorExtents));
+    UDFPrint(("UDFS recovery: bitmap scanned %u, free metadata %lu, bitmap bits %lu, referenced-free %lu (first %lx), mirror-checked %lu, unowned metadata %lu (first %lx), overlap %lu\n",
+              (ULONG)before.BitmapContentsScanned,
+              (ULONG)before.MetadataFreeBlocks,
+              (ULONG)before.MetadataBitmapBits,
+              (ULONG)before.ReferencedFreeMetadataBlocks,
+              (ULONG)before.FirstReferencedFreeMetadataLbn,
+              (ULONG)before.ReferencedFreeMirrorBlocksCompared,
+              (ULONG)before.UnownedMetadataBlocks,
+              (ULONG)before.FirstUnownedMetadataLbn,
+              (ULONG)before.OverlapBlocks));
+    UDFPrint(("UDFS recovery: ownership complete %u, physical free refs %lu (first %lx), unowned physical %lu (first %lx), LVID free physical/metadata %lu/%lu size %lu/%lu files/dirs %lu/%lu next ID %I64x max ID %I64x\n",
+              (ULONG)before.CompleteOwnershipGraph,
+              (ULONG)before.ReferencedFreePhysicalBlocks,
+              (ULONG)before.FirstReferencedFreePhysicalLbn,
+              (ULONG)before.UnownedPhysicalBlocks,
+              (ULONG)before.FirstUnownedPhysicalLbn,
+              (ULONG)before.LvidPhysicalFreeBlocks,
+              (ULONG)before.LvidMetadataFreeBlocks,
+              (ULONG)before.LvidPhysicalSizeBlocks,
+              (ULONG)before.LvidMetadataSizeBlocks,
+              (ULONG)before.LvidFileCount,
+              (ULONG)before.LvidDirectoryCount,
+              before.LvidNextUniqueId, before.MaxUniqueId));
     /* The probe has not written anything yet. Incomplete validation keeps
      * the pre-existing dirty/read-only mount policy. */
     if (status == UdfsRecoveryProbeNoMemory ||
@@ -257,16 +287,25 @@ UDFRecoverDirtyVolumeBeforeLoad(PIRP_CONTEXT IrpContext, PVCB Vcb)
     UDFTimeToUDF(now, &timestamp);
     UdfsRecoveryPhaseBegin(&io, &phase);
     status = UdfsRecoveryPrepareRepair(&reader, &before,
-                                        (const uint8_t *)&timestamp, plan);
+                                        (const uint8_t *)&timestamp, plan,
+                                        &rejectionReason);
     UdfsRecoveryPhaseEnd(&io, &phase, "plan", status);
     if (status == UdfsRecoveryProbeUnsupported) {
-        UDFPrint(("UDFS recovery: ownership class not repairable; read-only policy\n"));
+        UDFPrint(("UDFS recovery: repair rejected: %s; missing metadata blocks %lu inline-FE %lu LVID/current free %lu/%lu files %lu/%lu\n",
+                  rejectionReason ? rejectionReason : "unknown reason",
+                  (ULONG)before.ReferencedFreeMetadataBlocks,
+                  (ULONG)before.ReferencedFreeInlineFileFeBlocks,
+                  (ULONG)before.LvidMetadataFreeBlocks,
+                  (ULONG)before.MetadataFreeBlocks,
+                  (ULONG)before.LvidFileCount,
+                  (ULONG)before.FilesVisited));
         UdfsRecoveryMountFree(&io, plan);
         return STATUS_SUCCESS;
     }
     if (status != UdfsRecoveryProbeValidLayout) {
-        UDFPrint(("UDFS recovery: no complete plan %u; read-only policy\n",
-                  (ULONG)status));
+        UDFPrint(("UDFS recovery: no complete plan %u: %s; read-only policy\n",
+                  (ULONG)status,
+                  rejectionReason ? rejectionReason : "no detailed reason"));
         UdfsRecoveryMountFree(&io, plan);
         return STATUS_SUCCESS;
     }

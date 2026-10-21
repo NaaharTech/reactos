@@ -1633,89 +1633,128 @@ done:
     return status;
 }
 
+const char *
+UdfsRecoveryRepairRejectionReason(const UDFS_RECOVERY_PROBE *probe)
+{
+    uint32_t missing, staleFree, staleFiles;
+    int coherentCheckpoint;
+
+    if (!probe)
+        return "missing recovery probe";
+    if (probe->LvidIntegrityType != 0)
+        return "LVID checkpoint is not OPEN";
+    if (!probe->MetadataDuplicated)
+        return "metadata partition has no duplicate metadata file";
+    if (!probe->BitmapContentsScanned)
+        return "metadata bitmap was not completely scanned";
+    if (probe->ReferencedFreePhysicalBlocks)
+        return "physical bitmap marks referenced physical blocks free";
+    if (probe->UnownedPhysicalBlocks)
+        return "physical bitmap contains unowned allocated blocks";
+    if (probe->UnownedMetadataBlocks)
+        return "metadata bitmap contains unowned allocated blocks";
+    if (probe->OverlapBlocks)
+        return "physical and metadata allocations overlap";
+    if (probe->ReferencedFreeMetadataBlocks >
+        UDFS_RECOVERY_MAX_REPAIR_BLOCKS)
+        return "referenced-free metadata blocks exceed repair limit";
+    if (probe->ReferencedFreeMirrorBlocksCompared !=
+        probe->ReferencedFreeMetadataBlocks)
+        return "not all referenced-free metadata blocks have verified mirrors";
+    if (probe->LvidPhysicalFreeBlocks != probe->PhysicalFreeBlocks)
+        return "LVID physical free-block count disagrees with physical bitmap";
+    if (probe->LvidPhysicalSizeBlocks != probe->PartitionBlocks)
+        return "LVID physical partition size disagrees with partition descriptor";
+    if (probe->LvidMetadataSizeBlocks != probe->MetadataBlocks)
+        return "LVID metadata size disagrees with metadata file extents";
+    if (probe->LvidMetadataFreeBlocks < probe->MetadataFreeBlocks)
+        return "LVID metadata free-block count is less than metadata bitmap count";
+    if ((uint64_t)probe->LvidMetadataFreeBlocks -
+            probe->MetadataFreeBlocks +
+            probe->ReferencedFreeMetadataBlocks >
+        UDFS_RECOVERY_MAX_REPAIR_BLOCKS)
+        return "metadata bitmap/LVID repair exceeds repair limit";
+    if (probe->MetadataFreeBlocks <
+        probe->ReferencedFreeMetadataBlocks)
+        return "metadata bitmap has fewer free blocks than referenced-free blocks";
+    if (probe->LvidFileCount > probe->FilesVisited)
+        return "LVID file count exceeds files found in ownership graph";
+    if (probe->LvidDirectoryCount != probe->DirectoriesVisited)
+        return "LVID directory count disagrees with ownership graph";
+    if (probe->MaxUniqueId == UINT64_MAX)
+        return "maximum object unique ID cannot be incremented";
+    if (probe->Status != UdfsRecoveryProbeValidLayout &&
+        probe->Status != UdfsRecoveryProbeGraphMismatch &&
+        probe->Status != UdfsRecoveryProbeLvidMismatch)
+        return "probe status is not eligible for repair";
+    if (!probe->CompleteOwnershipGraph &&
+        probe->ReferencedFreeMetadataBlocks == 0)
+        return "ownership graph is incomplete without a repairable metadata mismatch";
+
+    missing = probe->ReferencedFreeMetadataBlocks;
+    staleFree = probe->LvidMetadataFreeBlocks - probe->MetadataFreeBlocks;
+    staleFiles = probe->FilesVisited - probe->LvidFileCount;
+    coherentCheckpoint =
+        probe->Status == UdfsRecoveryProbeValidLayout &&
+        probe->CompleteOwnershipGraph && probe->LvidCountersMatch &&
+        missing == 0 && staleFree == 0 && staleFiles == 0 &&
+        probe->LvidNextUniqueId > probe->MaxUniqueId;
+    if (coherentCheckpoint ||
+        (missing == 2 && staleFree == 0 && staleFiles == 1 &&
+         probe->LvidNextUniqueId == probe->MaxUniqueId) ||
+        (missing == 1 && staleFree == 0 && staleFiles == 1 &&
+         probe->ReferencedFreeInlineFileFeBlocks == 1 &&
+         probe->LvidNextUniqueId == probe->MaxUniqueId) ||
+        (missing == 1 && staleFree == 0 && staleFiles == 0 &&
+         probe->LvidNextUniqueId == probe->MaxUniqueId + 1) ||
+        (missing == 0 && staleFree == 2 && staleFiles == 1 &&
+         probe->LvidNextUniqueId == probe->MaxUniqueId) ||
+        (missing == 0 && staleFree == 1 && staleFiles == 0 &&
+         probe->LvidNextUniqueId == probe->MaxUniqueId + 1))
+        return NULL;
+
+    return "metadata/LVID/namespace state does not match a supported recovery pattern";
+}
+
 UDFS_RECOVERY_PROBE_STATUS
 UdfsRecoveryPrepareRepair(const UDFS_RECOVERY_READER *reader,
                           const UDFS_RECOVERY_PROBE *probe,
                           const uint8_t recordingTime[12],
-                          UDFS_RECOVERY_REPAIR_PLAN *plan)
+                          UDFS_RECOVERY_REPAIR_PLAN *plan,
+                          const char **rejectionReason)
 {
     RECOVERY_EXTENT_LIST *bitmapFile = NULL;
     UDFS_RECOVERY_PROBE check;
     UDFS_RECOVERY_PROBE_STATUS status;
     UDFS_RECOVERY_SECTOR_EDIT *edit;
     uint32_t i, newMetadataFree, crcLength, checksum;
-    uint32_t missing, staleFree, staleFiles;
     uint16_t crc;
     uint64_t nextUniqueId;
-    int coherentCheckpoint;
 
+    if (rejectionReason)
+        *rejectionReason = NULL;
     if (!reader || !reader->ReadSector || !reader->Allocate ||
-        !reader->Free || !probe || !recordingTime || !plan)
+        !reader->Free || !probe || !recordingTime || !plan ||
+        !rejectionReason)
         return UdfsRecoveryProbeInvalidInput;
     memset(plan, 0, sizeof(*plan));
-    if (probe->LvidIntegrityType != 0 || !probe->MetadataDuplicated ||
-        !probe->BitmapContentsScanned ||
-        probe->ReferencedFreePhysicalBlocks ||
-        probe->UnownedPhysicalBlocks || probe->UnownedMetadataBlocks ||
-        probe->OverlapBlocks ||
-        probe->ReferencedFreeMetadataBlocks >
-            UDFS_RECOVERY_MAX_REPAIR_BLOCKS ||
-        probe->ReferencedFreeMirrorBlocksCompared !=
-            probe->ReferencedFreeMetadataBlocks ||
-        probe->LvidPhysicalFreeBlocks != probe->PhysicalFreeBlocks ||
-        probe->LvidPhysicalSizeBlocks != probe->PartitionBlocks ||
-        probe->LvidMetadataSizeBlocks != probe->MetadataBlocks ||
-        probe->LvidMetadataFreeBlocks < probe->MetadataFreeBlocks ||
-        probe->MetadataFreeBlocks <
-            probe->ReferencedFreeMetadataBlocks ||
-        (uint64_t)probe->LvidMetadataFreeBlocks -
-            probe->MetadataFreeBlocks +
-            probe->ReferencedFreeMetadataBlocks >
-            UDFS_RECOVERY_MAX_REPAIR_BLOCKS ||
-        probe->LvidFileCount > probe->FilesVisited ||
-        probe->LvidDirectoryCount != probe->DirectoriesVisited ||
-        probe->MaxUniqueId == UINT64_MAX ||
-        (probe->Status != UdfsRecoveryProbeValidLayout &&
-         probe->Status != UdfsRecoveryProbeGraphMismatch &&
-         probe->Status != UdfsRecoveryProbeLvidMismatch) ||
-        (!probe->CompleteOwnershipGraph &&
-         probe->ReferencedFreeMetadataBlocks == 0))
+    *rejectionReason = UdfsRecoveryRepairRejectionReason(probe);
+    if (*rejectionReason)
         return UdfsRecoveryProbeUnsupported;
 
-    missing = probe->ReferencedFreeMetadataBlocks;
-    staleFree = probe->LvidMetadataFreeBlocks - probe->MetadataFreeBlocks;
-    staleFiles = probe->FilesVisited - probe->LvidFileCount;
     /* A coherent OPEN checkpoint needs no namespace or allocation repair.
      * Deleted files can leave gaps below NextUniqueId: it is a high-water
      * mark, not the largest surviving ID plus one. Preserve it. Require all
      * ownership, mirror and LVID checks before closing this checkpoint;
      * the barriers in ApplyRepair must complete before a writable mount.
      * This does not recover application data that was never flushed. */
-    coherentCheckpoint =
-        probe->Status == UdfsRecoveryProbeValidLayout &&
-        probe->CompleteOwnershipGraph && probe->LvidCountersMatch &&
-        missing == 0 && staleFree == 0 && staleFiles == 0 &&
-        probe->LvidNextUniqueId > probe->MaxUniqueId;
-    /* Keep the existing bounded create repair and interrupted-retry classes
-     * separate from the already coherent checkpoint. */
-    if (!(coherentCheckpoint ||
-          (missing == 2 && staleFree == 0 && staleFiles == 1 &&
-           probe->LvidNextUniqueId == probe->MaxUniqueId) ||
-          (missing == 1 && staleFree == 0 && staleFiles == 1 &&
-           probe->ReferencedFreeInlineFileFeBlocks == 1 &&
-           probe->LvidNextUniqueId == probe->MaxUniqueId) ||
-          (missing == 1 && staleFree == 0 && staleFiles == 0 &&
-           probe->LvidNextUniqueId == probe->MaxUniqueId + 1) ||
-          (missing == 0 && staleFree == 2 && staleFiles == 1 &&
-           probe->LvidNextUniqueId == probe->MaxUniqueId) ||
-          (missing == 0 && staleFree == 1 && staleFiles == 0 &&
-           probe->LvidNextUniqueId == probe->MaxUniqueId + 1)))
-        return UdfsRecoveryProbeUnsupported;
-
     check = *probe;
     bitmapFile = (RECOVERY_EXTENT_LIST *)reader->Allocate(reader->Context,
                                                           sizeof(*bitmapFile));
-    if (!bitmapFile) return UdfsRecoveryProbeNoMemory;
+    if (!bitmapFile) {
+        *rejectionReason = "unable to allocate metadata bitmap extent list";
+        return UdfsRecoveryProbeNoMemory;
+    }
     status = ReadFileExtents(reader, &check, probe->MetadataBitmapFeLbn,
                              252, bitmapFile);
     if (status != UdfsRecoveryProbeValidLayout) goto done;
@@ -1726,11 +1765,15 @@ UdfsRecoveryPrepareRepair(const UDFS_RECOVERY_READER *reader,
         uint8_t mask;
         status = MapExtentByte(probe, bitmapFile, 24ULL + (lbn >> 3),
                                &lba, &byteOffset);
-        if (status != UdfsRecoveryProbeValidLayout) goto done;
+        if (status != UdfsRecoveryProbeValidLayout) {
+            *rejectionReason = "referenced metadata block is outside the metadata bitmap extent";
+            goto done;
+        }
         for (j = 0; j < plan->BitmapEditCount; ++j)
             if (plan->BitmapEdits[j].Lba == lba) break;
         if (j == plan->BitmapEditCount) {
             if (j == UDFS_RECOVERY_MAX_REPAIR_BLOCKS) {
+                *rejectionReason = "repair requires too many metadata bitmap sectors";
                 status = UdfsRecoveryProbeUnsupported;
                 goto done;
             }
@@ -1745,6 +1788,7 @@ UdfsRecoveryPrepareRepair(const UDFS_RECOVERY_READER *reader,
         edit = &plan->BitmapEdits[j];
         mask = (uint8_t)(1U << (lbn & 7));
         if (!(edit->After[byteOffset] & mask)) {
+            *rejectionReason = "referenced metadata block is no longer free in the bitmap";
             status = UdfsRecoveryProbeCorrupt;
             goto done;
         }
@@ -1765,6 +1809,7 @@ UdfsRecoveryPrepareRepair(const UDFS_RECOVERY_READER *reader,
         Read64(edit->Before + 40) != probe->LvidNextUniqueId ||
         Read32(edit->Before + 128) != probe->LvidFileCount ||
         Read32(edit->Before + 132) != probe->LvidDirectoryCount) {
+        *rejectionReason = "LVID changed after the recovery probe";
         status = UdfsRecoveryProbeCorrupt;
         goto done;
     }
@@ -1783,6 +1828,7 @@ UdfsRecoveryPrepareRepair(const UDFS_RECOVERY_READER *reader,
     Write32(edit->After + 132, probe->DirectoriesVisited);
     crcLength = Read16(edit->After + 10);
     if (crcLength > UDFS_RECOVERY_SECTOR_SIZE - 16) {
+        *rejectionReason = "LVID tag CRC length exceeds sector bounds";
         status = UdfsRecoveryProbeUnsupported;
         goto done;
     }
@@ -1799,8 +1845,17 @@ UdfsRecoveryPrepareRepair(const UDFS_RECOVERY_READER *reader,
         plan->Ready = 1;
 done:
     reader->Free(reader->Context, bitmapFile);
-    if (status != UdfsRecoveryProbeValidLayout)
+    if (status != UdfsRecoveryProbeValidLayout) {
+        if (!*rejectionReason) {
+            if (status == UdfsRecoveryProbeUnsupported)
+                *rejectionReason = "repair plan encountered unsupported metadata or LVID data";
+            else if (status == UdfsRecoveryProbeIoError)
+                *rejectionReason = "device read failed while preparing metadata repair";
+            else if (status == UdfsRecoveryProbeCorrupt)
+                *rejectionReason = "metadata or LVID data changed or failed validation while preparing repair";
+        }
         memset(plan, 0, sizeof(*plan));
+    }
     return status;
 }
 

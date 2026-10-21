@@ -120,11 +120,15 @@ UDFS_RECOVERY_PROBE_STATUS
 UdfsRecoveryPeekIntegrity(const UDFS_RECOVERY_READER *reader,
                           uint8_t *integrityType);
 
+const char *
+UdfsRecoveryRepairRejectionReason(const UDFS_RECOVERY_PROBE *probe);
+
 UDFS_RECOVERY_PROBE_STATUS
 UdfsRecoveryPrepareRepair(const UDFS_RECOVERY_READER *reader,
                           const UDFS_RECOVERY_PROBE *probe,
                           const uint8_t recordingTime[12],
-                          UDFS_RECOVERY_REPAIR_PLAN *plan);
+                          UDFS_RECOVERY_REPAIR_PLAN *plan,
+                          const char **rejectionReason);
 
 UDFS_RECOVERY_PROBE_STATUS
 UdfsRecoveryApplyRepair(const UDFS_RECOVERY_READER *reader,
