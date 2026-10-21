@@ -931,6 +931,13 @@ UDFReTagDirectory(
         return STATUS_SUCCESS;
     }
 
+    /* External appends may already be owned while old in-ICB tags still
+     * need relocation. Retag only materialized payload, never a RAM-only
+     * generation; keep DIFlags unchanged on any failed or short drain. */
+    status = UDFFlushDirectoryAppend(IrpContext,Vcb,FileInfo);
+    if (!NT_SUCCESS(status))
+        return status;
+
     // start packing
     Buf = (int8*)DbgAllocatePool(PagedPool, Vcb->SectorSize*2);
     if (!Buf) return STATUS_INSUFFICIENT_RESOURCES;

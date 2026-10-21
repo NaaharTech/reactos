@@ -177,6 +177,10 @@ UDFTryDirectoryAppend(PIRP_CONTEXT IrpContext, PVCB Vcb,
     if (IrpContext->Irp)
         fileObject = IoGetCurrentIrpStackLocation(IrpContext->Irp)->FileObject;
     allocated = dloc->DataLoc.Mapping ? UDFGetExtentLength(dloc->DataLoc.Mapping) : 0;
+    /* DataLoc.Offset describes the current storage. INIT_IN_ICB retains
+     * the previous tag mode until retag; it does not make a fully allocated
+     * external append an overwrite. Drain payload before retag and FE/AD
+     * publication, preserving that tag transition and all retry state. */
     if (!Direct && Length >= sizeof(FILE_IDENT_DESC) &&
         Length <= UDF_DIR_APPEND_CAPACITY && Buffer && Offset >= 0 &&
         (uint64)Offset <= MAXLONGLONG - (uint64)Length &&
@@ -184,7 +188,6 @@ UDFTryDirectoryAppend(PIRP_CONTEXT IrpContext, PVCB Vcb,
         dloc->DirectoryCommitKnown && Offset >= dloc->DirectoryCommittedLength &&
         (uint64)Offset + Length <= (uint64)allocated &&
         dloc->DirIndex && !dloc->DataLoc.Offset &&
-        !(dloc->DirIndex->DIFlags & UDF_DI_FLAG_INIT_IN_ICB) &&
         FileInfo->Fcb && dloc->CommonFcb == FileInfo->Fcb &&
         FlagOn(FileInfo->Fcb->FcbState, FCB_STATE_IN_FCB_TABLE) &&
         Vcb->VcbCondition == VcbMounted && !Vcb->CDR_Mode &&
