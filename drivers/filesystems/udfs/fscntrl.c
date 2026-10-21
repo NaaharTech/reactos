@@ -117,6 +117,61 @@ UDFUserFsCtrlRequest(
     NTSTATUS RC;
     PIO_STACK_LOCATION IrpSp = IoGetCurrentIrpStackLocation(Irp);
 
+#ifdef UDF_METADATA_BATCH_DIAGNOSTICS
+    if (IrpSp->Parameters.FileSystemControl.FsControlCode ==
+        CTL_CODE(FILE_DEVICE_FILE_SYSTEM,0x8e1,METHOD_BUFFERED,FILE_READ_ACCESS)) {
+        PFCB fcb, next; PCCB ccb; NTSTATUS status;
+        PVOID restart = NULL; PULONG values;
+        Irp->IoStatus.Information = 0;
+        if (UDFDecodeFileObject(IrpSp->FileObject,&fcb,&ccb) != UserVolumeOpen)
+            status = STATUS_INVALID_PARAMETER;
+        else if (!Irp->AssociatedIrp.SystemBuffer ||
+                 IrpSp->Parameters.FileSystemControl.OutputBufferLength < sizeof(fcb->Vcb->MetadataBatchDiag))
+            status = STATUS_BUFFER_TOO_SMALL;
+        else {
+            PVCB vcb = fcb->Vcb;
+            UDFAcquireVcbExclusive(IrpContext,vcb,FALSE);
+            values = Irp->AssociatedIrp.SystemBuffer;
+            RtlCopyMemory(values,vcb->MetadataBatchDiag,sizeof(vcb->MetadataBatchDiag));
+            RtlZeroMemory(values+48,16*sizeof(ULONG));
+            UDFLockFcbTable(IrpContext,vcb);
+            UDFLockVcb(IrpContext,vcb);
+            while ((next = UDFGetNextFcb(IrpContext,vcb,&restart))) {
+                BOOLEAN queued = InterlockedCompareExchange(&next->MetadataCloseQueued,0,0) != 0;
+                BOOLEAN isNew = next->FileInfo && next->FileInfo->Dloc &&
+                    (next->FileInfo->Dloc->FE_Flags & UDF_FE_FLAG_NEW_UNPUBLISHED);
+                values[48]++;
+                if (queued) values[49]++;
+                if (isNew) {
+                    values[50]++;
+                    if (queued) values[51]++;
+                    if (queued && next->FcbReference == 1) values[52]++;
+                    if (UDFNewFileCacheable(vcb,next->FileInfo)) {
+                        values[53]++;
+                        if (queued) values[54]++;
+                    }
+                    if (next->FcbReference == 1) values[55]++;
+                    if (next->FcbReference > 1) values[56]++;
+                    if (next->FcbCleanup) values[57]++;
+                    if (UDFGetFileNameLinkCount(next->FileInfo) == 1) values[59]++;
+                }
+            }
+            UDFUnlockVcb(IrpContext,vcb);
+            UDFUnlockFcbTable(IrpContext,vcb);
+            /* Global queue values are approximate, not a locked transaction. */
+            values[60] = UdfData.DelayedCloseCount;
+            values[61] = UdfData.MaxDelayedCloseCount;
+            values[62] = UdfData.MinDelayedCloseCount;
+            values[63] = UdfData.FspCloseActive;
+            UDFReleaseVcb(IrpContext,vcb);
+            Irp->IoStatus.Information = sizeof(vcb->MetadataBatchDiag);
+            status = STATUS_SUCCESS;
+        }
+        UDFCompleteRequest(IrpContext,Irp,status);
+        return status;
+    }
+#endif
+
     //  Case on the control code.
     switch (IrpSp->Parameters.FileSystemControl.FsControlCode) {
 

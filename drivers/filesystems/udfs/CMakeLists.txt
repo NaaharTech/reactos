@@ -16,6 +16,8 @@ list(APPEND SOURCE
     devcntrl.c
     deviosup.c
     dirappend.c
+    metabatch.c
+    udf_info/fe_batch.c
     dircntrl.c
     fastio.c
     fileinfo.c

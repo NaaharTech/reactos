@@ -116,6 +116,7 @@ UDFCommonClose(
     ASSERT_FCB(Fcb);
     ASSERT_CCB(Ccb);
     ASSERT_VCB(Vcb);
+    SetFlag(IrpContext->Flags, IRP_CONTEXT_FLAG_METADATA_WRITER);
 
     if (Irp) {
 
@@ -339,6 +340,7 @@ Return Value:
 
                 RemoveEntryList(Entry);
                 UdfData.DelayedCloseCount -= 1;
+                InterlockedExchange(&NextIrpContextLite->Fcb->MetadataCloseQueued, 0);
 
                 IrpContext = (PIRP_CONTEXT)NextIrpContextLite;
                 break;
@@ -534,10 +536,10 @@ Return Value:
 }
 
 
-VOID
-NTAPI
-UDFFspClose(
-    _In_opt_ PVCB Vcb
+static VOID
+UDFRunCloseQueue(
+    _In_opt_ PVCB Vcb,
+    BOOLEAN AllowBatch
     )
 
 /*++
@@ -625,7 +627,8 @@ Return Value:
         // We have an IrpContext.  Now we need to set the top level thread
         // context.
 
-        SetFlag(IrpContext->Flags, IRP_CONTEXT_FSP_FLAGS);
+        SetFlag(IrpContext->Flags, IRP_CONTEXT_FSP_FLAGS |
+                                   IRP_CONTEXT_FLAG_METADATA_WRITER);
 
         //  If we were given a Vcb then there is a request on top of this.
 
@@ -687,7 +690,10 @@ Return Value:
 
             _Analysis_assume_(CurrentVcb != NULL);
             
-            UDFAcquireVcbShared(IrpContext, CurrentVcb, FALSE);
+            if (AllowBatch)
+                UDFAcquireVcbExclusive(IrpContext, CurrentVcb, FALSE);
+            else
+                UDFAcquireVcbShared(IrpContext, CurrentVcb, FALSE);
 
             VcbHoldCount = 0;
 
@@ -698,6 +704,8 @@ Return Value:
 
         // Call our worker routine to perform the close operation.
 
+        if (AllowBatch)
+            UDFWritebackNewFileBatch(IrpContext, CurrentVcb, Fcb);
         UDFCommonClosePrivate(IrpContext, CurrentVcb, Fcb, UserReference, FALSE);
 
         //  If the reference count on this Vcb is below our residual reference
@@ -731,6 +739,24 @@ Return Value:
     FsRtlExitFileSystem();
 }
 
+
+/* Background close has no outer FCB locks. Explicit legacy callers may hold
+ * one, so they keep their existing shared-VCB/per-file path. */
+VOID NTAPI
+UDFFspClose(PVCB Vcb)
+{
+    UDFRunCloseQueue(Vcb, Vcb == NULL);
+}
+
+NTSTATUS
+UDFFspCloseForFlush(PVCB Vcb)
+{
+    NTSTATUS first = UDFTakeMetadataWritebackError(Vcb);
+    NTSTATUS current;
+    UDFRunCloseQueue(Vcb, TRUE);
+    current = UDFTakeMetadataWritebackError(Vcb);
+    return NT_SUCCESS(first) ? current : first;
+}
 
 /*
     This routine adds request to Delayed Close queue.
@@ -788,6 +814,9 @@ UDFQueueClose(
         // Add this to the delayed close list and increment
         // the count.
 
+        UDF_METADATA_COUNT(Fcb->Vcb,36);
+        ASSERT(!Fcb->MetadataCloseQueued);
+        InterlockedExchange(&Fcb->MetadataCloseQueued, 1);
         InsertTailList(&UdfData.DelayedCloseQueue,
                        &IrpContextLite->DelayedCloseLinks);
 
@@ -830,6 +859,7 @@ UDFQueueClose(
                        &IrpContext->WorkQueueItem.List);
 
         UdfData.AsyncCloseCount += 1;
+        UDF_METADATA_COUNT(Fcb->Vcb,37);
 
         // Remember to start the Fsp close thread if not currently started.
 

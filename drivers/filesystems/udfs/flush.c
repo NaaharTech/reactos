@@ -3,6 +3,7 @@
 // All rights reserved
 // This file was released under the GPLv2 on June 2015.
 ////////////////////////////////////////////////////////////////////
+
 /*************************************************************************
 *
 * File: Flush.cpp
@@ -22,6 +23,52 @@
 /* Keep the first filesystem flush failure while later files and the lower
  * device flush are processed.  A successful later operation cannot commit
  * metadata whose earlier write failed. */
+/* The VCB resource and the target FCB/LCB keep this parent chain alive.
+ * Validate it before following arbitrary depth; do not silently stop at
+ * the append-buffer count, since clean intermediate ancestors can separate
+ * two dirty generations. Caller releases the returned held resource. */
+static NTSTATUS
+UDFFlushAncestorMetadata(PIRP_CONTEXT IrpContext, PVCB Vcb,
+    PUDF_FILE_INFO Directory, PFCB* Held)
+{
+    PUDF_FILE_INFO slow = Directory, fast = Directory, ancestor;
+    NTSTATUS status;
+    PFCB previous;
+    while (fast && fast->ParentFile) {
+        slow = slow->ParentFile;
+        fast = fast->ParentFile->ParentFile;
+        if (slow && slow == fast)
+            return STATUS_FILE_CORRUPT_ERROR;
+    }
+    if (Directory && !*Held) {
+        if (!Directory->Fcb)
+            return STATUS_FILE_CORRUPT_ERROR;
+        UDF_CHECK_PAGING_IO_RESOURCE(Directory->Fcb);
+        UDFAcquireFcbExclusive(IrpContext, Directory->Fcb, FALSE);
+        *Held = Directory->Fcb;
+    }
+    while (Directory) {
+        if (!Directory->Dloc || Directory->Fcb != *Held)
+            return STATUS_FILE_CORRUPT_ERROR;
+        status = UDFFlushFile__(IrpContext, Vcb, Directory, UDF_FLUSH_FLAGS_LITE);
+        if (!NT_SUCCESS(status))
+            return status;
+        ancestor = Directory->ParentFile;
+        if (!ancestor)
+            break;
+        if (!ancestor->Fcb)
+            return STATUS_FILE_CORRUPT_ERROR;
+        UDF_CHECK_PAGING_IO_RESOURCE(ancestor->Fcb);
+        UDFAcquireFcbExclusive(IrpContext, ancestor->Fcb, FALSE);
+        previous = *Held;
+        *Held = ancestor->Fcb;
+        UDFReleaseFcb(IrpContext, previous);
+        Directory = ancestor;
+    }
+    return STATUS_SUCCESS;
+}
+
+
 static VOID
 UDFRememberFlushStatus(PIO_STATUS_BLOCK IoStatus, NTSTATUS Status)
 {
@@ -126,7 +173,9 @@ UDFCommonFlush(
         // action we take.
         if ((Fcb == Fcb->Vcb->VolumeDasdFcb) || (Fcb->FcbState & UDF_FCB_ROOT_DIRECTORY)) {
 
-            UDFFspClose(Vcb);
+            Status = UDFFspCloseForFlush(Vcb);
+            if (!NT_SUCCESS(Status))
+                try_return(Status);
 
             UDFAcquireVcbExclusive(IrpContext, Vcb, FALSE);
             AcquiredVCB = TRUE;
@@ -154,8 +203,22 @@ UDFCommonFlush(
             // A file flush also updates its parent FID. Cleanup and volume
             // flush serialize those sector read-modify-writes with the Vcb
             // resource, so join that protocol before taking either Fcb lock.
+            if (Fcb->FcbState & UDF_FCB_DIRECTORY) {
+                UDFAcquireVcbExclusive(IrpContext, Vcb, FALSE);
+                AcquiredVCB = TRUE;
+                UDFRememberFlushStatus(&FsIoStatus, UDFTakeMetadataWritebackError(Vcb));
+                UDFFlushADirectory(IrpContext, Vcb, Fcb->FileInfo, &FsIoStatus, 0);
+                if (NT_SUCCESS(FsIoStatus.Status))
+                    UDFRememberFlushStatus(&FsIoStatus,
+                        UDFFlushAncestorMetadata(IrpContext, Vcb,
+                            Fcb->FileInfo->ParentFile, &HeldParentFcb));
+                AcquiredParentFcb = HeldParentFcb != NULL;
+                Status = FsIoStatus.Status;
+                try_return(Status);
+            }
             UDFAcquireVcbShared(IrpContext, Vcb, FALSE);
             AcquiredVCB = TRUE;
+            UDFRememberFlushStatus(&FsIoStatus, UDFTakeMetadataWritebackError(Vcb));
 
             // Child-first lock ordering
             UDF_CHECK_PAGING_IO_RESOURCE(Fcb);
@@ -176,37 +239,12 @@ UDFCommonFlush(
             UDFFlushAFile(IrpContext, Fcb, Ccb, &FsIoStatus, 0);
             Status = FsIoStatus.Status;
 
-            /* A file flush must also commit append generations that make its
-             * name reachable. Keep the established child -> parent order.
-             * Each held parent owns its next ancestor through the LCB; acquire
-             * that ancestor before releasing the current resource. At most
-             * 64 buffers can exist under the per-volume memory budget. */
+            /* Commit the namespace path too, including dirty ancestors
+             * above an otherwise clean intermediate directory. */
             if (NT_SUCCESS(Status) && AcquiredParentFcb) {
-                PUDF_FILE_INFO directory = Fcb->FileInfo->ParentFile;
-                ULONG hops = 0;
-                while (directory->Dloc->DirectoryAppend) {
-                    Status = UDFFlushFile__(IrpContext, Vcb, directory,
-                                           UDF_FLUSH_FLAGS_LITE);
-                    UDFRememberFlushStatus(&FsIoStatus, Status);
-                    if (!NT_SUCCESS(Status))
-                        break;
-                    PUDF_FILE_INFO ancestor = directory->ParentFile;
-                    if (!ancestor || !ancestor->Fcb ||
-                        !ancestor->Dloc->DirectoryAppend ||
-                        ancestor->Fcb == HeldParentFcb)
-                        break;
-                    if (++hops >= 64) {
-                        Status = STATUS_FILE_CORRUPT_ERROR;
-                        UDFRememberFlushStatus(&FsIoStatus, Status);
-                        break;
-                    }
-                    UDF_CHECK_PAGING_IO_RESOURCE(ancestor->Fcb);
-                    UDFAcquireFcbExclusive(IrpContext, ancestor->Fcb, FALSE);
-                    PFCB previous = HeldParentFcb;
-                    HeldParentFcb = ancestor->Fcb;
-                    UDFReleaseFcb(IrpContext, previous);
-                    directory = ancestor;
-                }
+                UDFRememberFlushStatus(&FsIoStatus,
+                    UDFFlushAncestorMetadata(IrpContext, Vcb,
+                        Fcb->FileInfo->ParentFile, &HeldParentFcb));
                 Status = FsIoStatus.Status;
             }
 
@@ -529,13 +567,28 @@ UDFFlushVolume(
     IoStatus.Status = STATUS_SUCCESS;
     IoStatus.Information = 0;
 
+    Status = UDFTakeMetadataWritebackError(Vcb);
     UDFFspClose(Vcb);
+    {
+        NTSTATUS current = UDFTakeMetadataWritebackError(Vcb);
+        if (NT_SUCCESS(Status))
+            Status = current;
+    }
+    if (!NT_SUCCESS(Status))
+        return Status;
 
     _SEH2_TRY {
         if (Vcb->VcbState & VCB_STATE_VOLUME_READ_ONLY)
             return 0;
         if (Vcb->VcbCondition != VcbMounted)
             return 0;
+
+        /* Closed handles can retain a live cache/section FILE_OBJECT and
+         * never reach delayed close. Prepare their owned FE generations in
+         * bounded cohorts; still drain Cc/data/tree before bitmap and LVID. */
+        Status = UDFWritebackNewVolumeFiles(IrpContext,Vcb);
+        if (!NT_SUCCESS(Status))
+            return Status;
 
         // NOTE: This function may also be invoked internally as part of
         // processing a shutdown request.

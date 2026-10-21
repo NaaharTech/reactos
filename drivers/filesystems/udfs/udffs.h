@@ -106,6 +106,12 @@ typedef FILE_ID                     *PFILE_ID;
 #include "Include/regtools.h"
 #include "Include/udf_reg.h"
 #include "struct.h"
+#ifdef UDF_METADATA_BATCH_DIAGNOSTICS
+#define UDF_METADATA_COUNT(v,n) InterlockedIncrement(&(v)->MetadataBatchDiag[n])
+#else
+#define UDF_METADATA_COUNT(v,n) ((void)0)
+#endif
+
 
 // global variables - minimize these
 extern UDFData              UdfData;

@@ -329,6 +329,8 @@ typedef UDF_DATALOC_INFO* PUDF_DATALOC_INFO;
 #define UDF_FE_FLAG_UNDER_INIT   (0x40)
 // Block freeing deferred to teardown (cleanup removed FID but kept blocks allocated)
 #define UDF_FE_FLAG_FREE_DEFERRED (0x80)
+/* New cached ordinary file: no valid FID has been accepted for publication. */
+#define UDF_FE_FLAG_NEW_UNPUBLISHED (0x100)
 
 
 #define UDF_FILE_INFO_MT PagedPool

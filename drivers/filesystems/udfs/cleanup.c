@@ -581,7 +581,8 @@ delete_attempt_done:
             !(Fcb->FcbState & UDF_FCB_DELETED) &&
             !(Vcb->VcbState & VCB_STATE_VOLUME_READ_ONLY) &&
             NextFileInfo &&
-            !UDFCanDeferDirectoryAppendCleanup(Vcb, NextFileInfo, FileObject)) {
+            !UDFCanDeferDirectoryAppendCleanup(Vcb, NextFileInfo, FileObject) &&
+            !UDFDeferNewFileMetadata(IrpContext, Vcb, NextFileInfo)) {
             NTSTATUS FlushStatus = UDFFlushFile__(IrpContext, Vcb,
                                                   NextFileInfo, 0);
             if (NT_SUCCESS(UnlinkError) && !NT_SUCCESS(FlushStatus))
@@ -643,7 +644,12 @@ delete_attempt_done:
                  * publication. Ordinary child FE cleanup above is unchanged. */
                 BOOLEAN DeferAppend =
                     FlagOn(FileObject->Flags, FO_CACHE_SUPPORTED) &&
-                    UDFCanDeferDirectoryAppendCleanup(Vcb, DirInfo, FileObject);
+                    (UDFCanDeferDirectoryAppendCleanup(Vcb, DirInfo, FileObject) ||
+                     (UDFDeferNewFileMetadata(IrpContext, Vcb, NextFileInfo) &&
+                      DirInfo == NextFileInfo->ParentFile &&
+                      DirInfo->Dloc->CommonFcb == DirInfo->Fcb &&
+                      DirInfo->Fcb->FcbReference > 0 &&
+                      FlagOn(DirInfo->Fcb->FcbState, FCB_STATE_IN_FCB_TABLE)));
                 if (!DeferAppend) {
                     NTSTATUS FlushStatus = UDFFlushFile__(IrpContext, Vcb,
                                                            DirInfo,

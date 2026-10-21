@@ -144,9 +144,10 @@ UDFTryDirectoryAppend(PIRP_CONTEXT IrpContext, PVCB Vcb,
         (Vcb->UdfRevision == 0x201 || Vcb->UdfRevision == 0x250) &&
         Vcb->TargetDeviceObject->DeviceType == FILE_DEVICE_DISK &&
         !FlagOn(Vcb->VcbState, VCB_STATE_VOLUME_READ_ONLY | UDF_VCB_FLAGS_DEAD) &&
-        IrpContext->MajorFunction == IRP_MJ_CLEANUP && fileObject &&
-        FlagOn(fileObject->Flags, FO_CACHE_SUPPORTED) &&
-        !FlagOn(fileObject->Flags, FO_WRITE_THROUGH) &&
+        ((IrpContext->MajorFunction == IRP_MJ_CLEANUP && fileObject &&
+          FlagOn(fileObject->Flags, FO_CACHE_SUPPORTED) &&
+          !FlagOn(fileObject->Flags, FO_WRITE_THROUGH)) ||
+         FlagOn(IrpContext->Flags, IRP_CONTEXT_FLAG_METADATA_PUBLISH)) &&
         !FlagOn(IrpContext->Flags, IRP_CONTEXT_FLAG_WRITE_THROUGH) &&
         ((PFILE_IDENT_DESC)Buffer)->descTag.tagIdent == TID_FILE_IDENT_DESC &&
         !(((PFILE_IDENT_DESC)Buffer)->fileCharacteristics & (FILE_DELETED | FILE_PARENT)) &&

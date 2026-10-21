@@ -391,6 +391,9 @@ struct FCB {
     // Pointer to IrpContextLite in delayed queue.
     struct IRP_CONTEXT_LITE* IrpContextLite;
 
+    // Actual delayed-close membership, published/removed with interlocked IO.
+    LONG MetadataCloseQueued;
+
     //  The following field is used by the filelock module
     //  to maintain current byte range locking information.
     //  A file lock is allocated as needed.
@@ -784,6 +787,11 @@ struct VCB {
     PCHAR           FSBM_OldBitmap;  // 0 - free, 1 - used
     ULONG           BitmapModified;
     LONG            DirectoryAppendBytes; // bounded pending-directory buffers
+    // First unreported asynchronous new-metadata write failure.
+    LONG MetadataWritebackError;
+#ifdef UDF_METADATA_BATCH_DIAGNOSTICS
+    LONG MetadataBatchDiag[64];
+#endif
     PCHAR           BSBM_Bitmap;     // 0 - normal, 1 - bad-block
 
     // Bitmap cache stream (per-page CcPinRead)
@@ -983,6 +991,8 @@ typedef struct IRP_CONTEXT* PIRP_CONTEXT;
 #define IRP_CONTEXT_FLAG_WRITE_THROUGH          (0x00020000)
 #define IRP_CONTEXT_FLAG_FULL_NAME              (0x00040000)
 #define IRP_CONTEXT_FLAG_TRAIL_BACKSLASH        (0x00080000)
+#define IRP_CONTEXT_FLAG_METADATA_WRITER        (0x01000000)
+#define IRP_CONTEXT_FLAG_METADATA_PUBLISH       (0x02000000)
 #define UDF_IRP_CONTEXT_NOT_TOP_LEVEL           (0x10000000)
 #define IRP_CONTEXT_FLAG_ALLOW_MEDIA_EJECT      (0x80000000)
 

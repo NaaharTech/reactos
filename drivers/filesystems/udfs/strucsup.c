@@ -243,6 +243,7 @@ Return Value:
     // FCB must NOT be in FcbTable - either TeardownStructures removed it,
     // or it was never inserted (error path before UDFInsertFcbIntoTable).
     NT_ASSERT(!FlagOn(Fcb->FcbState, FCB_STATE_IN_FCB_TABLE));
+    NT_ASSERT(!Fcb->MetadataCloseQueued);
 
     // LCB queues must be empty - all LCBs should be removed during teardown
     NT_ASSERT(IsListEmpty(&Fcb->ParentLcbQueue));

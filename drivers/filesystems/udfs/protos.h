@@ -155,6 +155,8 @@ NTAPI
 UDFFspClose(
     _In_opt_ PVCB Vcb
     );
+NTSTATUS
+UDFFspCloseForFlush(_In_ PVCB Vcb);
 
 //extern VOID UDFRemoveFromDelayedQueue(PtrUDFFCB Fcb);
 #define UDFRemoveFromDelayedQueue(Fcb) \

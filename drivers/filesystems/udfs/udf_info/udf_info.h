@@ -817,6 +817,22 @@ NTSTATUS UDFReadDirectoryAppend(PIRP_CONTEXT IrpContext, PVCB Vcb,
 BOOLEAN UDFDirectoryAppendPending(PUDF_FILE_INFO FileInfo);
 BOOLEAN UDFReleaseDirectoryAppend(PVCB Vcb, PUDF_DATALOC_INFO Dloc);
 
+
+// Bounded unpublished regular-file metadata generations (R144 prototype).
+BOOLEAN UDFCanStageFileEntry(PVCB Vcb, PUDF_FILE_INFO FileInfo);
+BOOLEAN UDFMayDeferNewCreate(PIRP_CONTEXT IrpContext, PVCB Vcb);
+BOOLEAN UDFNewFileCacheable(PVCB Vcb, PUDF_FILE_INFO FileInfo);
+BOOLEAN UDFDeferNewFileMetadata(PIRP_CONTEXT IrpContext, PVCB Vcb, PUDF_FILE_INFO FileInfo);
+NTSTATUS UDFReadNewFileData(PVCB Vcb, PUDF_FILE_INFO FileInfo,
+    int64 Offset, SIZE_T Length, int8* Buffer, PBOOLEAN Handled);
+NTSTATUS UDFStageNewFileEntry(PIRP_CONTEXT IrpContext, PVCB Vcb,
+    PUDF_FILE_INFO FileInfo, uint32 PartNum, int8* Buffer, PBOOLEAN Staged);
+NTSTATUS UDFWritebackNewVolumeFiles(PIRP_CONTEXT IrpContext, PVCB Vcb);
+NTSTATUS UDFWritebackNewFileBatch(PIRP_CONTEXT IrpContext, PVCB Vcb, struct FCB* CurrentFcb);
+NTSTATUS UDFTakeMetadataWritebackError(PVCB Vcb);
+VOID UDFRememberMetadataWritebackError(PIRP_CONTEXT IrpContext, PVCB Vcb,
+    PUDF_FILE_INFO FileInfo, NTSTATUS Status);
+
 // read data from file described with FileInfo
 /*
     This routine reads data from file described by FileInfo
@@ -833,8 +849,13 @@ UDFReadFile__(
     OUT int8* Buffer
     )
 {
+    BOOLEAN handled;
+    NTSTATUS status;
     ValidateFileInfo(FileInfo);
 
+    status = UDFReadNewFileData(Vcb, FileInfo, Offset, Length, Buffer, &handled);
+    if (!NT_SUCCESS(status) || handled)
+        return status;
     if (FileInfo->Dloc->DirectoryAppend)
         return UDFReadDirectoryAppend(IrpContext, Vcb, FileInfo,
                                        Offset, Length, Direct, Buffer);

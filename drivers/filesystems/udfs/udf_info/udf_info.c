@@ -1618,7 +1618,7 @@ UDFWriteFile__(
         ExtPrint(("  read in-icb data\n"));
         OldInIcb = (int8*)MyAllocatePool__(NonPagedPool, (uint32)(Dloc->DataLoc.Length));
         if (!OldInIcb) return STATUS_INSUFFICIENT_RESOURCES;
-        status = UDFReadExtent(IrpContext, Vcb, &Dloc->DataLoc, 0, (uint32)OldLen, FALSE, OldInIcb);
+        status = UDFReadFile__(IrpContext, Vcb, FileInfo, 0, (uint32)OldLen, FALSE, OldInIcb);
         if (!NT_SUCCESS(status)) {
             MyFreePool__(OldInIcb);
             return status;
@@ -3005,6 +3005,7 @@ UDFCreateFile__(
     BOOLEAN undel = FALSE;
 //    BOOLEAN PackDir = FALSE;
     BOOLEAN FEAllocated = FALSE;
+    BOOLEAN NewNameAppend = FALSE;
 
     ValidateFileInfo(DirInfo);
     *_FileInfo = NULL;
@@ -3162,6 +3163,7 @@ CreateUndel:
             try_return (status);
         }
 
+        NewNameAppend = TRUE;
         // init offset of new FileIdent in directory Data extent
         hDirNdx = DirInfo->Dloc->DirIndex;
         if (i-1) {
@@ -3274,7 +3276,16 @@ CrF__2:
         // make FileIdent valid
         FileInfo->FileIdent->fileCharacteristics = 0;
         DirNdx->FileCharacteristics = 0;
+        /* Keep the initial FE durable before any namespace representation
+         * can expose it. Only later updates enter bounded writeback; an
+         * unrelated parent flush must never expose an uninitialized ICB. */
         status = UDFFlushFE(IrpContext, Vcb, FileInfo, PartNum);
+        if (NT_SUCCESS(status) && NewNameAppend && !undel &&
+            !UDFIsAStreamDir(DirInfo) && UDFMayDeferNewCreate(IrpContext, Vcb))
+        {
+            FileInfo->Dloc->FE_Flags |= UDF_FE_FLAG_NEW_UNPUBLISHED;
+            UDF_METADATA_COUNT(Vcb,30);
+        }
         if (!NT_SUCCESS(status)) {
             /* The new FE was not committed.  Keep its directory entry a
                tombstone before FINALLY releases the FE allocation. */
@@ -3406,8 +3417,8 @@ UDFPadLastSector(
     This routine updates AllocDesc sequence, FileIdent & FileEntry
     for given file
  */
-NTSTATUS
-UDFCloseFile__(
+static NTSTATUS
+UDFCloseFile__Internal(
     IN PIRP_CONTEXT IrpContext,
     IN PVCB Vcb,
     IN PUDF_FILE_INFO FileInfo
@@ -3472,6 +3483,8 @@ UDFCloseFile__(
     if (FileInfo->RefCount ||
        FileInfo->OpenCount ||
        !(FileInfo->Dloc->FELoc.Mapping)) return STATUS_SUCCESS;
+    if (UDFDeferNewFileMetadata(IrpContext, Vcb, FileInfo))
+        return STATUS_SUCCESS;
     status = UDFFlushDirectoryAppend(IrpContext, Vcb, FileInfo);
     if (!NT_SUCCESS(status))
         return status;
@@ -3561,7 +3574,15 @@ UDFCloseFile__(
     }
 #endif // UDF_DBG
     return STATUS_SUCCESS;
-} // end UDFCloseFile__()
+} // end UDFCloseFile__Internal()
+
+NTSTATUS
+UDFCloseFile__(PIRP_CONTEXT IrpContext, PVCB Vcb, PUDF_FILE_INFO FileInfo)
+{
+    NTSTATUS status = UDFCloseFile__Internal(IrpContext, Vcb, FileInfo);
+    UDFRememberMetadataWritebackError(IrpContext, Vcb, FileInfo, status);
+    return status;
+}
 
 /*
     Helper function to handle parent FID updates
@@ -3653,6 +3674,12 @@ UDFRenameMoveFile__(
     ValidateFileInfo(DirInfo1);
     ValidateFileInfo(DirInfo2);
     ValidateFileInfo(FileInfo);
+    if (FileInfo->Dloc->FE_Flags & UDF_FE_FLAG_NEW_UNPUBLISHED) {
+        status = UDFFlushFile__(IrpContext, Vcb, FileInfo, 0);
+        if (!NT_SUCCESS(status))
+            return status;
+    }
+
 
     i = j = 0;
     if (DirInfo1 == DirInfo2) {
@@ -4779,9 +4806,8 @@ UDFSyncInIcbData(
 }
 
 static
-NTSTATUS
-UDFWriteFEBlock(
-    IN PIRP_CONTEXT IrpContext,
+uint32
+UDFSerializeFEBlock(
     IN PVCB Vcb,
     IN PUDF_FILE_INFO FileInfo,
     IN uint32 PartNum
@@ -4795,9 +4821,7 @@ UDFWriteFEBlock(
     uint16 AllocMode;
     uint32 TailLen, WriteLen;
     int64 InfoLen;
-    SIZE_T WrittenBytes = 0;
     uint32 lba = Dloc->FELoc.Mapping[0].extLocation;
-    NTSTATUS status;
 
     UDFSetAllocDescLen(Vcb, FileInfo);
     UDFSetRecordedBlocks(Vcb, FileInfo);
@@ -4834,18 +4858,28 @@ UDFWriteFEBlock(
     UDFSetUpTag(Vcb, Dloc->FileEntry, (uint16)(FELen + TailLen), UDFPhysLbaToPart(Vcb, PartNum, lba), 0);
     UDFPrint(("Desc CRC Len %x\n", Dloc->FileEntry->descCRCLength));
 
-    status = UDFWriteExtent(IrpContext, Vcb, &Dloc->FELoc,
-        0, WriteLen, FALSE, 
-        FEBuf, &WrittenBytes
-    );
+    return WriteLen;
+}
+
+static
+NTSTATUS
+UDFWriteFEBlock(PIRP_CONTEXT IrpContext, PVCB Vcb,
+    PUDF_FILE_INFO FileInfo, uint32 PartNum)
+{
+    PUDF_DATALOC_INFO Dloc = FileInfo->Dloc;
+    uint32 WriteLen = UDFSerializeFEBlock(Vcb, FileInfo, PartNum);
+    SIZE_T WrittenBytes = 0;
+    NTSTATUS status = UDFWriteExtent(IrpContext, Vcb, &Dloc->FELoc,
+        0, WriteLen, FALSE, (int8*)Dloc->FileEntry, &WrittenBytes);
     if (NT_SUCCESS(status) && WrittenBytes != WriteLen)
         status = STATUS_IO_DEVICE_ERROR;
     if (NT_SUCCESS(status)) {
         Dloc->DirectoryCommittedLength = Dloc->DataLoc.Length;
         Dloc->DirectoryCommitKnown = TRUE;
     }
+    UDFRememberMetadataWritebackError(IrpContext, Vcb, FileInfo, status);
     return status;
-} 
+}
 
 static
 NTSTATUS
@@ -4886,8 +4920,21 @@ UDFWriteFileData(
             return status;
     }
     
-    RtlCopyMemory((int8*)(Dloc->FileEntry) + Dloc->FileEntryLen + (uint32)Offset, Buffer, Length);
+    if ((Dloc->FE_Flags & UDF_FE_FLAG_NEW_UNPUBLISHED) &&
+        (Offset < 0 || Dloc->DataLoc.Length < 0 ||
+         (uint64)Dloc->FileEntryLen + (uint64)Dloc->DataLoc.Length > Vcb->SectorSize ||
+         (uint64)Offset > (uint64)Dloc->DataLoc.Length ||
+         Length > (uint64)Dloc->DataLoc.Length - (uint64)Offset))
+        return STATUS_FILE_CORRUPT_ERROR;
+    if (Length)
+        RtlCopyMemory((int8*)(Dloc->FileEntry) + Dloc->FileEntryLen + (uint32)Offset, Buffer, Length);
 
+    if (UDFDeferNewFileMetadata(IrpContext, Vcb, FileInfo)) {
+        Dloc->DataLoc.Modified = TRUE;
+        Dloc->FE_Flags |= UDF_FE_FLAG_FE_MODIFIED;
+        *WrittenBytes = Length;
+        return STATUS_SUCCESS;
+    }
     status = UDFWriteFEBlock(IrpContext, Vcb, FileInfo, PartNum);
 
     if (NT_SUCCESS(status)) {
@@ -4915,17 +4962,19 @@ UDFWriteFileData(
 
 /*
  */
-NTSTATUS
-UDFFlushFE(
+static NTSTATUS
+UDFFlushFEInternal(
     IN PIRP_CONTEXT IrpContext,
     IN PVCB Vcb,
     IN PUDF_FILE_INFO FileInfo,
-    IN uint32 PartNum
+    IN uint32 PartNum,
+    int8* StageBuffer,
+    PBOOLEAN Staged
     )
 {
     int8* NewAllocDescs;
     NTSTATUS status;
-    SIZE_T WrittenBytes;
+    SIZE_T WrittenBytes = 0;
     uint16 AllocMode;
     uint32 lba;
 
@@ -5079,6 +5128,12 @@ retry_flush_FE:
             }
 
         }
+        if (StageBuffer && UDFCanStageFileEntry(Vcb, FileInfo) &&
+            UDFSerializeFEBlock(Vcb, FileInfo, PartNum) == 512) {
+            RtlCopyMemory(StageBuffer, FileInfo->Dloc->FileEntry, 512);
+            *Staged = TRUE;
+            return STATUS_SUCCESS;
+        }
         status = UDFWriteFEBlock(IrpContext, Vcb, FileInfo, PartNum);
 
         if (!NT_SUCCESS(status)) {
@@ -5148,7 +5203,24 @@ relocate_FE:
     }
 #endif // UDF_DBG
     return STATUS_SUCCESS;
-} // end UDFFlushFE()
+} // end UDFFlushFEInternal()
+
+NTSTATUS
+UDFFlushFE(PIRP_CONTEXT IrpContext, PVCB Vcb,
+    PUDF_FILE_INFO FileInfo, uint32 PartNum)
+{
+    NTSTATUS status = UDFFlushFEInternal(IrpContext, Vcb, FileInfo, PartNum, NULL, NULL);
+    UDFRememberMetadataWritebackError(IrpContext, Vcb, FileInfo, status);
+    return status;
+}
+
+NTSTATUS
+UDFStageNewFileEntry(PIRP_CONTEXT IrpContext, PVCB Vcb,
+    PUDF_FILE_INFO FileInfo, uint32 PartNum, int8* Buffer, PBOOLEAN Staged)
+{
+    *Staged = FALSE;
+    return UDFFlushFEInternal(IrpContext, Vcb, FileInfo, PartNum, Buffer, Staged);
+}
 
 NTSTATUS
 UDFFlushFI(
@@ -5179,6 +5251,16 @@ UDFFlushFI(
     UDFPrint(("  FlushFI: offs %x\n", (ULONG)(DirNdx->Offset)));
 
     if ((DirNdx->FI_Flags & UDF_FI_FLAG_FI_MODIFIED)) {
+        /* Test the FID we are about to publish, not stale characteristics
+         * in its prior buffer. Deleted entries do not publish an FE. */
+        if (!FileInfo->FileIdent)
+            return STATUS_FILE_CORRUPT_ERROR;
+        if ((FileInfo->Dloc->FE_Flags & UDF_FE_FLAG_NEW_UNPUBLISHED) &&
+            !(DirNdx->FileCharacteristics & FILE_DELETED)) {
+            status = UDFFlushFE(IrpContext, Vcb, FileInfo, PartNum);
+            if (!NT_SUCCESS(status))
+                return status;
+        }
         // flush FileIdent
         ASSERT(PartNum != (uint32)(-1));
         FileInfo->FileIdent->fileCharacteristics = DirNdx->FileCharacteristics;
@@ -5206,9 +5288,38 @@ UDFFlushFI(
             Vcb, &(FileInfo->FileIdent->descTag), (uint16)(FileInfo->FileIdentLen), UDFPhysLbaToPart(Vcb, PartNum, lba),
             0);
         // record data
-        if (!NT_SUCCESS(status = UDFWriteFile__(IrpContext, Vcb, DirInfo, DirNdx->Offset, FileInfo->FileIdentLen, FALSE, (int8*)(FileInfo->FileIdent), &WrittenBytes) )) {
-            BrutePoint();
-            return status;
+        {
+            BOOLEAN publish =
+                (FileInfo->Dloc->FE_Flags & UDF_FE_FLAG_NEW_UNPUBLISHED) &&
+                !(FileInfo->FileIdent->fileCharacteristics & FILE_DELETED) &&
+                (FlagOn(IrpContext->Flags, IRP_CONTEXT_FLAG_METADATA_WRITER) ||
+                 IrpContext->MajorFunction == IRP_MJ_FLUSH_BUFFERS);
+            BOOLEAN previous = FlagOn(IrpContext->Flags, IRP_CONTEXT_FLAG_METADATA_PUBLISH) != 0;
+            if (publish)
+                SetFlag(IrpContext->Flags, IRP_CONTEXT_FLAG_METADATA_PUBLISH);
+            _SEH2_TRY {
+                status = UDFWriteFile__(IrpContext, Vcb, DirInfo, DirNdx->Offset,
+                    FileInfo->FileIdentLen, FALSE, (int8*)FileInfo->FileIdent, &WrittenBytes);
+            } _SEH2_FINALLY {
+                if (!previous)
+                    ClearFlag(IrpContext->Flags, IRP_CONTEXT_FLAG_METADATA_PUBLISH);
+            } _SEH2_END;
+            if (NT_SUCCESS(status) && WrittenBytes != FileInfo->FileIdentLen)
+                status = STATUS_IO_DEVICE_ERROR;
+            if (!NT_SUCCESS(status))
+                return status;
+            if (!(FileInfo->FileIdent->fileCharacteristics & FILE_DELETED)) {
+                if (FileInfo->Dloc->FE_Flags & UDF_FE_FLAG_NEW_UNPUBLISHED) {
+                    UDF_METADATA_COUNT(Vcb,31);
+#ifdef UDF_METADATA_BATCH_DIAGNOSTICS
+                    if (IrpContext->MajorFunction == IRP_MJ_CREATE) UDF_METADATA_COUNT(Vcb,32);
+                    else if (IrpContext->MajorFunction == IRP_MJ_CLEANUP) UDF_METADATA_COUNT(Vcb,33);
+                    else if (IrpContext->MajorFunction == IRP_MJ_CLOSE) UDF_METADATA_COUNT(Vcb,34);
+                    else UDF_METADATA_COUNT(Vcb,35);
+#endif
+                }
+                FileInfo->Dloc->FE_Flags &= ~UDF_FE_FLAG_NEW_UNPUBLISHED;
+            }
         }
         DirNdx->FI_Flags &= ~UDF_FI_FLAG_FI_MODIFIED;
     }
@@ -5220,8 +5331,8 @@ UDFFlushFI(
     This routine updates AllocDesc sequence, FileIdent & FileEntry
     for given file
  */
-NTSTATUS
-UDFFlushFile__(
+static NTSTATUS
+UDFFlushFile__Internal(
     IN PIRP_CONTEXT IrpContext,
     IN PVCB Vcb,
     IN PUDF_FILE_INFO FileInfo,
@@ -5302,7 +5413,15 @@ UDFFlushFile__(
            (FileInfo->Dloc->FileEntry->descVersion == 3));
 
     return STATUS_SUCCESS;
-} // end UDFFlushFile__()
+} // end UDFFlushFile__Internal()
+
+NTSTATUS
+UDFFlushFile__(PIRP_CONTEXT IrpContext, PVCB Vcb, PUDF_FILE_INFO FileInfo, ULONG FlushFlags)
+{
+    NTSTATUS status = UDFFlushFile__Internal(IrpContext, Vcb, FileInfo, FlushFlags);
+    UDFRememberMetadataWritebackError(IrpContext, Vcb, FileInfo, status);
+    return status;
+}
 
 /*
     This routine compares 2 FileInfo structures
@@ -5634,6 +5753,12 @@ UDFHardLinkFile__(
     ValidateFileInfo(DirInfo1);
     ValidateFileInfo(DirInfo2);
     ValidateFileInfo(FileInfo);
+    if (FileInfo->Dloc->FE_Flags & UDF_FE_FLAG_NEW_UNPUBLISHED) {
+        status = UDFFlushFile__(IrpContext, Vcb, FileInfo, 0);
+        if (!NT_SUCCESS(status))
+            return status;
+    }
+
 
     if (UDFGetFileLinkCount(FileInfo) >= UDF_MAX_LINK_COUNT) {
         // too many links to file...
