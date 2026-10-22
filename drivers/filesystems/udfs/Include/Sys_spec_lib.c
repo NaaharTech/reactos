@@ -184,6 +184,7 @@ UDFAttributesToUDF(
     PUSHORT Flags;
     PUCHAR Type;
     PUCHAR FCharact;
+    UCHAR OldCharacteristics;
 
     NTAttr &= UDF_VALID_FILE_ATTRIBUTES;
 
@@ -205,6 +206,7 @@ UDFAttributesToUDF(
         Type = &((PEXTENDED_FILE_ENTRY)FileEntry)->icbTag.fileType;
     }
     FCharact = &(FileDirNdx->FileCharacteristics);
+    OldCharacteristics = *FCharact;
 
     if ((*FCharact & FILE_DIRECTORY) ||
        (*Type == UDF_FILE_TYPE_STREAMDIR) ||
@@ -249,7 +251,12 @@ UDFAttributesToUDF(
     FileDirNdx->SysAttr = NTAttr;
     if (FileDirNdx->FileInfo)
         FileDirNdx->FileInfo->Dloc->FE_Flags |= UDF_FE_FLAG_FE_MODIFIED;
-    FileDirNdx->FI_Flags |= UDF_FI_FLAG_FI_MODIFIED;
+    /* Only fileCharacteristics belongs to the FID. Permissions and
+     * system/archive flags live in the FE; changing those must not create
+     * another FID write. Preserve any pending name/ICB/characteristic update
+     * already marked by create, rename, link, retag or a failed flush. */
+    if (OldCharacteristics != *FCharact)
+        FileDirNdx->FI_Flags |= UDF_FI_FLAG_FI_MODIFIED;
     return;
 } // end UDFAttributesToUDF()
 
