@@ -167,6 +167,175 @@ UDFDrainNewFileData(PIRP_CONTEXT IrpContext, PVCB Vcb,
     return status;
 }
 
+/* Full-volume data flush already pins each canonical FCB before this phase.
+ * Overlap only those independent data drains; retain the original Cc path,
+ * exact lower I/O completion and data-before-FE-before-FID barrier. The
+ * caller owns VCB exclusive and NO ordinary-file Main/Paging resource. */
+#define UDF_DATA_DRAIN_HELPERS 2
+
+typedef struct _UDF_PARALLEL_DATA_DRAIN {
+    PVCB Vcb;
+    PDEVICE_OBJECT RealDevice;
+    PFCB* Files;
+    LONG Count;
+    volatile LONG Next;
+    volatile LONG Visited;
+    volatile LONG FirstError;
+    HANDLE Thread[UDF_DATA_DRAIN_HELPERS];
+    uint32 Threads;
+} UDF_PARALLEL_DATA_DRAIN;
+
+static BOOLEAN
+UDFParallelDataOwner(PVCB Vcb, PFCB Fcb)
+{
+    PUDF_DATALOC_INFO dloc;
+    PEXTENT_MAP map;
+    uint32 i;
+    if (!Fcb || !Fcb->FcbNonpaged || !UDFNewFileCacheable(Vcb, Fcb->FileInfo) ||
+        !(dloc = Fcb->FileInfo->Dloc) ||
+        !FlagOn(dloc->FE_Flags, UDF_FE_FLAG_CACHED_DATA_PENDING) ||
+        dloc->DataLoc.Offset || !dloc->DataLoc.Mapping ||
+        FlagOn(Fcb->FcbState, UDF_FCB_EMBEDDED_DATA) ||
+        Fcb->Header.FileSize.QuadPart <= 0 ||
+        Fcb->Header.ValidDataLength.QuadPart < Fcb->Header.FileSize.QuadPart ||
+        Fcb->Header.PagingIoResource != &Fcb->FcbNonpaged->FcbPagingIoResource ||
+        !Fcb->FcbNonpaged->SegmentObject.DataSectionObject ||
+        Fcb->FcbNonpaged->SegmentObject.ImageSectionObject)
+        return FALSE;
+    /* No allocation/namespace/parent work may be introduced by a helper.
+     * Already-allocated recording conversion remains protected by this
+     * file's original Main/Paging resources in the normal paging path. */
+    for (i = 0, map = dloc->DataLoc.Mapping;
+         map[i].extLength & UDF_EXTENT_LENGTH_MASK; i++) {
+        if (!map[i].extLocation ||
+            (map[i].extLength >> 30) == EXTENT_NOT_RECORDED_NOT_ALLOCATED ||
+            (map[i].extLength >> 30) == EXTENT_NEXT_EXTENT_ALLOCDESC)
+            return FALSE;
+    }
+    return i != 0;
+}
+
+static VOID
+UDFRunParallelDataDrain(UDF_PARALLEL_DATA_DRAIN* Drain,
+                       PIRP_CONTEXT IrpContext)
+{
+    while (NT_SUCCESS((NTSTATUS)InterlockedCompareExchange(
+                &Drain->FirstError, STATUS_SUCCESS, STATUS_SUCCESS))) {
+        LONG index = InterlockedIncrement(&Drain->Next) - 1;
+        PFCB fcb;
+        NTSTATUS status = STATUS_SUCCESS;
+        if (index >= Drain->Count)
+            break;
+        fcb = Drain->Files[index];
+        UDFAcquireFcbExclusive(IrpContext, fcb, FALSE);
+        _SEH2_TRY {
+            if (UDFParallelDataOwner(Drain->Vcb, fcb))
+                status = UDFDrainNewFileData(IrpContext, Drain->Vcb, fcb->FileInfo);
+        } _SEH2_FINALLY {
+            UDFReleaseFcb(IrpContext, fcb);
+        } _SEH2_END;
+        InterlockedIncrement(&Drain->Visited);
+        if (!NT_SUCCESS(status))
+            InterlockedCompareExchange(&Drain->FirstError, status, STATUS_SUCCESS);
+    }
+}
+
+static VOID NTAPI
+UDFParallelDataDrainThread(PVOID Parameter)
+{
+    UDF_PARALLEL_DATA_DRAIN* drain = Parameter;
+    struct IRP_CONTEXT context;
+    struct THREAD_CONTEXT threadContext = {0};
+    RtlZeroMemory(&context, sizeof(context));
+    context.NodeIdentifier.NodeTypeCode = UDF_NODE_TYPE_IRP_CONTEXT;
+    context.NodeIdentifier.NodeByteSize = sizeof(context);
+    context.Flags = IRP_CONTEXT_FLAG_ON_STACK | IRP_CONTEXT_FSP_FLAGS |
+                    IRP_CONTEXT_FLAG_METADATA_WRITER;
+    context.MajorFunction = IRP_MJ_FLUSH_BUFFERS;
+    context.Vcb = drain->Vcb;
+    context.RealDevice = drain->RealDevice;
+    FsRtlEnterFileSystem();
+    UDFSetThreadContext(&context, &threadContext);
+    _SEH2_TRY {
+        UDFRunParallelDataDrain(drain, &context);
+    } _SEH2_EXCEPT(EXCEPTION_EXECUTE_HANDLER) {
+        InterlockedCompareExchange(&drain->FirstError,
+                                  _SEH2_GetExceptionCode(), STATUS_SUCCESS);
+    } _SEH2_END;
+    UDFRestoreThreadContext(&context);
+    FsRtlExitFileSystem();
+    PsTerminateSystemThread(STATUS_SUCCESS);
+}
+
+static NTSTATUS
+UDFDrainVolumeDataParallel(PIRP_CONTEXT IrpContext, PVCB Vcb,
+                          PFCB* Files, uint32 Count)
+{
+    UDF_PARALLEL_DATA_DRAIN* drain;
+    PFCB volumeFcb;
+    PCCB ccb;
+    PFILE_OBJECT file;
+    OBJECT_ATTRIBUTES attributes;
+    NTSTATUS status;
+    uint32 i;
+    ASSERT_EXCLUSIVE_VCB(Vcb);
+    /* First scope is a real explicit volume FlushFileBuffers. Shutdown,
+     * lock/dismount, close workers and other request contexts stay serial. */
+    if (KeGetCurrentIrql() != PASSIVE_LEVEL ||
+        Count < UDF_FE_BATCH_CAPACITY || Count > 0x7ffffffcu ||
+        !IrpContext->Irp || IrpContext->MajorFunction != IRP_MJ_FLUSH_BUFFERS ||
+        FlagOn(IrpContext->Irp->Flags, IRP_PAGING_IO) || Vcb->SparingTable ||
+        FlagOn(Vcb->TargetDeviceObject->Flags, DO_VERIFY_VOLUME))
+        return STATUS_SUCCESS;
+    file = IoGetCurrentIrpStackLocation(IrpContext->Irp)->FileObject;
+    if (!file || UDFDecodeFileObject(file, &volumeFcb, &ccb) != UserVolumeOpen ||
+        volumeFcb != Vcb->VolumeDasdFcb)
+        return STATUS_SUCCESS;
+    drain = MyAllocatePool__(NonPagedPool, sizeof(*drain));
+    if (!drain)
+        return STATUS_SUCCESS; // Original per-cohort serial drains remain.
+    RtlZeroMemory(drain, sizeof(*drain));
+    drain->Vcb = Vcb;
+    drain->RealDevice = IrpContext->RealDevice;
+    drain->Files = Files;
+    drain->Count = (LONG)Count;
+    status = UDFOpenIntegrityForWrite(IrpContext, Vcb, FALSE);
+    if (!NT_SUCCESS(status)) {
+        MyFreePool__(drain);
+        return status;
+    }
+    InitializeObjectAttributes(&attributes, NULL, OBJ_KERNEL_HANDLE, NULL, NULL);
+    _SEH2_TRY {
+        for (i = 0; i < UDF_DATA_DRAIN_HELPERS; i++) {
+            HANDLE handle;
+            status = PsCreateSystemThread(&handle, SYNCHRONIZE, &attributes,
+                NULL, NULL, UDFParallelDataDrainThread, drain);
+            if (!NT_SUCCESS(status))
+                break; // Fewer helpers, or unchanged serial fallback.
+            drain->Thread[drain->Threads++] = handle;
+        }
+        if (drain->Threads)
+            UDFRunParallelDataDrain(drain, IrpContext);
+    } _SEH2_FINALLY {
+        /* Every private context, snapshot pin and shared job byte remains
+         * alive until ALL created threads terminate, including partial
+         * creation failure, data error or an exception in the caller. */
+        for (i = 0; i < drain->Threads; i++) {
+            /* Private kernel thread handle with SYNCHRONIZE access; a
+             * nonalertable kernel wait without timeout ends at termination. */
+            NTSTATUS waitStatus = ZwWaitForSingleObject(drain->Thread[i], FALSE, NULL);
+            ASSERT(waitStatus == STATUS_SUCCESS);
+            UNREFERENCED_PARAMETER(waitStatus);
+            ZwClose(drain->Thread[i]);
+        }
+        status = (NTSTATUS)InterlockedCompareExchange(&drain->FirstError,
+                                    STATUS_SUCCESS, STATUS_SUCCESS);
+        ASSERT(!NT_SUCCESS(status) || !drain->Threads || drain->Visited == drain->Count);
+        MyFreePool__(drain);
+    } _SEH2_END;
+    return status;
+}
+
 NTSTATUS
 UDFReadNewFileData(PVCB Vcb, PUDF_FILE_INFO FileInfo,
     int64 Offset, SIZE_T Length, int8* Buffer, PBOOLEAN Handled)
@@ -878,6 +1047,10 @@ UDFWritebackNewVolumeFiles(PIRP_CONTEXT IrpContext, PVCB Vcb)
         UDFUnlockFcbTable(IrpContext, Vcb);
         tableHeld = FALSE;
 
+        status = UDFDrainVolumeDataParallel(IrpContext, Vcb,
+                                           snapshot.Files, snapshot.Count);
+        if (!NT_SUCCESS(status))
+            _SEH2_LEAVE;
         do {
             status = UDFWritebackNewFileBatchInternal(IrpContext,Vcb,NULL,&snapshot,&more);
         } while (NT_SUCCESS(status) && more && snapshot.Next < snapshot.Count);
