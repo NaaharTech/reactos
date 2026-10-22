@@ -2640,7 +2640,8 @@ UDFCleanUpFile__(
     /* A failed append flush still owns its entire generation. Keep the FI
      * reachable from the parent scan for explicit retry instead of freeing
      * its mapping or discarding its buffer during last-close teardown. */
-    if (UDFDirectoryAppendPending(FileInfo))
+    if (UDFDirectoryAppendPending(FileInfo) ||
+        (FileInfo->Dloc && (FileInfo->Dloc->FE_Flags & UDF_FE_FLAG_CACHED_DATA_PENDING)))
         return UDF_FREE_NOTHING;
 
     IsASDir = UDFIsAStreamDir(FileInfo);
@@ -2697,6 +2698,12 @@ UDFCleanUpFile__(
                         UDFPrint(("UDF: Cleaning orphaned FileInfo %x in DirIndex[%d]\n",
                                   DirNdx->FileInfo, i));
                         PUDF_FILE_INFO OrphanFi = DirNdx->FileInfo;
+                        /* Do not discard a live cached-data retry owner as
+                         * an orphan, even when an earlier lifetime defect
+                         * left it outside the normal FCB/LCB hold graph. */
+                        if (OrphanFi->Dloc &&
+                            (OrphanFi->Dloc->FE_Flags & UDF_FE_FLAG_CACHED_DATA_PENDING))
+                            return UDF_FREE_NOTHING;
                         // Orphan must have a valid Dloc (loaded by UDFOpenFileInfoFromDirContext)
                         ASSERT(OrphanFi->Dloc);
                         // Orphan should be self-linked (not part of a parallel/linked chain)
@@ -5341,7 +5348,9 @@ NTSTATUS
 UDFFlushFE(PIRP_CONTEXT IrpContext, PVCB Vcb,
     PUDF_FILE_INFO FileInfo, uint32 PartNum)
 {
-    NTSTATUS status = UDFFlushFEInternal(IrpContext, Vcb, FileInfo, PartNum, NULL, NULL);
+    NTSTATUS status = UDFDrainNewFileData(IrpContext, Vcb, FileInfo);
+    if (NT_SUCCESS(status))
+        status = UDFFlushFEInternal(IrpContext, Vcb, FileInfo, PartNum, NULL, NULL);
     UDFRememberMetadataWritebackError(IrpContext, Vcb, FileInfo, status);
     return status;
 }

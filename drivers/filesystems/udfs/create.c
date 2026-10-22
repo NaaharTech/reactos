@@ -76,6 +76,12 @@ UDFSupersedeOrOverwriteFile(
     NTSTATUS RC;
     ULONG NewFileAttributes;
 
+    /* Preserve the prior cached generation before truncating or replacing
+     * its allocation. Cc must run before PagingIoResource is acquired. */
+    RC = UDFDrainNewFileData(IrpContext, Vcb, FileInfo);
+    if (!NT_SUCCESS(RC))
+        return RC;
+
     UDFAcquirePagingIoExclusive(IrpContext, Fcb);
 
     _SEH2_TRY {

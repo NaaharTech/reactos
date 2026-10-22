@@ -331,6 +331,8 @@ typedef UDF_DATALOC_INFO* PUDF_DATALOC_INFO;
 #define UDF_FE_FLAG_FREE_DEFERRED (0x80)
 /* New cached ordinary file: no valid FID has been accepted for publication. */
 #define UDF_FE_FLAG_NEW_UNPUBLISHED (0x100)
+/* Cached new-file payload must drain before live FE/FID publication. */
+#define UDF_FE_FLAG_CACHED_DATA_PENDING (0x200)
 
 
 #define UDF_FILE_INFO_MT PagedPool

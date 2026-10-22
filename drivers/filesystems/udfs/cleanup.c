@@ -51,6 +51,30 @@ UDFCanDeferDirectoryAppendCleanup(PVCB Vcb, PUDF_FILE_INFO FileInfo,
     return UDFDirectoryAppendPending(FileInfo);
 }
 
+/* Limit asynchronous cached-data scheduling to the same canonical,
+ * single-link unpublished owner as metadata batching. Embedded payload,
+ * mixed noncached opens, zero tails, streams and WT retain eager cleanup.
+ * CcUninitializeCacheMap is still called at the original cleanup boundary. */
+static BOOLEAN
+UDFCanDeferNewFileDataCleanup(PIRP_CONTEXT IrpContext, PVCB Vcb,
+                              PUDF_FILE_INFO FileInfo)
+{
+    PFCB fcb;
+    if (!UDFDeferNewFileMetadata(IrpContext, Vcb, FileInfo) ||
+        !(fcb = FileInfo->Fcb) || fcb->FcbCleanup ||
+        fcb->CachedOpenHandleCount ||
+        FlagOn(fcb->FcbState, UDF_FCB_DIRECTORY | UDF_FCB_EMBEDDED_DATA) ||
+        fcb->Header.FileSize.QuadPart <= 0 ||
+        fcb->Header.ValidDataLength.QuadPart < fcb->Header.FileSize.QuadPart ||
+        FileInfo->Dloc->DataLoc.Offset ||
+        ((((PFILE_ENTRY)FileInfo->Dloc->FileEntry)->icbTag.flags &
+          ICB_FLAG_ALLOC_MASK) == ICB_FLAG_AD_IN_ICB))
+        return FALSE;
+    FileInfo->Dloc->FE_Flags |= UDF_FE_FLAG_CACHED_DATA_PENDING;
+    UDF_METADATA_COUNT(Vcb,51);
+    return TRUE;
+}
+
 /*************************************************************************
 *
 * Function: UDFCommonCleanup()
@@ -452,7 +476,8 @@ delete_attempt_done:
             if (  LastNonCached
                       ||
                 (!Fcb->FcbCleanup &&
-                 !ForcedCleanUp) ) {
+                 !ForcedCleanUp &&
+                 !UDFCanDeferNewFileDataCleanup(IrpContext, Vcb, NextFileInfo)) ) {
 
                 LONGLONG OldFileSize, NewFileSize;
 
@@ -472,6 +497,8 @@ delete_attempt_done:
                 if (!NT_SUCCESS(IoStatus.Status)) {
                     MmPrint(("    CcFlushCache() error: %x\n", IoStatus.Status));
                     RC = IoStatus.Status;
+                } else if (NextFileInfo && NextFileInfo->Dloc) {
+                    NextFileInfo->Dloc->FE_Flags &= ~UDF_FE_FLAG_CACHED_DATA_PENDING;
                 }
             }
             // If file is deleted or it is last cached open, but there are
@@ -594,6 +621,8 @@ delete_attempt_done:
             // flush system cache
             MmPrint(("    CcUninitializeCacheMap()\n"));
             CcUninitializeCacheMap(FileObject, &(UdfData.UDFLargeZero), NULL);
+            if ((Fcb->FcbState & UDF_FCB_DELETED) && NextFileInfo && NextFileInfo->Dloc)
+                NextFileInfo->Dloc->FE_Flags &= ~UDF_FE_FLAG_CACHED_DATA_PENDING;
         } else {
             MmPrint(("    CcUninitializeCacheMap()\n"));
             CcUninitializeCacheMap(FileObject, NULL, NULL);

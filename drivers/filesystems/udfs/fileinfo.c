@@ -329,6 +329,19 @@ UDFCommonSetInfo(
             MainResourceAcquired = TRUE;
         }
 
+        /* Drain an owned cached generation before namespace or allocation
+         * changes. Rename/link have not acquired their ordered parent/child
+         * locks yet; EOF/allocation have not acquired PagingIoResource yet.
+         * Basic timestamps/attributes retain ordinary cached semantics. */
+        if (FunctionalityRequested == FileRenameInformation ||
+            FunctionalityRequested == FileLinkInformation ||
+            FunctionalityRequested == FileAllocationInformation ||
+            FunctionalityRequested == FileEndOfFileInformation) {
+            Status = UDFDrainNewFileData(IrpContext, Vcb, Fcb->FileInfo);
+            if (!NT_SUCCESS(Status))
+                try_return(Status);
+        }
+
         // Do whatever the caller asked us to do
         switch (FunctionalityRequested) {
         case FileBasicInformation:

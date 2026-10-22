@@ -827,6 +827,7 @@ BOOLEAN UDFCanStageFileEntry(PVCB Vcb, PUDF_FILE_INFO FileInfo);
 BOOLEAN UDFMayDeferNewCreate(PIRP_CONTEXT IrpContext, PVCB Vcb);
 BOOLEAN UDFNewFileCacheable(PVCB Vcb, PUDF_FILE_INFO FileInfo);
 BOOLEAN UDFDeferNewFileMetadata(PIRP_CONTEXT IrpContext, PVCB Vcb, PUDF_FILE_INFO FileInfo);
+NTSTATUS UDFDrainNewFileData(PIRP_CONTEXT IrpContext, PVCB Vcb, PUDF_FILE_INFO FileInfo);
 NTSTATUS UDFReadNewFileData(PVCB Vcb, PUDF_FILE_INFO FileInfo,
     int64 Offset, SIZE_T Length, int8* Buffer, PBOOLEAN Handled);
 NTSTATUS UDFStageNewFileEntry(PIRP_CONTEXT IrpContext, PVCB Vcb,

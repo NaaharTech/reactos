@@ -105,6 +105,68 @@ UDFDeferNewFileMetadata(PIRP_CONTEXT IrpContext, PVCB Vcb, PUDF_FILE_INFO FileIn
     return FALSE;
 }
 
+/* A cached FILE_OBJECT can outlive cleanup. Its existing Cache Manager
+ * reference and the caller's FCB/FI lifetime hold retain the payload; no new
+ * private data queue or duplicate handle reference is created here. Drain
+ * before any FE/FID publication, under one Main resource and no Paging lock.
+ * A volume cohort calls this BEFORE acquiring all cohort Main/Paging locks.
+ * Success alone retires the pending generation; failure retains the bit. */
+NTSTATUS
+UDFDrainNewFileData(PIRP_CONTEXT IrpContext, PVCB Vcb,
+                    PUDF_FILE_INFO FileInfo)
+{
+    PUDF_DATALOC_INFO dloc;
+    PFCB fcb;
+    IO_STATUS_BLOCK io;
+    NTSTATUS status = STATUS_SUCCESS;
+    BOOLEAN acquired = FALSE;
+    if (!FileInfo || !(dloc = FileInfo->Dloc) ||
+        !(dloc->FE_Flags & UDF_FE_FLAG_CACHED_DATA_PENDING))
+        return STATUS_SUCCESS;
+    fcb = dloc->CommonFcb;
+    if (!fcb || !fcb->FileInfo || fcb->FileInfo->Dloc != dloc ||
+        !fcb->FcbNonpaged)
+        return STATUS_FILE_CORRUPT_ERROR;
+    /* STATUS_CANT_WAIT is the dispatcher's internal retry token. These
+     * are terminal guard failures: callers complete/free their IRP context,
+     * so returning that token would retry a freed context. Retain the data
+     * owner and report an ordinary failure instead.
+     * Never recurse into Cc from paging I/O or invert Main -> Paging.
+     * Keep the generation on an unexpected caller instead of deadlocking. */
+    if ((IrpContext->Irp && FlagOn(IrpContext->Irp->Flags, IRP_PAGING_IO)) ||
+        ExIsResourceAcquiredSharedLite(&fcb->FcbNonpaged->FcbPagingIoResource))
+        return STATUS_INVALID_DEVICE_STATE;
+    if (!ExIsResourceAcquiredExclusiveLite(&fcb->FcbNonpaged->FcbResource)) {
+        if (ExIsResourceAcquiredSharedLite(&fcb->FcbNonpaged->FcbResource))
+            return STATUS_INVALID_DEVICE_STATE;
+        UDFAcquireFcbExclusive(IrpContext, fcb, FALSE);
+        acquired = TRUE;
+    }
+    _SEH2_TRY {
+        if (dloc->FE_Flags & UDF_FE_FLAG_CACHED_DATA_PENDING) {
+            io.Status = STATUS_SUCCESS;
+            io.Information = 0;
+            if (fcb->FcbNonpaged->SegmentObject.DataSectionObject) {
+                UDF_METADATA_COUNT(Vcb,48);
+                CcFlushCache(&fcb->FcbNonpaged->SegmentObject, NULL, 0, &io);
+            }
+            status = io.Status;
+            if (NT_SUCCESS(status)) {
+                dloc->FE_Flags &= ~UDF_FE_FLAG_CACHED_DATA_PENDING;
+                UDF_METADATA_COUNT(Vcb,49);
+            } else {
+                UDF_METADATA_COUNT(Vcb,50);
+            }
+        }
+    } _SEH2_EXCEPT(EXCEPTION_EXECUTE_HANDLER) {
+        status = _SEH2_GetExceptionCode();
+        UDF_METADATA_COUNT(Vcb,50);
+    } _SEH2_END;
+    if (acquired)
+        UDFReleaseFcb(IrpContext, fcb);
+    return status;
+}
+
 NTSTATUS
 UDFReadNewFileData(PVCB Vcb, PUDF_FILE_INFO FileInfo,
     int64 Offset, SIZE_T Length, int8* Buffer, PBOOLEAN Handled)
@@ -593,6 +655,21 @@ UDFWritebackNewFileBatchInternal(PIRP_CONTEXT IrpContext, PVCB Vcb,
         if ((LONG)batch->Count > Vcb->MetadataBatchDiag[6])
             Vcb->MetadataBatchDiag[6] = batch->Count; // exclusive VCB
 #endif
+        /* Each captured owner is pinned. Flush data one file at a time
+         * before the all-resource FE cohort interval; Cc may issue paging IO
+         * recursively. No FE is prepared and no FID can be published after
+         * a data failure. The existing finally path releases all pins. */
+        for (i = 0; i < batch->Count; i++) {
+            PFCB ownerFcb = batch->Owner[i].Fcb;
+            UDFAcquireFcbExclusive(IrpContext, ownerFcb, FALSE);
+            _SEH2_TRY {
+                status = UDFDrainNewFileData(IrpContext, Vcb, ownerFcb->FileInfo);
+            } _SEH2_FINALLY {
+                UDFReleaseFcb(IrpContext, ownerFcb);
+            } _SEH2_END;
+            if (!NT_SUCCESS(status))
+                _SEH2_LEAVE;
+        }
         if (volume) {
             if (More) *More = batch->Count != 0;
             /* VCB exclusive excludes user create/rename/truncate. Captured
