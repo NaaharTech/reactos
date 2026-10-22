@@ -2152,6 +2152,7 @@ UDFResizeExtent(
     EXTENT_MAP  TmpMapping[2];
     uint32 s, pe, BSh;
     SIZE_T req_s;
+    int64 RequestedLength = Length;
     SIZE_T LBS = Vcb->SectorSize;
     BSh = Vcb->SectorShift;
     uint32 MaxGrow = ALIGN_DOWN_BY(UDF_EXTENT_LENGTH_MASK, LBS);
@@ -2169,7 +2170,8 @@ UDFResizeExtent(
 
     UDFCheckSpaceAllocation(Vcb, 0, ExtInfo->Mapping, AS_USED); // check if used
     if (ExtInfo->Offset) {
-        if (ExtInfo->Offset + Length <= LBS) {
+        if (ExtInfo->Offset + Length <= LBS &&
+            (!AlwaysInIcb || UDFGetExtentLength(ExtInfo->Mapping) <= LBS)) {
             ExtPrint(("Resize IN-ICB\n"));
             ExtInfo->Length = Length;
             return STATUS_SUCCESS;
@@ -2179,7 +2181,11 @@ UDFResizeExtent(
         Length += ExtInfo->Offset; // convert to real offset in extent
     }
     lba = UDFExtentOffsetToLba(Vcb, ExtInfo->Mapping, Length, NULL, NULL, &flags, &i);
-    if (ExtInfo->Length < Length) {
+    /* Both logical lengths exclude the FE-relative Offset. In particular,
+     * shrinking a staged AD chain must release its unreferenced tail rather
+     * than take the growth path after Length was converted to a map offset.
+     * An AD chain returning inside the FE also reaches the truncation below. */
+    if (ExtInfo->Length < RequestedLength) {
         // increase extent
         if (NT_SUCCESS(UDFGetCachedAllocation(Vcb, ExtInfo->Mapping[0].extLocation,
                               &TmpExtInf, NULL, UDF_PREALLOC_CLASS_DIR))) {
@@ -2488,7 +2494,7 @@ tail_cached:;
             // This must never happen on truncate !!!
             AdPrint(("ResizeExtent: MyReallocPool__(9) failed\n"));
         }
-        ExtInfo->Mapping[0].extLength = LBS | (EXTENT_NOT_RECORDED_NOT_ALLOCATED << 30);
+        ExtInfo->Mapping[0].extLength = LBS | ((uint32)EXTENT_NOT_RECORDED_NOT_ALLOCATED << 30);
         ExtInfo->Mapping[0].extLocation =
         ExtInfo->Mapping[1].extLength =
         ExtInfo->Mapping[1].extLocation = 0;
