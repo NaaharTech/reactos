@@ -15,6 +15,7 @@ typedef struct _UDF_DIR_APPEND_CACHE {
     ERESOURCE Resource;
     int64 Offset;
     ULONG Length;
+    ULONG Capacity;
     int8* Buffer;
     BOOLEAN InlineOwned;
 } UDF_DIR_APPEND_CACHE;
@@ -104,6 +105,46 @@ UDFAllocateDirectoryAppend(PVCB Vcb, PUDF_DATALOC_INFO Dloc)
     return cache;
 }
 
+/* Grow only the resident unpublished payload. The old complete generation
+ * remains owned if charge/allocation fails. Charge the FULL new allocation
+ * while the old buffer is still live, so even resize's temporary storage
+ * respects the existing volume-wide budget. Caller holds cache exclusive. */
+static BOOLEAN
+UDFEnsureDirectoryAppendBuffer(PVCB Vcb, UDF_DIR_APPEND_CACHE* Cache,
+                              ULONG Required)
+{
+    ULONG capacity;
+    int8* buffer;
+    ASSERT(Required && Required <= UDF_DIR_APPEND_CAPACITY);
+    ASSERT(Cache->Length <= Cache->Capacity);
+    if (!Required || Required > UDF_DIR_APPEND_CAPACITY)
+        return FALSE;
+    if (Cache->Buffer && Required <= Cache->Capacity)
+        return TRUE;
+    capacity = Cache->Capacity ? Cache->Capacity : 512;
+    while (capacity < Required)
+        capacity *= 2;
+    if (!UDFChargeDirectoryAppend(Vcb, (LONG)capacity))
+        return FALSE;
+    buffer = MyAllocatePool__(NonPagedPool, capacity);
+    if (!buffer) {
+        UDF_DIR_STAT(Vcb,5);
+        InterlockedExchangeAdd(&Vcb->DirectoryAppendBytes,-(LONG)capacity);
+        return FALSE;
+    }
+    if (Cache->Length)
+        RtlCopyMemory(buffer, Cache->Buffer, Cache->Length);
+    if (Cache->Buffer) {
+        MyFreePool__(Cache->Buffer);
+        InterlockedExchangeAdd(&Vcb->DirectoryAppendBytes,-(LONG)Cache->Capacity);
+        UDF_DIR_STAT(Vcb,4);
+    }
+    Cache->Buffer = buffer;
+    Cache->Capacity = capacity;
+    UDF_DIR_STAT(Vcb,3);
+    return TRUE;
+}
+
 static VOID
 UDFReturnDirectoryAppendBuffer(PVCB Vcb, UDF_DIR_APPEND_CACHE* Cache)
 {
@@ -111,7 +152,8 @@ UDFReturnDirectoryAppendBuffer(PVCB Vcb, UDF_DIR_APPEND_CACHE* Cache)
     if (Cache->Buffer) {
         MyFreePool__(Cache->Buffer);
         Cache->Buffer = NULL;
-        InterlockedExchangeAdd(&Vcb->DirectoryAppendBytes,-UDF_DIR_APPEND_CAPACITY);
+        InterlockedExchangeAdd(&Vcb->DirectoryAppendBytes,-(LONG)Cache->Capacity);
+        Cache->Capacity = 0;
         UDF_DIR_STAT(Vcb,4);
     }
 }
@@ -312,20 +354,13 @@ UDFTryDirectoryAppendInternal(PIRP_CONTEXT IrpContext, PVCB Vcb,
         return STATUS_SUCCESS; // Memory/budget failure preserves the old I/O path.
 
     UDFAcquireResourceExclusive(&cache->Resource, TRUE);
-    if (!cache->Buffer) {
-        ASSERT(!cache->Length);
-        if (!UDFChargeDirectoryAppend(Vcb,UDF_DIR_APPEND_CAPACITY)) {
-            UDFReleaseResource(&cache->Resource);
-            return STATUS_SUCCESS;
-        }
-        cache->Buffer = MyAllocatePool__(NonPagedPool,UDF_DIR_APPEND_CAPACITY);
-        if (!cache->Buffer) {
-            UDF_DIR_STAT(Vcb,5);
-            InterlockedExchangeAdd(&Vcb->DirectoryAppendBytes,-UDF_DIR_APPEND_CAPACITY);
-            UDFReleaseResource(&cache->Resource);
-            return STATUS_SUCCESS; // Scalar fallback, unchanged logical EOF.
-        }
-        UDF_DIR_STAT(Vcb,3);
+    if (!UDFEnsureDirectoryAppendBuffer(Vcb, cache,
+                                       cache->Length + (ULONG)Length)) {
+        UDFReleaseResource(&cache->Resource);
+        /* A failed resize keeps the old payload intact. Materialize it
+         * before scalar fallback can change the surrounding mapping/data.
+         * A failed drain retains ownership and is propagated, not hidden. */
+        return UDFFlushDirectoryAppend(IrpContext, Vcb, FileInfo);
     }
     if (!cache->Length)
         cache->Offset = Offset;
@@ -402,20 +437,9 @@ UDFGrowReservedDirectoryFid(PIRP_CONTEXT IrpContext, PVCB Vcb,
         UDFReleaseResource(&cache->Resource);
         return STATUS_FILE_CORRUPT_ERROR;
     }
-    if (!cache->Buffer) {
-        if (!UDFChargeDirectoryAppend(Vcb, UDF_DIR_APPEND_CAPACITY)) {
-            UDFReleaseResource(&cache->Resource);
-            return STATUS_SUCCESS;
-        }
-        cache->Buffer = MyAllocatePool__(NonPagedPool, UDF_DIR_APPEND_CAPACITY);
-        if (!cache->Buffer) {
-            UDF_DIR_STAT(Vcb,5);
-            InterlockedExchangeAdd(&Vcb->DirectoryAppendBytes,
-                                   -UDF_DIR_APPEND_CAPACITY);
-            UDFReleaseResource(&cache->Resource);
-            return STATUS_SUCCESS;
-        }
-        UDF_DIR_STAT(Vcb,3);
+    if (!UDFEnsureDirectoryAppendBuffer(Vcb, cache, (ULONG)Length)) {
+        UDFReleaseResource(&cache->Resource);
+        return STATUS_SUCCESS;
     }
     RtlCopyMemory(cache->Buffer, Buffer, Length);
     UDFReleaseResource(&cache->Resource);
