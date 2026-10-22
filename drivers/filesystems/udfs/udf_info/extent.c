@@ -1661,13 +1661,34 @@ UDFAllocateFESpace(
     IN uint32 Len
     )
 {
+    uint32 start, end, length, preferred;
+    NTSTATUS status;
     UNREFERENCED_PARAMETER(DirInfo);
 
     if (Vcb->MetadataFileInfo && PartNum == Vcb->MetadataRef)
         return UDFAllocMetadataExtent(IrpContext, Vcb, Len, FEExtInfo);
 
-    return UDFAllocFreeExtent(IrpContext, Vcb, Len,
-           UDFPartStart(Vcb, PartNum), UDFPartEnd(Vcb, PartNum), FEExtInfo, EXTENT_FLAG_VERIFY);
+    start = UDFPartStart(Vcb, PartNum);
+    end = UDFPartEnd(Vcb, PartNum);
+    length = end - start;
+    /* This is placement, not reserved space: every FE still consumes the
+     * ordinary partition bitmap. Keep data's sector hint out of the FE run.
+     * A full preferred range falls back to the entire partition. */
+    if (!Vcb->MetadataFileInfo && Vcb->UdfRevision == 0x201 &&
+        Vcb->PartitionMaps == 1 && PartNum == 0 && !Vcb->CDR_Mode &&
+        Vcb->SectorSize == 512 && Len > 0 && Len <= Vcb->SectorSize &&
+        Vcb->TargetDeviceObject &&
+        Vcb->TargetDeviceObject->DeviceType == FILE_DEVICE_DISK &&
+        end > start && length >= 16384 && Vcb->FSBM_BitCount >= length &&
+        Vcb->FeSectorHint != MAXULONG) {
+        preferred = end - length / 4;
+        status = UDFAllocFreeExtent(IrpContext, Vcb, Len, preferred, end,
+                                    FEExtInfo, EXTENT_FLAG_VERIFY | EXTENT_FLAG_FE_LOCALITY);
+        if (status != STATUS_DISK_FULL)
+            return status;
+    }
+    return UDFAllocFreeExtent(IrpContext, Vcb, Len, start, end,
+                               FEExtInfo, EXTENT_FLAG_VERIFY);
 } // end UDFAllocateFESpace()
 
 /*

@@ -809,6 +809,7 @@ struct VCB {
     ULONG               BitmapPageStartLbn;      // First LBN covered by current RTL_BITMAP
     ULONG               BitmapPageBitCount;      // Number of valid bits in current RTL_BITMAP
     ULONG               SectorHint;              // First LBN for free space search
+    ULONG               FeSectorHint;            // Separate UDF 2.01 FE search cursor
 
     // pointers to Volume Descriptor Sequences
     ULONG VDS1;

@@ -1125,7 +1125,9 @@ UDFFindMinSuitableExtent(
     SIZE_T best_lba=0, best_len=0;
     SIZE_T max_lba=0, max_len=0;
     uint32 partRoot = Vcb->Partitions[0].PartitionRoot, lbnStart = SearchStartPSN - partRoot;
-    uint32 lbnLim = ExclusiveSearchLimPSN - partRoot, hint = Vcb->SectorHint;
+    uint32 lbnLim = ExclusiveSearchLimPSN - partRoot;
+    uint32 hint = (AllocFlags & EXTENT_FLAG_FE_LOCALITY) ?
+                  Vcb->FeSectorHint : Vcb->SectorHint;
 
     UDF_CHECK_BITMAP_RESOURCE(Vcb);
 
@@ -1703,6 +1705,8 @@ UDFAllocFreeExtent_(
     EXTENT_AD Ext;
     PEXTENT_MAP Map = NULL;
     uint32 len, LBS, BSh, blen;
+    uint32 dataHint;
+    BOOLEAN feLocality = (AllocFlags & EXTENT_FLAG_FE_LOCALITY) != 0;
 
     if (Vcb->MetadataFileInfo &&
         SearchStart == UDFPartStart(Vcb, Vcb->MetadataRef) &&
@@ -1719,6 +1723,10 @@ UDFAllocFreeExtent_(
     ASSERT(blen <= (uint32)(MaxExtentLength >> BSh));
 
     UDFAcquireResourceExclusive(&(Vcb->BitMapResource1),TRUE);
+    dataHint = Vcb->SectorHint;
+    /* A normal data allocation must resume from its old cursor after a
+     * separately placed FE. The bitmap lock covers both cursors and mark. */
+    ASSERT(!feLocality || (Length > 0 && Length <= LBS && blen == 1));
 
     if (blen > (SearchLim - SearchStart)) {
         goto no_free_space_err;
@@ -1741,8 +1749,14 @@ UDFAllocFreeExtent_(
         } else {
 no_free_space_err:
             // no more free space. abort
-            UDFPrint(("UDF BM: DISK_FULL blen=%x SearchStart=%x SearchLim=%x BitmapFcb=%p BitCount=%x\n",
-                blen, SearchStart, SearchLim, Vcb->BitmapFcb, Vcb->FSBM_BitCount));
+            /* The preferred FE quarter can become full on a writable
+             * volume. Do not rescan and log that entire range for every
+             * later create; ordinary full-range allocation still runs. */
+            if (feLocality)
+                Vcb->FeSectorHint = MAXULONG;
+            if (!feLocality)
+                UDFPrint(("UDF BM: DISK_FULL blen=%x SearchStart=%x SearchLim=%x BitmapFcb=%p BitCount=%x\n",
+                    blen, SearchStart, SearchLim, Vcb->BitmapFcb, Vcb->FSBM_BitCount));
             if (ExtInfo->Mapping) {
                 UDFMarkSpaceAsXXXNoProtect(Vcb, 0, ExtInfo->Mapping, AS_DISCARDED); // free
                 MyFreePool__(ExtInfo->Mapping);
@@ -1750,7 +1764,8 @@ no_free_space_err:
             }
             UDFReleaseResource(&(Vcb->BitMapResource1));
             ExtInfo->Length = 0;//UDFGetExtentLength(ExtInfo->Mapping);
-            AdPrint(("  DISK_FULL\n"));
+            if (!feLocality)
+                AdPrint(("  DISK_FULL\n"));
             return STATUS_DISK_FULL;
         }
         // append the frag found to mapping
@@ -1784,6 +1799,12 @@ no_free_space_err:
                 return STATUS_INSUFFICIENT_RESOURCES;
             }
             UDFMarkSpaceAsXXXNoProtect(Vcb, 0, ExtInfo->Mapping, AS_USED); // used
+            if (feLocality) {
+                uint32 next = Ext.extLocation - Vcb->Partitions[0].PartitionRoot + 1;
+                Vcb->FeSectorHint = next < SearchLim - Vcb->Partitions[0].PartitionRoot ?
+                                    next : SearchStart - Vcb->Partitions[0].PartitionRoot;
+                Vcb->SectorHint = dataHint;
+            }
         } else {
             // update existing
             Map = UDFExtentToMapping(&Ext);
