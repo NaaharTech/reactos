@@ -691,3 +691,237 @@ UDFReleaseDirectoryAppend(PVCB Vcb, PUDF_DATALOC_INFO Dloc)
 #endif
     return TRUE;
 }
+
+/* A checkpoint is proof of already-written directory bytes, not a pending
+ * writeback owner. The canonical Dloc/FCB retains any later dirty FE. */
+#define UDF_DIRECTORY_FE_CHECKPOINT_BUDGET (4 * 1024 * 1024)
+typedef struct _UDF_DIRECTORY_FE_CHECKPOINT {
+    LONG Valid;
+    uint32 Lba;
+    uint32 HeaderLength;
+    uint32 DataOffset;
+    int64 DataLength;
+    int8 Bytes[512];
+} UDF_DIRECTORY_FE_CHECKPOINT;
+
+static BOOLEAN
+UDFDirectoryFECheckpointVolume(PVCB Vcb)
+{
+    return Vcb->VcbCondition == VcbMounted && !Vcb->CDR_Mode &&
+        Vcb->SectorSize == 512 &&
+        (Vcb->UdfRevision == 0x201 || Vcb->UdfRevision == 0x250) &&
+        Vcb->TargetDeviceObject &&
+        Vcb->TargetDeviceObject->DeviceType == FILE_DEVICE_DISK &&
+        !Vcb->SparingTable &&
+        !FlagOn(Vcb->VcbState, VCB_STATE_REMOVABLE_MEDIA |
+                VCB_STATE_VOLUME_READ_ONLY | UDF_VCB_FLAGS_DEAD) &&
+        !InterlockedCompareExchange(&Vcb->DirectoryFECheckpointDisabled,0,0);
+}
+
+static BOOLEAN
+UDFDirectoryFECheckpointOwner(PUDF_FILE_INFO FileInfo)
+{
+    PFCB fcb;
+    PUDF_DATALOC_INFO dloc;
+    return FileInfo && (dloc = FileInfo->Dloc) && (fcb = FileInfo->Fcb) &&
+        dloc->DirIndex && dloc->FileEntry && dloc->FELoc.Mapping &&
+        dloc->DataLoc.Mapping && FileInfo->Index >= 2 &&
+        FileInfo->ParentFile && FileInfo->NextLinkedFile == FileInfo &&
+        fcb->FileInfo == FileInfo && dloc->CommonFcb == fcb &&
+        fcb->FcbReference > 0 &&
+        FlagOn(fcb->FcbState, FCB_STATE_IN_FCB_TABLE) &&
+        FlagOn(fcb->FcbState, UDF_FCB_DIRECTORY) &&
+        !FlagOn(fcb->FcbState, UDF_FCB_ROOT_DIRECTORY |
+                UDF_FCB_DELETE_ON_CLOSE | UDF_FCB_DELETED) &&
+        fcb->Header.Resource &&
+        ExIsResourceAcquiredExclusiveLite(fcb->Header.Resource) &&
+        !UDFIsAStream(FileInfo) && !UDFIsAStreamDir(FileInfo);
+}
+
+/* Compare every serialized byte. Only NT attributes/times and the checksum
+ * fields they affect are allowed to differ. In particular, link count,
+ * identity, ICB mode, lengths, all ADs/FIDs and padding must still match. */
+static BOOLEAN
+UDFDirectoryFEAttributesOnly(const int8* Old, const int8* Current,
+                             uint32 HeaderLength)
+{
+    uint32 i, timeStart, timeLength;
+    const FILE_ENTRY* oldFe = (const FILE_ENTRY*)Old;
+    const FILE_ENTRY* newFe = (const FILE_ENTRY*)Current;
+    if (oldFe->descTag.tagIdent != newFe->descTag.tagIdent)
+        return FALSE;
+    if (newFe->descTag.tagIdent == TID_FILE_ENTRY &&
+        HeaderLength == sizeof(FILE_ENTRY)) {
+        timeStart = FIELD_OFFSET(FILE_ENTRY,accessTime);
+        timeLength = 3 * sizeof(timestamp);
+    } else if (newFe->descTag.tagIdent == TID_EXTENDED_FILE_ENTRY &&
+               HeaderLength == sizeof(EXTENDED_FILE_ENTRY)) {
+        timeStart = FIELD_OFFSET(EXTENDED_FILE_ENTRY,accessTime);
+        timeLength = 4 * sizeof(timestamp);
+    } else {
+        return FALSE; // EAs and unknown descriptor layouts stay eager.
+    }
+    if ((oldFe->icbTag.flags ^ newFe->icbTag.flags) &
+        ~(ICB_FLAG_SYSTEM | ICB_FLAG_ARCHIVE))
+        return FALSE;
+    for (i = 0; i < 512; i++) {
+        if (Old[i] == Current[i])
+            continue;
+        if (i == FIELD_OFFSET(tag,tagChecksum) ||
+            (i >= FIELD_OFFSET(tag,descCRC) &&
+             i < FIELD_OFFSET(tag,descCRC) + sizeof(uint16)) ||
+            (i >= timeStart && i < timeStart + timeLength) ||
+            (i >= FIELD_OFFSET(FILE_ENTRY,permissions) &&
+             i < FIELD_OFFSET(FILE_ENTRY,permissions) + sizeof(uint32)) ||
+            (i >= FIELD_OFFSET(FILE_ENTRY,icbTag.flags) &&
+             i < FIELD_OFFSET(FILE_ENTRY,icbTag.flags) + sizeof(uint16)))
+            continue;
+        return FALSE;
+    }
+    return TRUE;
+}
+
+VOID
+UDFDirectoryFEWriteStarting(PUDF_DATALOC_INFO Dloc)
+{
+    UDF_DIRECTORY_FE_CHECKPOINT* checkpoint = Dloc->DirectoryFECheckpoint;
+    if (checkpoint)
+        InterlockedExchange(&checkpoint->Valid,FALSE);
+}
+
+VOID
+UDFDirectoryFEWriteCompleted(PVCB Vcb, PUDF_FILE_INFO FileInfo,
+                             uint32 WriteLength)
+{
+    UDF_DIRECTORY_FE_CHECKPOINT* checkpoint;
+    PUDF_DATALOC_INFO dloc;
+    LONG used;
+    if (WriteLength != 512 || !UDFDirectoryFECheckpointVolume(Vcb) ||
+        !UDFDirectoryFECheckpointOwner(FileInfo))
+        return;
+    dloc = FileInfo->Dloc;
+    if (((FILE_ENTRY*)dloc->FileEntry)->icbTag.fileType != UDF_FILE_TYPE_DIRECTORY ||
+        dloc->DataLoc.Length < 0 ||
+        (dloc->DataLoc.Offset &&
+         (dloc->DataLoc.Offset != dloc->FileEntryLen ||
+          dloc->DataLoc.Offset > 512 ||
+          (uint64)dloc->DataLoc.Length > 512 - dloc->DataLoc.Offset)))
+        return;
+    if (!UDFDirectoryFEAttributesOnly((int8*)dloc->FileEntry,
+                                     (int8*)dloc->FileEntry,dloc->FileEntryLen))
+        return;
+    checkpoint = dloc->DirectoryFECheckpoint;
+    if (!checkpoint) {
+        do {
+            used = InterlockedCompareExchange(&Vcb->DirectoryFECheckpointBytes,0,0);
+            if (used < 0 || used > UDF_DIRECTORY_FE_CHECKPOINT_BUDGET - (LONG)sizeof(*checkpoint))
+                return;
+        } while (InterlockedCompareExchange(&Vcb->DirectoryFECheckpointBytes,
+                    used + sizeof(*checkpoint),used) != used);
+        checkpoint = MyAllocatePool__(NonPagedPool,sizeof(*checkpoint));
+        if (!checkpoint) {
+            InterlockedExchangeAdd(&Vcb->DirectoryFECheckpointBytes,-(LONG)sizeof(*checkpoint));
+            return;
+        }
+        RtlZeroMemory(checkpoint,sizeof(*checkpoint));
+        dloc->DirectoryFECheckpoint = checkpoint; // canonical Main resource held
+    }
+    checkpoint->Lba = dloc->FELoc.Mapping[0].extLocation;
+    checkpoint->HeaderLength = dloc->FileEntryLen;
+    checkpoint->DataOffset = dloc->DataLoc.Offset;
+    checkpoint->DataLength = dloc->DataLoc.Length;
+    RtlCopyMemory(checkpoint->Bytes,dloc->FileEntry,512);
+    InterlockedExchange(&checkpoint->Valid,TRUE);
+}
+
+/* Only final Dloc destruction calls this, after its users are gone. Drop
+ * the optimization proof even on the forced Dloc-list destruction path. */
+VOID
+UDFReleaseDirectoryFECheckpoint(PVCB Vcb, PUDF_DATALOC_INFO Dloc)
+{
+    UDF_DIRECTORY_FE_CHECKPOINT* checkpoint = Dloc->DirectoryFECheckpoint;
+    if (checkpoint) {
+        Dloc->DirectoryFECheckpoint = NULL;
+        MyFreePool__(checkpoint);
+        InterlockedExchangeAdd(&Vcb->DirectoryFECheckpointBytes,-(LONG)sizeof(*checkpoint));
+    }
+}
+
+BOOLEAN
+UDFCanDeferDirectoryAttributesCleanup(PIRP_CONTEXT IrpContext, PVCB Vcb,
+    PUDF_FILE_INFO FileInfo, PFILE_OBJECT FileObject)
+{
+    PUDF_DATALOC_INFO dloc;
+    UDF_DIRECTORY_FE_CHECKPOINT* checkpoint;
+    PDIR_INDEX_ITEM index;
+    if (!IrpContext || IrpContext->MajorFunction != IRP_MJ_CLEANUP ||
+        !IrpContext->Irp || !FileObject ||
+        FlagOn(FileObject->Flags, FO_WRITE_THROUGH | FO_NO_INTERMEDIATE_BUFFERING) ||
+        FlagOn(IrpContext->Flags, IRP_CONTEXT_FLAG_WRITE_THROUGH) ||
+        !ExIsResourceAcquiredExclusiveLite(&Vcb->VcbResource) ||
+        !UDFDirectoryFECheckpointVolume(Vcb) ||
+        !UDFDirectoryFECheckpointOwner(FileInfo))
+        return FALSE;
+    dloc = FileInfo->Dloc;
+    checkpoint = dloc->DirectoryFECheckpoint;
+    if (!checkpoint || !InterlockedCompareExchange(&checkpoint->Valid,0,0) ||
+        dloc->DataLoc.Length < 0 ||
+        !dloc->DirectoryCommitKnown ||
+        dloc->DirectoryCommittedLength != dloc->DataLoc.Length ||
+        dloc->DataLoc.Length != checkpoint->DataLength ||
+        dloc->DataLoc.Offset != checkpoint->DataOffset ||
+        dloc->FileEntryLen != checkpoint->HeaderLength ||
+        dloc->FELoc.Mapping[0].extLocation != checkpoint->Lba ||
+        dloc->DataLoc.Modified || dloc->AllocLoc.Modified || dloc->FELoc.Modified ||
+        dloc->AllocLoc.Length < 0 ||
+        (uint64)dloc->AllocLoc.Offset + (uint64)dloc->AllocLoc.Length > 512 ||
+        (!!FlagOn(dloc->DirIndex->DIFlags,UDF_DI_FLAG_INIT_IN_ICB) !=
+         !!dloc->DataLoc.Offset) ||
+        UDFDirectoryAppendPending(FileInfo) ||
+        !FlagOn(dloc->FE_Flags,UDF_FE_FLAG_FE_MODIFIED) ||
+        FlagOn(dloc->FE_Flags,UDF_FE_FLAG_NEW_UNPUBLISHED |
+                UDF_FE_FLAG_FREE_DEFERRED | UDF_FE_FLAG_CACHED_DATA_PENDING))
+        return FALSE;
+    /* Do not reorder an FE before a pending FID. R196 prevents a new dirty
+     * FID for FE-only attributes; every real name/ICB/hidden update stays eager. */
+    index = UDFDirIndex(UDFGetDirIndexByFileInfo(FileInfo),FileInfo->Index);
+    if (!index || index->FileInfo != FileInfo ||
+        FlagOn(index->FI_Flags,UDF_FI_FLAG_FI_MODIFIED))
+        return FALSE;
+    return UDFDirectoryFEAttributesOnly(checkpoint->Bytes,
+                                        (int8*)dloc->FileEntry,dloc->FileEntryLen);
+}
+
+BOOLEAN
+UDFCanRetainDirectoryAttributesClose(PIRP_CONTEXT IrpContext, PVCB Vcb,
+                                     PUDF_FILE_INFO FileInfo)
+{
+    PFCB fcb;
+    PFILE_OBJECT fileObject;
+    PERESOURCE resource;
+    BOOLEAN acquired = FALSE, retain = FALSE;
+    if (!IrpContext || IrpContext->MajorFunction != IRP_MJ_CLEANUP ||
+        !IrpContext->Irp || !FileInfo || !(fcb = FileInfo->Fcb) ||
+        !ExIsResourceAcquiredExclusiveLite(&Vcb->VcbResource) ||
+        !(resource = fcb->Header.Resource))
+        return FALSE;
+    fileObject = IoGetCurrentIrpStackLocation(IrpContext->Irp)->FileObject;
+    if (!fileObject || fileObject->FsContext != fcb)
+        return FALSE; // Not a parent/temporary FI closed by another object's cleanup.
+    if (!ExIsResourceAcquiredExclusiveLite(resource)) {
+        /* Do not upgrade a shared hold or introduce a wait in a nested
+         * child/parent close. Contention preserves the original eager path. */
+        if (ExIsResourceAcquiredSharedLite(resource) ||
+            !ExAcquireResourceExclusiveLite(resource,FALSE))
+            return FALSE;
+        acquired = TRUE;
+    }
+    _SEH2_TRY {
+        retain = UDFCanDeferDirectoryAttributesCleanup(IrpContext,Vcb,
+                                                       FileInfo,fileObject);
+    } _SEH2_FINALLY {
+        if (acquired)
+            ExReleaseResourceLite(resource);
+    } _SEH2_END;
+    return retain;
+}

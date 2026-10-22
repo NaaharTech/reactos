@@ -787,6 +787,8 @@ struct VCB {
     PCHAR           FSBM_OldBitmap;  // 0 - free, 1 - used
     ULONG           BitmapModified;
     LONG            DirectoryAppendBytes; // bounded pending-directory buffers
+    LONG            DirectoryFECheckpointBytes; // bounded successful-FE proofs
+    LONG            DirectoryFECheckpointDisabled; // raw volume writes invalidate all proofs
     // First unreported asynchronous new-metadata write failure.
     LONG MetadataWritebackError;
 #ifdef UDF_METADATA_BATCH_DIAGNOSTICS

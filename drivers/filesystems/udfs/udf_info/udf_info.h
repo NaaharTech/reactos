@@ -820,6 +820,14 @@ NTSTATUS UDFReadDirectoryAppend(PIRP_CONTEXT IrpContext, PVCB Vcb,
 BOOLEAN UDFDirectoryAppendPending(PUDF_FILE_INFO FileInfo);
 VOID UDFDirectoryAppendFECommitted(PUDF_FILE_INFO FileInfo);
 BOOLEAN UDFReleaseDirectoryAppend(PVCB Vcb, PUDF_DATALOC_INFO Dloc);
+VOID UDFDirectoryFEWriteStarting(PUDF_DATALOC_INFO Dloc);
+VOID UDFDirectoryFEWriteCompleted(PVCB Vcb, PUDF_FILE_INFO FileInfo,
+    uint32 WriteLength);
+VOID UDFReleaseDirectoryFECheckpoint(PVCB Vcb, PUDF_DATALOC_INFO Dloc);
+BOOLEAN UDFCanDeferDirectoryAttributesCleanup(PIRP_CONTEXT IrpContext,
+    PVCB Vcb, PUDF_FILE_INFO FileInfo, PFILE_OBJECT FileObject);
+BOOLEAN UDFCanRetainDirectoryAttributesClose(PIRP_CONTEXT IrpContext,
+    PVCB Vcb, PUDF_FILE_INFO FileInfo);
 
 
 // Bounded unpublished regular-file metadata generations (R144 prototype).

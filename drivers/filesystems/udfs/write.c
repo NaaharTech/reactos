@@ -261,6 +261,9 @@ UDFCommonWrite(
         // Is this a write of the volume itself ?
         // **********
         if (Fcb == Fcb->Vcb->VolumeDasdFcb) {
+            /* A raw writer can replace FE bytes outside their Dloc owner.
+             * Conservatively disable cleanup coalescing until remount. */
+            InterlockedExchange(&Vcb->DirectoryFECheckpointDisabled, TRUE);
             // Yup, we need to send this on to the disk driver after
             //  validation of the offset and length.
 

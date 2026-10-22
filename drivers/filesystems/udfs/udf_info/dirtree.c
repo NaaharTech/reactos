@@ -1422,6 +1422,7 @@ UDFRemoveDloc(
     ASSERT(Vcb->DlocList);
     RtlZeroMemory(&(Vcb->DlocList[i]), sizeof(UDF_DATALOC_INDEX));
     UDFReleaseResource(&(Vcb->DlocResource));
+    UDFReleaseDirectoryFECheckpoint(Vcb, Dloc);
     MyFreePool__(Dloc);
     return STATUS_SUCCESS;
 } // end UDFRemoveDloc()
@@ -1474,6 +1475,7 @@ UDFFreeDloc(
         RtlZeroMemory(&(Vcb->DlocList[i]), sizeof(UDF_DATALOC_INDEX));
     }
     UDFReleaseResource(&(Vcb->DlocResource));
+    UDFReleaseDirectoryFECheckpoint(Vcb, Dloc);
     MyFreePool__(Dloc);
 } // end UDFFreeDloc()
 
@@ -1510,8 +1512,10 @@ UDFReleaseDlocList(
     if (!Vcb->DlocList) return;
     UDFAcquireResourceExclusive(&(Vcb->DlocResource),TRUE);
     for(uint32 i=0; i<Vcb->DlocCount; i++) {
-        if (Vcb->DlocList[i].Dloc)
+        if (Vcb->DlocList[i].Dloc) {
+            UDFReleaseDirectoryFECheckpoint(Vcb, Vcb->DlocList[i].Dloc);
             MyFreePool__(Vcb->DlocList[i].Dloc);
+        }
     }
     MyFreePool__(Vcb->DlocList);
     Vcb->DlocList = NULL;

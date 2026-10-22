@@ -303,6 +303,7 @@ typedef struct _UDF_DATALOC_INFO {
     struct _UDF_DIR_APPEND_CACHE* DirectoryAppend;
     int64 DirectoryCommittedLength;
     BOOLEAN DirectoryCommitKnown;
+    struct _UDF_DIRECTORY_FE_CHECKPOINT* DirectoryFECheckpoint;
     struct _UDF_FILE_INFO* LinkedFileInfo;
 /**
     Points  to  the  FileInfo  describing   the   StreamDirectory

@@ -598,17 +598,18 @@ delete_attempt_done:
             }
         }
 
-        // Flush FE on last cleanup, except an owned unpublished directory append.
-        // This prevents a race in UDFTeardownStructures where the FCB is removed
-        // from the FCB table (line ~497) before UDFFlushFile__ writes the FE to
-        // disk (line ~520). Without this, a concurrent open between those two
-        // points reads stale FE from disk with informationLength=0.
+        // Keep structural updates eager. Only an owned unpublished append or
+        // a proved attribute-only directory generation may remain resident.
+        // Final teardown flushes before removing the canonical FCB/LCB;
+        // explicit flush never takes either cleanup-only exception.
         if (!Fcb->FcbCleanup &&
             !ForcedCleanUp &&
             !(Fcb->FcbState & UDF_FCB_DELETED) &&
             !(Vcb->VcbState & VCB_STATE_VOLUME_READ_ONLY) &&
             NextFileInfo &&
             !UDFCanDeferDirectoryAppendCleanup(Vcb, NextFileInfo, FileObject) &&
+            !UDFCanDeferDirectoryAttributesCleanup(IrpContext, Vcb,
+                                                  NextFileInfo, FileObject) &&
             !UDFDeferNewFileMetadata(IrpContext, Vcb, NextFileInfo)) {
             NTSTATUS FlushStatus = UDFFlushFile__(IrpContext, Vcb,
                                                   NextFileInfo, 0);

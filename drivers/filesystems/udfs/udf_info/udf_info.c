@@ -3617,6 +3617,11 @@ UDFCloseFile__Internal(
        !(FileInfo->Dloc->FELoc.Mapping)) return STATUS_SUCCESS;
     if (UDFDeferNewFileMetadata(IrpContext, Vcb, FileInfo))
         return STATUS_SUCCESS;
+    /* Cleanup already consumed this FI reference. Its FILE_OBJECT still
+     * holds the indexed FCB until IRP_CLOSE; do not immediately undo a
+     * proved attribute-only cleanup exception. Final close/flush stay eager. */
+    if (UDFCanRetainDirectoryAttributesClose(IrpContext, Vcb, FileInfo))
+        return STATUS_SUCCESS;
     status = UDFFlushDirectoryAppend(IrpContext, Vcb, FileInfo);
     if (!NT_SUCCESS(status))
         return status;
@@ -5007,6 +5012,9 @@ UDFWriteFEBlock(PIRP_CONTEXT IrpContext, PVCB Vcb,
         return status;
     }
     WriteLen = UDFSerializeFEBlock(Vcb, FileInfo, PartNum);
+    /* A failed or short write may have replaced part of the old sector.
+     * It must never leave an eligible old attribute-only checkpoint. */
+    UDFDirectoryFEWriteStarting(Dloc);
     status = UDFWriteExtent(IrpContext, Vcb, &Dloc->FELoc,
         0, WriteLen, FALSE, (int8*)Dloc->FileEntry, &WrittenBytes);
     if (NT_SUCCESS(status) && WrittenBytes != WriteLen)
@@ -5015,6 +5023,7 @@ UDFWriteFEBlock(PIRP_CONTEXT IrpContext, PVCB Vcb,
         Dloc->DirectoryCommittedLength = Dloc->DataLoc.Length;
         Dloc->DirectoryCommitKnown = TRUE;
         UDFDirectoryAppendFECommitted(FileInfo);
+        UDFDirectoryFEWriteCompleted(Vcb, FileInfo, WriteLen);
     }
     UDFRememberMetadataWritebackError(IrpContext, Vcb, FileInfo, status);
     return status;
