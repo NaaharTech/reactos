@@ -3065,8 +3065,6 @@ UDFReserveInitialFid(PIRP_CONTEXT IrpContext, PVCB Vcb,
     index = UDFDirIndex(parent->Dloc->DirIndex, FileInfo->Index);
     lba = UDFExtentOffsetToLba(Vcb, parent->Dloc->DataLoc.Mapping,
                               index->Offset, NULL, NULL, NULL, NULL);
-    if (lba == LBA_OUT_OF_EXTENT)
-        return STATUS_SUCCESS; // Not allocated: preserve scalar growth.
     parentPart = UDFGetRefPartNumByPhysLba(Vcb,
         parent->Dloc->FELoc.Mapping[0].extLocation);
     if (parentPart >= Vcb->PartitionMaps)
@@ -3079,7 +3077,8 @@ UDFReserveInitialFid(PIRP_CONTEXT IrpContext, PVCB Vcb,
         tombstone->fileCharacteristics = FILE_DELETED;
         RtlZeroMemory(&tombstone->icb, sizeof(tombstone->icb));
         UDFSetUpTag(Vcb, &tombstone->descTag, (uint16)FileInfo->FileIdentLen,
-                    UDFPhysLbaToPart(Vcb, parentPart, lba), 0);
+                    lba == LBA_OUT_OF_EXTENT ? 0 :
+                        UDFPhysLbaToPart(Vcb, parentPart, lba), 0);
         status = UDFReserveDirectoryFid(IrpContext, Vcb, parent, index->Offset,
             FileInfo->FileIdentLen, (int8*)tombstone, &written, Deferred);
         if (NT_SUCCESS(status) && *Deferred && written != FileInfo->FileIdentLen) {

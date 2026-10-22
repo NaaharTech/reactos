@@ -355,6 +355,148 @@ UDFTryDirectoryAppend(PIRP_CONTEXT IrpContext, PVCB Vcb,
         Length, Direct, Buffer, WrittenBytes, Handled, FALSE);
 }
 
+/* Extend an ordinary directory reservation by at most one sector. The
+ * canonical parent owns the complete reference-free FID before allocation;
+ * after checked one-sector allocation its tag uses the new mapping.
+ * Every parent FE writer drains this generation before exposing the length.
+ * The caller holds the same parent FCB as the existing append path.
+ */
+static NTSTATUS
+UDFGrowReservedDirectoryFid(PIRP_CONTEXT IrpContext, PVCB Vcb,
+    PUDF_FILE_INFO Directory, int64 Offset, SIZE_T Length, int8* Buffer,
+    PSIZE_T WrittenBytes, PBOOLEAN Handled)
+{
+    PUDF_DATALOC_INFO dloc = Directory->Dloc;
+    UDF_DIR_APPEND_CACHE* cache = dloc->DirectoryAppend;
+    int64 allocated = dloc->DataLoc.Mapping ?
+                          UDFGetExtentLength(dloc->DataLoc.Mapping) : 0;
+    NTSTATUS status;
+    EXTENT_INFO extra;
+    PEXTENT_MAP newMap;
+    uint32 part, lba, mapBytes;
+    BOOLEAN ownsRange;
+
+    if (FlagOn(IrpContext->Flags, IRP_CONTEXT_FLAG_WRITE_THROUGH) ||
+        dloc->DataLoc.Offset || Offset < 0 ||
+        Offset != dloc->DataLoc.Length || allocated <= 0 ||
+        !dloc->DirectoryCommitKnown ||
+        dloc->DirectoryCommittedLength < 0 ||
+        Offset < dloc->DirectoryCommittedLength || allocated < Offset ||
+        (uint64)Offset > MAXLONGLONG - (uint64)Length ||
+        (uint64)Offset + Length <= (uint64)allocated ||
+        (uint64)Offset + Length - (uint64)allocated > Vcb->SectorSize ||
+        (Offset < allocated && !UDFDirectoryAppendAllocated(Vcb, dloc, Offset,
+                                            (SIZE_T)(allocated - Offset))))
+        return STATUS_SUCCESS;
+    part = UDFGetRefPartNumByPhysLba(Vcb, dloc->FELoc.Mapping[0].extLocation);
+    if (part >= Vcb->PartitionMaps)
+        return STATUS_FILE_CORRUPT_ERROR;
+    if (!cache && !(cache = UDFAllocateDirectoryAppend(Vcb, dloc)))
+        return STATUS_SUCCESS;
+    /* The ordinary append gate drained an incompatible previous range.
+     * Own retry storage before changing allocation. No FID is written
+     * while its final tag address is still unknown. */
+    UDFAcquireResourceExclusive(&cache->Resource, TRUE);
+    ASSERT(!cache->Length);
+    if (cache->Length) {
+        UDFReleaseResource(&cache->Resource);
+        return STATUS_FILE_CORRUPT_ERROR;
+    }
+    if (!cache->Buffer) {
+        if (!UDFChargeDirectoryAppend(Vcb, UDF_DIR_APPEND_CAPACITY)) {
+            UDFReleaseResource(&cache->Resource);
+            return STATUS_SUCCESS;
+        }
+        cache->Buffer = MyAllocatePool__(NonPagedPool, UDF_DIR_APPEND_CAPACITY);
+        if (!cache->Buffer) {
+            UDF_DIR_STAT(Vcb,5);
+            InterlockedExchangeAdd(&Vcb->DirectoryAppendBytes,
+                                   -UDF_DIR_APPEND_CAPACITY);
+            UDFReleaseResource(&cache->Resource);
+            return STATUS_SUCCESS;
+        }
+        UDF_DIR_STAT(Vcb,3);
+    }
+    RtlCopyMemory(cache->Buffer, Buffer, Length);
+    UDFReleaseResource(&cache->Resource);
+
+    mapBytes = UDFGetMappingLength(dloc->DataLoc.Mapping);
+    if (mapBytes < 2 * sizeof(EXTENT_MAP) ||
+        mapBytes > MAXULONG - sizeof(EXTENT_MAP)) {
+        status = STATUS_FILE_CORRUPT_ERROR;
+    } else {
+        newMap = MyAllocatePool__(NonPagedPool, mapBytes + sizeof(EXTENT_MAP));
+        if (!newMap) {
+            /* No allocation or namespace change has happened yet. */
+            UDFAcquireResourceExclusive(&cache->Resource, TRUE);
+            UDFReturnDirectoryAppendBuffer(Vcb, cache);
+            UDFReleaseResource(&cache->Resource);
+            return STATUS_SUCCESS;
+        }
+        RtlZeroMemory(&extra, sizeof(extra));
+        status = UDFOpenIntegrityForWrite(IrpContext, Vcb, FALSE);
+        if (NT_SUCCESS(status))
+            status = UDFAllocFreeExtent(IrpContext, Vcb, Vcb->SectorSize,
+                        UDFPartStart(Vcb, part), UDFPartEnd(Vcb, part),
+                        &extra, dloc->DataLoc.Flags);
+        if (NT_SUCCESS(status) && (!extra.Mapping || extra.Offset ||
+            extra.Length != Vcb->SectorSize ||
+            UDFGetExtentLength(extra.Mapping) != Vcb->SectorSize ||
+            extra.Mapping[1].extLength ||
+            (extra.Mapping[0].extLength >> 30) > EXTENT_NOT_RECORDED_ALLOCATED))
+            status = STATUS_FILE_CORRUPT_ERROR;
+        if (NT_SUCCESS(status)) {
+            /* Both storage allocations preceded the one-sector bitmap
+             * reservation. Installing this mapping needs no late realloc;
+             * never lose a reserved block in an unchecked merge failure. */
+            RtlCopyMemory(newMap, dloc->DataLoc.Mapping,
+                          mapBytes - sizeof(EXTENT_MAP));
+            newMap[mapBytes / sizeof(EXTENT_MAP) - 1] = extra.Mapping[0];
+            RtlZeroMemory((int8*)newMap + mapBytes, sizeof(EXTENT_MAP));
+            MyFreePool__(dloc->DataLoc.Mapping);
+            dloc->DataLoc.Mapping = newMap;
+            newMap = NULL;
+            dloc->DataLoc.Length = Offset + Length;
+            UDFSetFileSize(Directory, dloc->DataLoc.Length);
+        } else if (extra.Mapping) {
+            UDFMarkSpaceAsXXX(Vcb, 0, extra.Mapping, AS_DISCARDED);
+        }
+        if (extra.Mapping)
+            MyFreePool__(extra.Mapping);
+        if (newMap)
+            MyFreePool__(newMap);
+    }
+    ownsRange = dloc->DataLoc.Length >= 0 &&
+        (uint64)Offset + Length <= (uint64)dloc->DataLoc.Length &&
+        UDFDirectoryAppendAllocated(Vcb, dloc, Offset, Length);
+    if (NT_SUCCESS(status) && !ownsRange)
+        status = STATUS_FILE_CORRUPT_ERROR;
+    if (ownsRange) {
+        lba = UDFExtentOffsetToLba(Vcb, dloc->DataLoc.Mapping, Offset,
+                                  NULL, NULL, NULL, NULL);
+    }
+    UDFAcquireResourceExclusive(&cache->Resource, TRUE);
+    ASSERT(!cache->Length);
+    if (ownsRange) {
+        /* The placeholder for an unmapped start never reaches disk. */
+        UDFSetUpTag(Vcb, (tag*)cache->Buffer, (uint16)Length,
+                    UDFPhysLbaToPart(Vcb, part, lba), 0);
+        cache->Offset = Offset;
+        cache->Length = (ULONG)Length;
+        cache->InlineOwned = TRUE;
+        dloc->DataLoc.Modified = TRUE;
+        dloc->FE_Flags |= UDF_FE_FLAG_FE_MODIFIED;
+        *Handled = TRUE;
+    } else {
+        UDFReturnDirectoryAppendBuffer(Vcb, cache);
+    }
+    UDFReleaseResource(&cache->Resource);
+    if (!NT_SUCCESS(status))
+        UDFRememberMetadataWritebackError(IrpContext, Vcb, Directory, status);
+    *WrittenBytes = NT_SUCCESS(status) ? Length : 0;
+    return status;
+}
+
 /* A reserved name must be a complete deleted FID with no ICB reference.
  * It uses the same bounded owner, mapping/EOF checks and drain-before-FE
  * barrier as an ordinary append. It never publishes the new file itself.
@@ -443,8 +585,14 @@ UDFReserveDirectoryFid(PIRP_CONTEXT IrpContext, PVCB Vcb,
         }
         return status;
     }
-    return UDFTryDirectoryAppendInternal(IrpContext, Vcb, Directory, Offset,
-        Length, FALSE, Buffer, WrittenBytes, Handled, TRUE);
+    {
+        NTSTATUS status = UDFTryDirectoryAppendInternal(IrpContext, Vcb,
+            Directory, Offset, Length, FALSE, Buffer, WrittenBytes, Handled, TRUE);
+        if (!NT_SUCCESS(status) || *Handled)
+            return status;
+        return UDFGrowReservedDirectoryFid(IrpContext, Vcb, Directory, Offset,
+            Length, Buffer, WrittenBytes, Handled);
+    }
 }
 
 NTSTATUS
