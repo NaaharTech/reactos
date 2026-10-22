@@ -2977,6 +2977,114 @@ UDFCleanUpFile__(
     If it returns status != STATUS_SUCCESS caller should call UDFCleanUpFile__
     for returned pointer *WITHOUT* using UDFCloseFile__
  */
+/* An appended name can reserve a deleted, reference-free FID before its
+ * initial FE is written. This prevents later growth from exposing stale
+ * bytes in the new slot. UNDER_INIT and then the existing FI/FCB owner
+ * retain the FE; scalar/batched publication commits it before the valid FID.
+ * Keep the immediate initial write when the reservation cannot be owned.
+ */
+static BOOLEAN
+UDFMayDeferInitialFE(PIRP_CONTEXT IrpContext, PVCB Vcb,
+    PUDF_FILE_INFO FileInfo, uint32 PartNum)
+{
+    PUDF_DATALOC_INFO dloc, parentDloc;
+    PUDF_FILE_INFO parent;
+    PFCB parentFcb;
+    PDIR_INDEX_HDR header;
+    PDIR_INDEX_ITEM index;
+    uint32 frame, rel;
+
+    if (!UDFMayDeferNewCreate(IrpContext, Vcb) ||
+        FlagOn(IrpContext->Flags, IRP_CONTEXT_FLAG_WRITE_THROUGH) ||
+        FlagOn(Vcb->VcbState, VCB_STATE_REMOVABLE_MEDIA) ||
+        !FileInfo || !(dloc = FileInfo->Dloc) || FileInfo->Fcb ||
+        FileInfo->RefCount || FileInfo->OpenCount || dloc->LinkRefCount ||
+        dloc->CommonFcb ||
+        !FlagOn(dloc->FE_Flags, UDF_FE_FLAG_UNDER_INIT) ||
+        !FlagOn(dloc->FE_Flags, UDF_FE_FLAG_FE_MODIFIED) ||
+        !dloc->FileEntry || !UDFCanStageFileEntry(Vcb, FileInfo) ||
+        dloc->DataLoc.Length || dloc->DataLoc.Offset != dloc->FileEntryLen ||
+        dloc->FileEntryLen > Vcb->SectorSize ||
+        ((icbtag*)(dloc->FileEntry + 1))->fileType != UDF_FILE_TYPE_REGULAR ||
+        (((icbtag*)(dloc->FileEntry + 1))->flags & ICB_FLAG_ALLOC_MASK) != ICB_FLAG_AD_IN_ICB ||
+        FileInfo->NextLinkedFile != FileInfo || FileInfo->PrevLinkedFile != FileInfo ||
+        !(parent = FileInfo->ParentFile) || !(parentDloc = parent->Dloc) ||
+        !(parentFcb = parent->Fcb) || parentDloc->CommonFcb != parentFcb ||
+        parentFcb->FileInfo != parent || parentFcb->FcbReference <= 0 ||
+        !FlagOn(parentFcb->FcbState, FCB_STATE_IN_FCB_TABLE) ||
+        !FlagOn(parentFcb->FcbState, UDF_FCB_DIRECTORY | UDF_FCB_ROOT_DIRECTORY) ||
+        FlagOn(parentFcb->FcbState, UDF_FCB_DELETED | UDF_FCB_DELETE_ON_CLOSE) ||
+        UDFIsAStreamDir(parent) || !(header = parentDloc->DirIndex) ||
+        parentDloc->DataLoc.Offset || parentDloc->DataLoc.Length < 0 ||
+        !parentDloc->DirectoryCommitKnown || parentDloc->DirectoryCommittedLength < 0 ||
+        parentDloc->DirectoryCommittedLength > parentDloc->DataLoc.Length ||
+        FileInfo->Index < 2 || !FileInfo->FileIdent ||
+        FileInfo->FileIdentLen < sizeof(FILE_IDENT_DESC) ||
+        FileInfo->FileIdentLen > Vcb->SectorSize || PartNum >= Vcb->PartitionMaps)
+        return FALSE;
+    frame = FileInfo->Index >> UDF_DIR_INDEX_FRAME_SH;
+    rel = FileInfo->Index & (UDF_DIR_INDEX_FRAME - 1);
+    if (frame >= header->FrameCount ||
+        (frame + 1 == header->FrameCount && rel >= header->LastFrameCount))
+        return FALSE;
+    index = UDFDirIndex(header, FileInfo->Index);
+    return index && index->FileInfo == FileInfo &&
+        FlagOn(index->FI_Flags, UDF_FI_FLAG_FI_MODIFIED) &&
+        index->Length == FileInfo->FileIdentLen &&
+        (uint64)index->Offset == (uint64)parentDloc->DataLoc.Length &&
+        (uint64)index->Offset >= (uint64)parentDloc->DirectoryCommittedLength &&
+        !(index->FileCharacteristics & (FILE_DELETED | FILE_PARENT | FILE_DIRECTORY | FILE_METADATA)) &&
+        FileInfo->FileIdent->descTag.tagIdent == TID_FILE_IDENT_DESC &&
+        FileInfo->FileIdent->fileCharacteristics == index->FileCharacteristics &&
+        FileInfo->FileIdent->icb.extLocation.partitionReferenceNum == PartNum &&
+        FileInfo->FileIdent->icb.extLocation.logicalBlockNum ==
+            UDFPhysLbaToPart(Vcb, PartNum, dloc->FELoc.Mapping[0].extLocation);
+}
+
+static NTSTATUS
+UDFReserveInitialFid(PIRP_CONTEXT IrpContext, PVCB Vcb,
+    PUDF_FILE_INFO FileInfo, uint32 PartNum, PBOOLEAN Deferred)
+{
+    PUDF_FILE_INFO parent = FileInfo->ParentFile;
+    PDIR_INDEX_ITEM index;
+    PFILE_IDENT_DESC tombstone;
+    SIZE_T written = 0;
+    uint32 lba, parentPart;
+    NTSTATUS status = STATUS_SUCCESS;
+
+    *Deferred = FALSE;
+    if (!UDFMayDeferInitialFE(IrpContext, Vcb, FileInfo, PartNum))
+        return STATUS_SUCCESS;
+    index = UDFDirIndex(parent->Dloc->DirIndex, FileInfo->Index);
+    lba = UDFExtentOffsetToLba(Vcb, parent->Dloc->DataLoc.Mapping,
+                              index->Offset, NULL, NULL, NULL, NULL);
+    if (lba == LBA_OUT_OF_EXTENT)
+        return STATUS_SUCCESS; // Not allocated: preserve scalar growth.
+    parentPart = UDFGetRefPartNumByPhysLba(Vcb,
+        parent->Dloc->FELoc.Mapping[0].extLocation);
+    if (parentPart >= Vcb->PartitionMaps)
+        return STATUS_FILE_CORRUPT_ERROR;
+    tombstone = MyAllocatePool__(NonPagedPool, FileInfo->FileIdentLen);
+    if (!tombstone)
+        return STATUS_SUCCESS; // No new state accepted; immediate FE fallback.
+    _SEH2_TRY {
+        RtlCopyMemory(tombstone, FileInfo->FileIdent, FileInfo->FileIdentLen);
+        tombstone->fileCharacteristics = FILE_DELETED;
+        RtlZeroMemory(&tombstone->icb, sizeof(tombstone->icb));
+        UDFSetUpTag(Vcb, &tombstone->descTag, (uint16)FileInfo->FileIdentLen,
+                    UDFPhysLbaToPart(Vcb, parentPart, lba), 0);
+        status = UDFReserveDirectoryFid(IrpContext, Vcb, parent, index->Offset,
+            FileInfo->FileIdentLen, (int8*)tombstone, &written, Deferred);
+        if (NT_SUCCESS(status) && *Deferred && written != FileInfo->FileIdentLen) {
+            *Deferred = FALSE;
+            status = STATUS_IO_DEVICE_ERROR;
+        }
+    } _SEH2_FINALLY {
+        MyFreePool__(tombstone);
+    } _SEH2_END;
+    return status;
+}
+
 NTSTATUS
 UDFCreateFile__(
     IN PIRP_CONTEXT IrpContext,
@@ -3006,6 +3114,7 @@ UDFCreateFile__(
 //    BOOLEAN PackDir = FALSE;
     BOOLEAN FEAllocated = FALSE;
     BOOLEAN NewNameAppend = FALSE;
+    BOOLEAN InitialFEDeferred = FALSE;
 
     ValidateFileInfo(DirInfo);
     *_FileInfo = NULL;
@@ -3276,10 +3385,20 @@ CrF__2:
         // make FileIdent valid
         FileInfo->FileIdent->fileCharacteristics = 0;
         DirNdx->FileCharacteristics = 0;
-        /* Keep the initial FE durable before any namespace representation
-         * can expose it. Only later updates enter bounded writeback; an
-         * unrelated parent flush must never expose an uninitialized ICB. */
-        status = UDFFlushFE(IrpContext, Vcb, FileInfo, PartNum);
+        /* A deferred initial FE remains owned and dirty until the existing
+         * scalar or batch FE-before-FID publication boundary. No valid FID
+         * may be emitted merely because this private buffer was initialized.
+         * Reused slots and unsupported ownership retain the immediate write. */
+        status = STATUS_SUCCESS;
+        if (NewNameAppend && !undel)
+            status = UDFReserveInitialFid(IrpContext, Vcb, FileInfo,
+                                          PartNum, &InitialFEDeferred);
+        if (NT_SUCCESS(status) && InitialFEDeferred) {
+            FileInfo->Dloc->FE_Flags |= UDF_FE_FLAG_NEW_UNPUBLISHED;
+            UDF_METADATA_COUNT(Vcb,60);
+        } else if (NT_SUCCESS(status)) {
+            status = UDFFlushFE(IrpContext, Vcb, FileInfo, PartNum);
+        }
         if (NT_SUCCESS(status) && NewNameAppend && !undel &&
             !UDFIsAStreamDir(DirInfo) && UDFMayDeferNewCreate(IrpContext, Vcb))
         {

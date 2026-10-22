@@ -809,6 +809,9 @@ UDFCreateFile__(
 NTSTATUS UDFTryDirectoryAppend(PIRP_CONTEXT IrpContext, PVCB Vcb,
     PUDF_FILE_INFO FileInfo, int64 Offset, SIZE_T Length, BOOLEAN Direct,
     int8* Buffer, PSIZE_T WrittenBytes, PBOOLEAN Handled);
+NTSTATUS UDFReserveDirectoryFid(PIRP_CONTEXT IrpContext, PVCB Vcb,
+    PUDF_FILE_INFO Directory, int64 Offset, SIZE_T Length,
+    int8* Buffer, PSIZE_T WrittenBytes, PBOOLEAN Handled);
 NTSTATUS UDFFlushDirectoryAppend(PIRP_CONTEXT IrpContext, PVCB Vcb,
     PUDF_FILE_INFO FileInfo);
 NTSTATUS UDFReadDirectoryAppend(PIRP_CONTEXT IrpContext, PVCB Vcb,

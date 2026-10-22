@@ -159,10 +159,11 @@ UDFFlushDirectoryAppend(PIRP_CONTEXT IrpContext, PVCB Vcb,
     return status;
 }
 
-NTSTATUS
-UDFTryDirectoryAppend(PIRP_CONTEXT IrpContext, PVCB Vcb,
+static NTSTATUS
+UDFTryDirectoryAppendInternal(PIRP_CONTEXT IrpContext, PVCB Vcb,
     PUDF_FILE_INFO FileInfo, int64 Offset, SIZE_T Length, BOOLEAN Direct,
-    int8* Buffer, PSIZE_T WrittenBytes, PBOOLEAN Handled)
+    int8* Buffer, PSIZE_T WrittenBytes, PBOOLEAN Handled,
+    BOOLEAN ReserveTombstone)
 {
     PUDF_DATALOC_INFO dloc = FileInfo->Dloc;
     UDF_DIR_APPEND_CACHE* cache = dloc->DirectoryAppend;
@@ -195,13 +196,15 @@ UDFTryDirectoryAppend(PIRP_CONTEXT IrpContext, PVCB Vcb,
         (Vcb->UdfRevision == 0x201 || Vcb->UdfRevision == 0x250) &&
         Vcb->TargetDeviceObject->DeviceType == FILE_DEVICE_DISK &&
         !FlagOn(Vcb->VcbState, VCB_STATE_VOLUME_READ_ONLY | UDF_VCB_FLAGS_DEAD) &&
-        ((IrpContext->MajorFunction == IRP_MJ_CLEANUP && fileObject &&
+        (ReserveTombstone ||
+         (IrpContext->MajorFunction == IRP_MJ_CLEANUP && fileObject &&
           FlagOn(fileObject->Flags, FO_CACHE_SUPPORTED) &&
           !FlagOn(fileObject->Flags, FO_WRITE_THROUGH)) ||
          FlagOn(IrpContext->Flags, IRP_CONTEXT_FLAG_METADATA_PUBLISH)) &&
         !FlagOn(IrpContext->Flags, IRP_CONTEXT_FLAG_WRITE_THROUGH) &&
         ((PFILE_IDENT_DESC)Buffer)->descTag.tagIdent == TID_FILE_IDENT_DESC &&
-        !(((PFILE_IDENT_DESC)Buffer)->fileCharacteristics & (FILE_DELETED | FILE_PARENT)) &&
+        (ReserveTombstone ||
+         !(((PFILE_IDENT_DESC)Buffer)->fileCharacteristics & (FILE_DELETED | FILE_PARENT))) &&
         UDFDirectoryAppendAllocated(Vcb, dloc, Offset, Length)) {
         eligible = TRUE;
         UDF_DIR_STAT(Vcb,9);
@@ -274,6 +277,40 @@ UDFTryDirectoryAppend(PIRP_CONTEXT IrpContext, PVCB Vcb,
     UDF_DIR_STAT(Vcb,14);
     UDFReleaseResource(&cache->Resource);
     return STATUS_SUCCESS;
+}
+
+NTSTATUS
+UDFTryDirectoryAppend(PIRP_CONTEXT IrpContext, PVCB Vcb,
+    PUDF_FILE_INFO FileInfo, int64 Offset, SIZE_T Length, BOOLEAN Direct,
+    int8* Buffer, PSIZE_T WrittenBytes, PBOOLEAN Handled)
+{
+    return UDFTryDirectoryAppendInternal(IrpContext, Vcb, FileInfo, Offset,
+        Length, Direct, Buffer, WrittenBytes, Handled, FALSE);
+}
+
+/* A reserved name must be a complete deleted FID with no ICB reference.
+ * It uses the same bounded owner, mapping/EOF checks and drain-before-FE
+ * barrier as an ordinary append. It never publishes the new file itself.
+ */
+NTSTATUS
+UDFReserveDirectoryFid(PIRP_CONTEXT IrpContext, PVCB Vcb,
+    PUDF_FILE_INFO Directory, int64 Offset, SIZE_T Length,
+    int8* Buffer, PSIZE_T WrittenBytes, PBOOLEAN Handled)
+{
+    PFILE_IDENT_DESC fid = (PFILE_IDENT_DESC)Buffer;
+    LONG_AD empty;
+    *WrittenBytes = 0;
+    *Handled = FALSE;
+    if (!UDFMayDeferNewCreate(IrpContext, Vcb) || !Buffer ||
+        Length < sizeof(FILE_IDENT_DESC) || Length > Vcb->SectorSize ||
+        fid->descTag.tagIdent != TID_FILE_IDENT_DESC ||
+        fid->fileCharacteristics != FILE_DELETED)
+        return STATUS_SUCCESS;
+    RtlZeroMemory(&empty, sizeof(empty));
+    if (RtlCompareMemory(&fid->icb, &empty, sizeof(empty)) != sizeof(empty))
+        return STATUS_SUCCESS;
+    return UDFTryDirectoryAppendInternal(IrpContext, Vcb, Directory, Offset,
+        Length, FALSE, Buffer, WrittenBytes, Handled, TRUE);
 }
 
 NTSTATUS
