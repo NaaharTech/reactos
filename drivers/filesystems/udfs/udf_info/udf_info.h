@@ -818,6 +818,7 @@ NTSTATUS UDFReadDirectoryAppend(PIRP_CONTEXT IrpContext, PVCB Vcb,
     PUDF_FILE_INFO FileInfo, int64 Offset, SIZE_T Length, BOOLEAN Direct,
     int8* Buffer);
 BOOLEAN UDFDirectoryAppendPending(PUDF_FILE_INFO FileInfo);
+VOID UDFDirectoryAppendFECommitted(PUDF_FILE_INFO FileInfo);
 BOOLEAN UDFReleaseDirectoryAppend(PVCB Vcb, PUDF_DATALOC_INFO Dloc);
 
 

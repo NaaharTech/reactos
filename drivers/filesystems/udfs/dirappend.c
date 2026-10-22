@@ -16,6 +16,7 @@ typedef struct _UDF_DIR_APPEND_CACHE {
     int64 Offset;
     ULONG Length;
     int8* Buffer;
+    BOOLEAN InlineOwned;
 } UDF_DIR_APPEND_CACHE;
 
 static BOOLEAN
@@ -124,7 +125,7 @@ UDFDirectoryAppendPending(PUDF_FILE_INFO FileInfo)
         !(cache = FileInfo->Dloc->DirectoryAppend))
         return FALSE;
     UDFAcquireResourceShared(&cache->Resource, TRUE);
-    pending = cache->Length != 0;
+    pending = cache->Length != 0 || cache->InlineOwned;
     UDFReleaseResource(&cache->Resource);
     return pending;
 }
@@ -159,6 +160,68 @@ UDFFlushDirectoryAppend(PIRP_CONTEXT IrpContext, PVCB Vcb,
     return status;
 }
 
+/* Only the complete, successful parent FE write releases an inline
+ * generation. A failed payload or FE write must keep the Dloc owner. */
+VOID
+UDFDirectoryAppendFECommitted(PUDF_FILE_INFO FileInfo)
+{
+    UDF_DIR_APPEND_CACHE* cache = FileInfo->Dloc->DirectoryAppend;
+    if (!cache)
+        return;
+    UDFAcquireResourceExclusive(&cache->Resource, TRUE);
+    ASSERT(!cache->Length);
+    if (!cache->Length)
+        cache->InlineOwned = FALSE;
+    UDFReleaseResource(&cache->Resource);
+}
+
+/* Only FE-before-FID publication may buffer an overwrite in the suffix
+ * beyond the last committed parent FE. Those bytes are not yet reachable
+ * through that on-disk FE. The canonical Dloc owns the complete range and
+ * every parent-FE writer drains it before advancing the committed boundary.
+ * This permits sequential publication after an older tombstone buffer was
+ * already materialized; it does not cache overwrites of committed names.
+ * No equality assumption or extra disk read is involved.
+ */
+static BOOLEAN
+UDFMayBufferUnpublishedFids(PIRP_CONTEXT IrpContext, PVCB Vcb,
+    PUDF_FILE_INFO Directory, int64 Offset, SIZE_T Length, int8* Buffer)
+{
+    PUDF_DATALOC_INFO dloc = Directory->Dloc;
+    SIZE_T at = 0, size;
+    PFILE_IDENT_DESC fid;
+    if (!Buffer || Length < sizeof(FILE_IDENT_DESC) ||
+        Length > UDF_DIR_APPEND_CAPACITY || Offset < 0 ||
+        !FlagOn(IrpContext->Flags, IRP_CONTEXT_FLAG_METADATA_PUBLISH) ||
+        FlagOn(IrpContext->Flags, IRP_CONTEXT_FLAG_WRITE_THROUGH) ||
+        !dloc->DirectoryCommitKnown || dloc->DirectoryCommittedLength < 0 ||
+        dloc->DataLoc.Length < 0 || Offset < dloc->DirectoryCommittedLength ||
+        (uint64)Offset > (uint64)dloc->DataLoc.Length ||
+        Length > (uint64)dloc->DataLoc.Length - (uint64)Offset ||
+        !Directory->Fcb || dloc->CommonFcb != Directory->Fcb ||
+        Directory->Fcb->FileInfo != Directory || Directory->Fcb->FcbReference <= 0 ||
+        !FlagOn(Directory->Fcb->FcbState, FCB_STATE_IN_FCB_TABLE) ||
+        FlagOn(Directory->Fcb->FcbState, UDF_FCB_DELETED | UDF_FCB_DELETE_ON_CLOSE))
+        return FALSE;
+    /* The context flag is set only after scalar FE commit or after the
+     * complete volume cohort. Check every incoming complete ordinary FID. */
+    while (at < Length) {
+        if (Length - at < sizeof(FILE_IDENT_DESC))
+            return FALSE;
+        fid = (PFILE_IDENT_DESC)(Buffer + at);
+        size = (sizeof(FILE_IDENT_DESC) + fid->lengthOfImpUse +
+                fid->lengthFileIdent + 3) & ~((SIZE_T)3);
+        if (size > Length - at || fid->descTag.tagIdent != TID_FILE_IDENT_DESC ||
+            fid->descTag.descCRCLength != size - sizeof(tag) ||
+            fid->fileVersionNum != 1 || fid->fileCharacteristics != 0 ||
+            !fid->lengthFileIdent || fid->icb.extLength != Vcb->SectorSize ||
+            fid->icb.extLocation.partitionReferenceNum >= Vcb->PartitionMaps)
+            return FALSE;
+        at += size;
+    }
+    return at == Length;
+}
+
 static NTSTATUS
 UDFTryDirectoryAppendInternal(PIRP_CONTEXT IrpContext, PVCB Vcb,
     PUDF_FILE_INFO FileInfo, int64 Offset, SIZE_T Length, BOOLEAN Direct,
@@ -185,7 +248,9 @@ UDFTryDirectoryAppendInternal(PIRP_CONTEXT IrpContext, PVCB Vcb,
     if (!Direct && Length >= sizeof(FILE_IDENT_DESC) &&
         Length <= UDF_DIR_APPEND_CAPACITY && Buffer && Offset >= 0 &&
         (uint64)Offset <= MAXLONGLONG - (uint64)Length &&
-        Offset == dloc->DataLoc.Length &&
+        (Offset == dloc->DataLoc.Length ||
+         (!ReserveTombstone && UDFMayBufferUnpublishedFids(IrpContext, Vcb,
+                                   FileInfo, Offset, Length, Buffer))) &&
         dloc->DirectoryCommitKnown && Offset >= dloc->DirectoryCommittedLength &&
         (uint64)Offset + Length <= (uint64)allocated &&
         dloc->DirIndex && !dloc->DataLoc.Offset &&
@@ -268,8 +333,10 @@ UDFTryDirectoryAppendInternal(PIRP_CONTEXT IrpContext, PVCB Vcb,
     ASSERT(Length <= UDF_DIR_APPEND_CAPACITY - cache->Length);
     RtlCopyMemory(cache->Buffer + cache->Length, Buffer, Length);
     cache->Length += (ULONG)Length;
-    UDFSetFileSize(FileInfo, Offset + Length);
-    dloc->DataLoc.Length = Offset + Length;
+    if ((uint64)Offset + Length > (uint64)dloc->DataLoc.Length) {
+        UDFSetFileSize(FileInfo, Offset + Length);
+        dloc->DataLoc.Length = Offset + Length;
+    }
     dloc->DataLoc.Modified = TRUE;
     dloc->FE_Flags |= UDF_FE_FLAG_FE_MODIFIED;
     *WrittenBytes = Length;
@@ -301,7 +368,14 @@ UDFReserveDirectoryFid(PIRP_CONTEXT IrpContext, PVCB Vcb,
     LONG_AD empty;
     *WrittenBytes = 0;
     *Handled = FALSE;
-    if (!UDFMayDeferNewCreate(IrpContext, Vcb) || !Buffer ||
+    if (!UDFMayDeferNewCreate(IrpContext, Vcb) || !Directory ||
+        !Directory->Dloc || !Directory->Dloc->DirIndex ||
+        !Directory->Fcb || Directory->Dloc->CommonFcb != Directory->Fcb ||
+        Directory->Fcb->FileInfo != Directory || Directory->Fcb->FcbReference <= 0 ||
+        !FlagOn(Directory->Fcb->FcbState, FCB_STATE_IN_FCB_TABLE) ||
+        !FlagOn(Directory->Fcb->FcbState, UDF_FCB_DIRECTORY | UDF_FCB_ROOT_DIRECTORY) ||
+        FlagOn(Directory->Fcb->FcbState, UDF_FCB_DELETED | UDF_FCB_DELETE_ON_CLOSE) ||
+        FlagOn(Vcb->VcbState, VCB_STATE_REMOVABLE_MEDIA) || !Buffer ||
         Length < sizeof(FILE_IDENT_DESC) || Length > Vcb->SectorSize ||
         fid->descTag.tagIdent != TID_FILE_IDENT_DESC ||
         fid->fileCharacteristics != FILE_DELETED)
@@ -309,6 +383,66 @@ UDFReserveDirectoryFid(PIRP_CONTEXT IrpContext, PVCB Vcb,
     RtlZeroMemory(&empty, sizeof(empty));
     if (RtlCompareMemory(&fid->icb, &empty, sizeof(empty)) != sizeof(empty))
         return STATUS_SUCCESS;
+    if (Directory->Dloc->DataLoc.Offset) {
+        PUDF_DATALOC_INFO dloc = Directory->Dloc;
+        UDF_DIR_APPEND_CACHE* cache;
+        NTSTATUS status;
+        if (!dloc->FileEntry || !UDFCanStageFileEntry(Vcb, Directory) ||
+            dloc->DataLoc.Offset != dloc->FileEntryLen ||
+            (((icbtag*)(dloc->FileEntry + 1))->flags & ICB_FLAG_ALLOC_MASK) != ICB_FLAG_AD_IN_ICB ||
+            dloc->DataLoc.Length < 0 || Offset != dloc->DataLoc.Length ||
+            (uint64)dloc->DataLoc.Offset + (uint64)dloc->DataLoc.Length > Vcb->SectorSize ||
+            !(cache = dloc->DirectoryAppend ? dloc->DirectoryAppend :
+                                            UDFAllocateDirectoryAppend(Vcb, dloc)))
+            return STATUS_SUCCESS;
+        status = UDFOpenIntegrityForWrite(IrpContext, Vcb, FALSE);
+        if (!NT_SUCCESS(status))
+            return status;
+        if (Length <= Vcb->SectorSize - dloc->DataLoc.Offset - (SIZE_T)Offset) {
+            UDFAcquireResourceExclusive(&cache->Resource, TRUE);
+            ASSERT(!cache->Length);
+            if (cache->Length) {
+                UDFReleaseResource(&cache->Resource);
+                return STATUS_FILE_CORRUPT_ERROR;
+            }
+            RtlCopyMemory((int8*)dloc->FileEntry + dloc->DataLoc.Offset + (SIZE_T)Offset,
+                          Buffer, Length);
+            dloc->DataLoc.Length = Offset + Length;
+            UDFSetFileSize(Directory, dloc->DataLoc.Length);
+            dloc->DataLoc.Modified = TRUE;
+            dloc->FE_Flags |= UDF_FE_FLAG_FE_MODIFIED;
+            cache->InlineOwned = TRUE;
+            *WrittenBytes = Length;
+            *Handled = TRUE;
+            UDFReleaseResource(&cache->Resource);
+            return STATUS_SUCCESS;
+        }
+        /* Keep the existing move's input durable, as it was before inline
+         * deferral. In particular, a failed/partial copy to the new extent
+         * must not make the old, still-committed in-ICB FE stale. Only after
+         * that full FE succeeds may mapping/retag follow the existing path.
+         * The current new FID is beyond the old length and is not published. */
+        {
+            uint32 part = UDFGetRefPartNumByPhysLba(Vcb,
+                               dloc->FELoc.Mapping[0].extLocation);
+            if (part >= Vcb->PartitionMaps)
+                return STATUS_FILE_CORRUPT_ERROR;
+            status = UDFFlushFE(IrpContext, Vcb, Directory, part);
+            if (!NT_SUCCESS(status))
+                return status;
+        }
+        status = UDFWriteFile__(IrpContext, Vcb, Directory, Offset, Length,
+                                FALSE, Buffer, WrittenBytes);
+        if (NT_SUCCESS(status) && *WrittenBytes != Length)
+            status = STATUS_IO_DEVICE_ERROR;
+        if (NT_SUCCESS(status)) {
+            UDFAcquireResourceExclusive(&cache->Resource, TRUE);
+            cache->InlineOwned = TRUE;
+            UDFReleaseResource(&cache->Resource);
+            *Handled = TRUE;
+        }
+        return status;
+    }
     return UDFTryDirectoryAppendInternal(IrpContext, Vcb, Directory, Offset,
         Length, FALSE, Buffer, WrittenBytes, Handled, TRUE);
 }
@@ -326,6 +460,22 @@ UDFReadDirectoryAppend(PIRP_CONTEXT IrpContext, PVCB Vcb,
         return STATUS_INVALID_PARAMETER;
     end = Offset + Length;
     UDFAcquireResourceShared(&cache->Resource, TRUE);
+    if (FileInfo->Dloc->DataLoc.Offset) {
+        PUDF_DATALOC_INFO dloc = FileInfo->Dloc;
+        /* The cache control owns the resident in-ICB generation even when
+         * it has no external append buffer. This also feeds externalization. */
+        if (!dloc->FileEntry || dloc->DataLoc.Offset != dloc->FileEntryLen ||
+            dloc->DataLoc.Length < 0 || (uint64)end > (uint64)dloc->DataLoc.Length ||
+            (uint64)dloc->FileEntryLen + (uint64)dloc->DataLoc.Length > Vcb->SectorSize ||
+            (((icbtag*)(dloc->FileEntry + 1))->flags & ICB_FLAG_ALLOC_MASK) != ICB_FLAG_AD_IN_ICB) {
+            status = STATUS_FILE_CORRUPT_ERROR;
+        } else if (Length) {
+            RtlCopyMemory(Buffer, (int8*)dloc->FileEntry + dloc->FileEntryLen + (SIZE_T)Offset,
+                          Length);
+        }
+        UDFReleaseResource(&cache->Resource);
+        return status;
+    }
     first = max(Offset, cache->Offset);
     last = min(end, cache->Offset + cache->Length);
     if (!cache->Length || first >= last) {
@@ -356,7 +506,7 @@ UDFReleaseDirectoryAppend(PVCB Vcb, PUDF_DATALOC_INFO Dloc)
         return TRUE;
     /* Normal teardown flushed before removing the FCB/LCBs. Never discard a
      * failed dirty generation merely because its last handle was closed. */
-    if (cache->Length) {
+    if (cache->Length || cache->InlineOwned) {
         return FALSE;
     }
     UDFReturnDirectoryAppendBuffer(Vcb,cache);

@@ -390,7 +390,12 @@ UDFPublishNewVolumeIdentifiers(UDF_FE_WRITEBACK* Batch)
                 partition = UDFGetRefPartNumByPhysLba(vcb,
                     directory->Dloc->FELoc.Mapping[0].extLocation);
                 if (partition < vcb->PartitionMaps) {
-                    status = UDFFlushDirectoryAppend(context,vcb,directory);
+                    /* All cohort FEs already committed. Keep pending,
+                     * reference-free reservations owned until they can be
+                     * replaced by these valid FIDs in the same buffer.
+                     * UDFReTagDirectory drains itself if storage mode changed;
+                     * parent FE publication still drains unconditionally. */
+                    status = STATUS_SUCCESS;
                     if (NT_SUCCESS(status)) {
                         for (i = first; i < limit; i++) {
                             uint32 owner = window->Order[i];

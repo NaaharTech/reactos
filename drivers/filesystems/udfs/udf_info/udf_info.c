@@ -3015,12 +3015,19 @@ UDFMayDeferInitialFE(PIRP_CONTEXT IrpContext, PVCB Vcb,
         !FlagOn(parentFcb->FcbState, UDF_FCB_DIRECTORY | UDF_FCB_ROOT_DIRECTORY) ||
         FlagOn(parentFcb->FcbState, UDF_FCB_DELETED | UDF_FCB_DELETE_ON_CLOSE) ||
         UDFIsAStreamDir(parent) || !(header = parentDloc->DirIndex) ||
-        parentDloc->DataLoc.Offset || parentDloc->DataLoc.Length < 0 ||
+        parentDloc->DataLoc.Length < 0 ||
         !parentDloc->DirectoryCommitKnown || parentDloc->DirectoryCommittedLength < 0 ||
         parentDloc->DirectoryCommittedLength > parentDloc->DataLoc.Length ||
         FileInfo->Index < 2 || !FileInfo->FileIdent ||
         FileInfo->FileIdentLen < sizeof(FILE_IDENT_DESC) ||
         FileInfo->FileIdentLen > Vcb->SectorSize || PartNum >= Vcb->PartitionMaps)
+        return FALSE;
+    if (parentDloc->DataLoc.Offset &&
+        (!UDFCanStageFileEntry(Vcb, parent) ||
+         parentDloc->DataLoc.Offset != parentDloc->FileEntryLen ||
+         !parentDloc->FileEntry ||
+         (((icbtag*)(parentDloc->FileEntry + 1))->flags & ICB_FLAG_ALLOC_MASK) != ICB_FLAG_AD_IN_ICB ||
+         (uint64)parentDloc->FileEntryLen + (uint64)parentDloc->DataLoc.Length > Vcb->SectorSize))
         return FALSE;
     frame = FileInfo->Index >> UDF_DIR_INDEX_FRAME_SH;
     rel = FileInfo->Index & (UDF_DIR_INDEX_FRAME - 1);
@@ -4986,15 +4993,22 @@ UDFWriteFEBlock(PIRP_CONTEXT IrpContext, PVCB Vcb,
     PUDF_FILE_INFO FileInfo, uint32 PartNum)
 {
     PUDF_DATALOC_INFO Dloc = FileInfo->Dloc;
-    uint32 WriteLen = UDFSerializeFEBlock(Vcb, FileInfo, PartNum);
+    uint32 WriteLen;
     SIZE_T WrittenBytes = 0;
-    NTSTATUS status = UDFWriteExtent(IrpContext, Vcb, &Dloc->FELoc,
+    NTSTATUS status = UDFFlushDirectoryAppend(IrpContext, Vcb, FileInfo);
+    if (!NT_SUCCESS(status)) {
+        UDFRememberMetadataWritebackError(IrpContext, Vcb, FileInfo, status);
+        return status;
+    }
+    WriteLen = UDFSerializeFEBlock(Vcb, FileInfo, PartNum);
+    status = UDFWriteExtent(IrpContext, Vcb, &Dloc->FELoc,
         0, WriteLen, FALSE, (int8*)Dloc->FileEntry, &WrittenBytes);
     if (NT_SUCCESS(status) && WrittenBytes != WriteLen)
         status = STATUS_IO_DEVICE_ERROR;
     if (NT_SUCCESS(status)) {
         Dloc->DirectoryCommittedLength = Dloc->DataLoc.Length;
         Dloc->DirectoryCommitKnown = TRUE;
+        UDFDirectoryAppendFECommitted(FileInfo);
     }
     UDFRememberMetadataWritebackError(IrpContext, Vcb, FileInfo, status);
     return status;
