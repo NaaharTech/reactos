@@ -29,7 +29,6 @@ UDFReadSecurityDescriptor(
 
 static NTSTATUS
 UDFBuildDefaultSecurityDescriptor(
-    BOOLEAN IsDirectory,
     PSECURITY_DESCRIPTOR *SecurityDescriptor
     );
 
@@ -123,8 +122,11 @@ UDFCheckAccessRights(
             &GrantedAccess,
             &AccessStatus);
         MyFreePool__(SecurityDescriptor);
-        if (!AccessGranted)
+        if (!AccessGranted) {
+            UDFPrintErr(("UDF access check denied %08x for %p, desired %08x\n",
+                         AccessStatus, Fcb->FileInfo, DesiredAccess));
             return AccessStatus;
+        }
     }
 
     if (FileObject) {
@@ -187,8 +189,13 @@ UDFReadSecurityDescriptor(
         return STATUS_NO_SECURITY_ON_OBJECT;
 
     Status = UDFOpenStreamDir__(IrpContext, Vcb, FileInfo, &StreamDirInfo);
-    if (Status == STATUS_NOT_FOUND)
+    if (Status == STATUS_NOT_FOUND) {
+        UDFPrint(("UDF security: no stream directory for %p\n", FileInfo));
         return STATUS_NO_SECURITY_ON_OBJECT;
+    }
+    if (!NT_SUCCESS(Status))
+        UDFPrintErr(("UDF security: opening stream directory failed %08x for %p\n",
+                     Status, FileInfo));
     if (!NT_SUCCESS(Status))
         goto Cleanup;
     StreamDirOpened = TRUE;
@@ -197,9 +204,13 @@ UDFReadSecurityDescriptor(
                            StreamDirInfo, &AclInfo, NULL);
     if (Status == STATUS_OBJECT_NAME_NOT_FOUND ||
         Status == STATUS_NOT_FOUND) {
+        UDFPrint(("UDF security: no ACL stream for %p\n", FileInfo));
         Status = STATUS_NO_SECURITY_ON_OBJECT;
         goto Cleanup;
     }
+    if (!NT_SUCCESS(Status))
+        UDFPrintErr(("UDF security: opening ACL stream failed %08x for %p\n",
+                     Status, FileInfo));
     if (!NT_SUCCESS(Status))
         goto Cleanup;
     AclOpened = TRUE;
@@ -207,6 +218,8 @@ UDFReadSecurityDescriptor(
     FileSize = UDFGetFileSize(AclInfo);
     if (FileSize < sizeof(SECURITY_DESCRIPTOR_RELATIVE) ||
         FileSize > 1024 * 1024) {
+        UDFPrintErr(("UDF security: invalid ACL stream size %I64d for %p\n",
+                     FileSize, FileInfo));
         Status = STATUS_INVALID_SECURITY_DESCR;
         goto Cleanup;
     }
@@ -219,9 +232,14 @@ UDFReadSecurityDescriptor(
 
     Status = UDFReadFile__(IrpContext, Vcb, AclInfo, 0, (SIZE_T)FileSize,
                            FALSE, (int8 *)*SecurityDescriptor);
+    if (!NT_SUCCESS(Status))
+        UDFPrintErr(("UDF security: reading ACL stream failed %08x for %p\n",
+                     Status, FileInfo));
     if (NT_SUCCESS(Status) &&
         !RtlValidRelativeSecurityDescriptor(*SecurityDescriptor,
                                             (ULONG)FileSize, 0)) {
+        UDFPrintErr(("UDF security: invalid stored descriptor for %p\n",
+                     FileInfo));
         Status = STATUS_INVALID_SECURITY_DESCR;
     }
 
@@ -248,21 +266,18 @@ Cleanup:
 
 static NTSTATUS
 UDFBuildDefaultSecurityDescriptor(
-    BOOLEAN IsDirectory,
     PSECURITY_DESCRIPTOR *SecurityDescriptor
     )
 {
     NTSTATUS Status;
     PSECURITY_DESCRIPTOR AbsoluteDescriptor;
-    PSECURITY_DESCRIPTOR AssignedDescriptor = NULL;
     PSECURITY_DESCRIPTOR RelativeDescriptor;
-    SECURITY_SUBJECT_CONTEXT SubjectContext;
     PACL Acl;
     ULONG SidLength = RtlLengthSid(SeExports->SeWorldSid);
     ULONG AbsoluteLength = sizeof(SECURITY_DESCRIPTOR) +
                            sizeof(ACL) + sizeof(ACCESS_ALLOWED_ACE) +
                            SidLength - sizeof(ULONG);
-    ULONG RelativeLength;
+    ULONG RelativeLength = 0;
 
     AbsoluteDescriptor = MyAllocatePool__(PagedPool, AbsoluteLength);
     if (!AbsoluteDescriptor)
@@ -272,6 +287,12 @@ UDFBuildDefaultSecurityDescriptor(
     Status = RtlCreateSecurityDescriptor(AbsoluteDescriptor,
                                          SECURITY_DESCRIPTOR_REVISION);
     if (NT_SUCCESS(Status))
+        Status = RtlSetOwnerSecurityDescriptor(AbsoluteDescriptor,
+                                               SeExports->SeWorldSid, FALSE);
+    if (NT_SUCCESS(Status))
+        Status = RtlSetGroupSecurityDescriptor(AbsoluteDescriptor,
+                                               SeExports->SeWorldSid, FALSE);
+    if (NT_SUCCESS(Status))
         Status = RtlCreateAcl(Acl, AbsoluteLength - sizeof(SECURITY_DESCRIPTOR),
                               ACL_REVISION);
     if (NT_SUCCESS(Status))
@@ -280,28 +301,24 @@ UDFBuildDefaultSecurityDescriptor(
     if (NT_SUCCESS(Status))
         Status = RtlSetDaclSecurityDescriptor(AbsoluteDescriptor, TRUE, Acl,
                                               FALSE);
-    if (NT_SUCCESS(Status)) {
-        SeCaptureSubjectContext(&SubjectContext);
-        Status = SeAssignSecurityEx(
-            NULL, AbsoluteDescriptor, &AssignedDescriptor, NULL,
-            IsDirectory, 0, &SubjectContext,
-            IoGetFileObjectGenericMapping(), PagedPool);
-        SeReleaseSubjectContext(&SubjectContext);
+    if (NT_SUCCESS(Status))
+        Status = RtlAbsoluteToSelfRelativeSD(AbsoluteDescriptor, NULL,
+                                             &RelativeLength);
+    if (Status == STATUS_BUFFER_TOO_SMALL) {
+        RelativeDescriptor = MyAllocatePool__(PagedPool, RelativeLength);
+        if (!RelativeDescriptor) {
+            Status = STATUS_INSUFFICIENT_RESOURCES;
+        } else {
+            Status = RtlAbsoluteToSelfRelativeSD(AbsoluteDescriptor,
+                                                 RelativeDescriptor,
+                                                 &RelativeLength);
+            if (NT_SUCCESS(Status))
+                *SecurityDescriptor = RelativeDescriptor;
+            else
+                MyFreePool__(RelativeDescriptor);
+        }
     }
     MyFreePool__(AbsoluteDescriptor);
-
-    if (!NT_SUCCESS(Status))
-        return Status;
-
-    RelativeLength = RtlLengthSecurityDescriptor(AssignedDescriptor);
-    RelativeDescriptor = MyAllocatePool__(PagedPool, RelativeLength);
-    if (!RelativeDescriptor) {
-        ExFreePool(AssignedDescriptor);
-        return STATUS_INSUFFICIENT_RESOURCES;
-    }
-    RtlCopyMemory(RelativeDescriptor, AssignedDescriptor, RelativeLength);
-    ExFreePool(AssignedDescriptor);
-    *SecurityDescriptor = RelativeDescriptor;
     return Status;
 }
 
@@ -332,8 +349,8 @@ UDFResolveSecurityDescriptor(
     if (Depth >= 32)
         return STATUS_ACCESS_DENIED;
     if (!FileInfo || !FileInfo->ParentFile || FileInfo->ParentFile == FileInfo) {
-        return UDFBuildDefaultSecurityDescriptor(
-            UDFIsADirectory(FileInfo), SecurityDescriptor);
+        UDFPrint(("UDF security: using default descriptor for %p\n", FileInfo));
+        return UDFBuildDefaultSecurityDescriptor(SecurityDescriptor);
     }
 
     Status = UDFResolveSecurityDescriptor(IrpContext, Vcb,
@@ -350,8 +367,11 @@ UDFResolveSecurityDescriptor(
         &SubjectContext, IoGetFileObjectGenericMapping(), PagedPool);
     SeReleaseSubjectContext(&SubjectContext);
     MyFreePool__(ParentDescriptor);
-    if (!NT_SUCCESS(Status))
+    if (!NT_SUCCESS(Status)) {
+        UDFPrintErr(("UDF security: inheriting descriptor failed %08x for %p\n",
+                     Status, FileInfo));
         return Status;
+    }
 
     BufferLength = RtlLengthSecurityDescriptor(InheritedDescriptor);
     RelativeDescriptor = MyAllocatePool__(PagedPool, BufferLength);
@@ -378,6 +398,8 @@ UDFResolveSecurityDescriptor(
     }
     ExFreePool(InheritedDescriptor);
     if (!NT_SUCCESS(Status)) {
+        UDFPrintErr(("UDF security: converting inherited descriptor failed %08x for %p\n",
+                     Status, FileInfo));
         MyFreePool__(RelativeDescriptor);
         return Status;
     }
@@ -471,6 +493,10 @@ UDFCommonQuerySecurity(
     TYPE_OF_OPEN TypeOfOpen;
 
     Irp->IoStatus.Information = 0;
+    UDFPrint(("UDF query security: file object %p information %08x length %lu\n",
+              FileObject,
+              IrpSp->Parameters.QuerySecurity.SecurityInformation,
+              BufferLength));
 
     if (!FileObject) {
         Status = STATUS_INVALID_PARAMETER;
@@ -491,8 +517,11 @@ UDFCommonQuerySecurity(
 
     Status = UDFResolveSecurityDescriptor(IrpContext, Fcb->Vcb, Fcb->FileInfo,
                                           0, &SecurityDescriptor);
-    if (!NT_SUCCESS(Status))
+    if (!NT_SUCCESS(Status)) {
+        UDFPrintErr(("UDF query security: resolving descriptor failed %08x for %wZ\n",
+                     Status, &FileObject->FileName));
         goto Complete;
+    }
 
     if (BufferLength) {
         Status = UDFLockUserBuffer(IrpContext, BufferLength, IoWriteAccess);
@@ -516,6 +545,8 @@ UDFCommonQuerySecurity(
     Irp->IoStatus.Information = BufferLength;
 
 Complete:
+    UDFPrint(("UDF query security: completed %08x length %lu for file object %p\n",
+              Status, Irp->IoStatus.Information, FileObject));
     if (FcbAcquired)
         UDFReleaseFcb(IrpContext, Fcb);
     if (SecurityDescriptor)
@@ -544,6 +575,8 @@ UDFCommonSetSecurity(
     TYPE_OF_OPEN TypeOfOpen;
 
     Irp->IoStatus.Information = 0;
+    UDFPrint(("UDF set security: file object %p information %08x\n",
+              FileObject, SecurityInformation));
 
     if (!FileObject) {
         Status = STATUS_INVALID_PARAMETER;
@@ -600,8 +633,13 @@ UDFCommonSetSecurity(
 
     Status = UDFWriteSecurityDescriptor(IrpContext, Fcb->Vcb, Fcb->FileInfo,
                                         UpdatedDescriptor);
+    if (!NT_SUCCESS(Status))
+        UDFPrintErr(("UDF set security: storing descriptor failed %08x for %p\n",
+                     Status, Fcb->FileInfo));
 
 Complete:
+    UDFPrint(("UDF set security: completed %08x for file object %p\n",
+              Status, FileObject));
     if (FcbAcquired)
         UDFReleaseFcb(IrpContext, Fcb);
     if (UpdatedDescriptor && UpdatedDescriptor != ExistingDescriptor)
