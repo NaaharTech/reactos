@@ -357,6 +357,15 @@ UDFCommonSetSecurity(
     _In_ PIRP Irp
     );
 
+NTSTATUS
+UDFCreateSecurityDescriptor(
+    _In_ PIRP_CONTEXT IrpContext,
+    _In_ PVCB Vcb,
+    _In_ PUDF_FILE_INFO ParentFileInfo,
+    _In_ PUDF_FILE_INFO FileInfo,
+    _In_ PACCESS_STATE AccessState
+    );
+
 extern NTSTATUS UDFGetBasicInformation(
     IN PFILE_OBJECT                FileObject,
     IN PFCB                        Fcb,

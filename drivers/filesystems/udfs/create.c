@@ -2095,6 +2095,14 @@ UDFCommonCreate(
                                 try_return(Status);
                             }
                         }
+                        Status = UDFCreateSecurityDescriptor(
+                            IrpContext, Vcb, OldRelatedFileInfo,
+                            NewFileInfo, AccessState);
+                        if (!NT_SUCCESS(Status)) {
+                            UDFFlushFile__(IrpContext, Vcb, NewFileInfo, 0);
+                            UDFUnlinkFile__(IrpContext, Vcb, NewFileInfo, TRUE);
+                            try_return(Status);
+                        }
                         NewFileCreated = TRUE;
                         CreateDisposition = FILE_CREATE;
                         Status = STATUS_SUCCESS;
@@ -2284,6 +2292,14 @@ UDFCommonCreate(
                     // The common failure path releases this create reference.
                     try_return(Status);
                 }
+            }
+
+            Status = UDFCreateSecurityDescriptor(
+                IrpContext, Vcb, OldRelatedFileInfo, NewFileInfo, AccessState);
+            if (!NT_SUCCESS(Status)) {
+                UDFFlushFile__(IrpContext, Vcb, NewFileInfo, 0);
+                UDFUnlinkFile__(IrpContext, Vcb, NewFileInfo, TRUE);
+                try_return(Status);
             }
 
             // Decide whether a separate stream object must be created.
