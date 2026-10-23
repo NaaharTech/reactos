@@ -114,7 +114,7 @@ UDFCheckAccessRights(
             &AccessState->SubjectSecurityContext,
             FALSE,
             DesiredAccess,
-            AccessState->PreviouslyGrantedAccess,
+            0,
             NULL,
             IoGetFileObjectGenericMapping(),
             IrpContext && IrpContext->Irp ?
@@ -124,8 +124,6 @@ UDFCheckAccessRights(
         MyFreePool__(SecurityDescriptor);
         if (!AccessGranted)
             return AccessStatus;
-
-        AccessState->PreviouslyGrantedAccess |= GrantedAccess;
     }
 
     if (FileObject) {
@@ -316,19 +314,15 @@ UDFResolveSecurityDescriptor(
 {
     NTSTATUS Status;
     PSECURITY_DESCRIPTOR ParentDescriptor = NULL;
-    PSECURITY_DESCRIPTOR InheritedDescriptor = NULL;
-    PSECURITY_DESCRIPTOR RelativeDescriptor = NULL;
-    SECURITY_SUBJECT_CONTEXT SubjectContext;
-    SECURITY_INFORMATION SecurityInformation = FULL_SECURITY_INFORMATION;
-    ULONG BufferLength;
 
     Status = UDFReadSecurityDescriptor(IrpContext, Vcb, FileInfo,
                                        SecurityDescriptor);
     if (Status != STATUS_NO_SECURITY_ON_OBJECT)
         return Status;
 
-    if (!FileInfo || !FileInfo->ParentFile ||
-        FileInfo->ParentFile == FileInfo || Depth >= 32) {
+    if (Depth >= 32)
+        return STATUS_ACCESS_DENIED;
+    if (!FileInfo || !FileInfo->ParentFile || FileInfo->ParentFile == FileInfo) {
         return UDFBuildDefaultSecurityDescriptor(SecurityDescriptor);
     }
 
@@ -338,45 +332,7 @@ UDFResolveSecurityDescriptor(
     if (!NT_SUCCESS(Status))
         return Status;
 
-    SeCaptureSubjectContext(&SubjectContext);
-    Status = SeAssignSecurity(ParentDescriptor, NULL, &InheritedDescriptor,
-                              UDFIsADirectory(FileInfo), &SubjectContext,
-                              IoGetFileObjectGenericMapping(), PagedPool);
-    SeReleaseSubjectContext(&SubjectContext);
-    MyFreePool__(ParentDescriptor);
-    if (!NT_SUCCESS(Status))
-        return Status;
-
-    BufferLength = RtlLengthSecurityDescriptor(InheritedDescriptor);
-    RelativeDescriptor = MyAllocatePool__(PagedPool, BufferLength);
-    if (!RelativeDescriptor) {
-        ExFreePool(InheritedDescriptor);
-        return STATUS_INSUFFICIENT_RESOURCES;
-    }
-
-    Status = SeQuerySecurityDescriptorInfo(&SecurityInformation,
-                                           RelativeDescriptor,
-                                           &BufferLength,
-                                           &InheritedDescriptor);
-    if (Status == STATUS_BUFFER_TOO_SMALL) {
-        MyFreePool__(RelativeDescriptor);
-        RelativeDescriptor = MyAllocatePool__(PagedPool, BufferLength);
-        if (!RelativeDescriptor) {
-            ExFreePool(InheritedDescriptor);
-            return STATUS_INSUFFICIENT_RESOURCES;
-        }
-        Status = SeQuerySecurityDescriptorInfo(&SecurityInformation,
-                                               RelativeDescriptor,
-                                               &BufferLength,
-                                               &InheritedDescriptor);
-    }
-    ExFreePool(InheritedDescriptor);
-    if (!NT_SUCCESS(Status)) {
-        MyFreePool__(RelativeDescriptor);
-        return Status;
-    }
-
-    *SecurityDescriptor = RelativeDescriptor;
+    *SecurityDescriptor = ParentDescriptor;
     return STATUS_SUCCESS;
 }
 

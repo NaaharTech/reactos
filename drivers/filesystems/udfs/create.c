@@ -1830,7 +1830,7 @@ UDFCommonCreate(
                 }
 
                 // check traverse rights (uses RelatedFileInfo->Fcb which is now locked as PreviousFcb)
-                Status = UDFCheckAccessRights(IrpContext, NULL, NULL, RelatedFileInfo->Fcb, RelatedCcb, FILE_TRAVERSE, 0);
+                Status = UDFCheckAccessRights(IrpContext, NULL, AccessState, RelatedFileInfo->Fcb, RelatedCcb, FILE_TRAVERSE, 0);
                 if (!NT_SUCCESS(Status)) {
                     AdPrint(("    Traverse check failed\n"));
                 } else if (!IsStreamComponent) {
@@ -2059,7 +2059,7 @@ UDFCommonCreate(
                         }
                         // Check access rights on parent directory
                         ASSERT(CurrentFcb);
-                        Status = UDFCheckAccessRights(IrpContext, NULL, NULL, OldRelatedFileInfo->Fcb, RelatedCcb,
+                        Status = UDFCheckAccessRights(IrpContext, NULL, AccessState, OldRelatedFileInfo->Fcb, RelatedCcb,
                                                       DirectoryFile ? FILE_ADD_SUBDIRECTORY : FILE_ADD_FILE, 0);
                         if (!NT_SUCCESS(Status)) {
                             AdPrint(("    Creation of File/Dir not permitted\n"));
@@ -2243,7 +2243,7 @@ UDFCommonCreate(
             }
             // check access rights
             ASSERT(CurrentFcb);
-            Status = UDFCheckAccessRights(IrpContext, NULL, NULL, OldRelatedFileInfo->Fcb, RelatedCcb, DirectoryFile ? FILE_ADD_SUBDIRECTORY : FILE_ADD_FILE, 0);
+            Status = UDFCheckAccessRights(IrpContext, NULL, AccessState, OldRelatedFileInfo->Fcb, RelatedCcb, DirectoryFile ? FILE_ADD_SUBDIRECTORY : FILE_ADD_FILE, 0);
             if (!NT_SUCCESS(Status)) {
                 AdPrint(("    Creation of File/Dir not permitted\n"));
                 try_return(Status);
