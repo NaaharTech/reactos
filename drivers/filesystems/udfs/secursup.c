@@ -317,7 +317,9 @@ UDFResolveSecurityDescriptor(
     PSECURITY_DESCRIPTOR InheritedDescriptor = NULL;
     PSECURITY_DESCRIPTOR RelativeDescriptor = NULL;
     SECURITY_SUBJECT_CONTEXT SubjectContext;
-    SECURITY_INFORMATION SecurityInformation = FULL_SECURITY_INFORMATION;
+    SECURITY_INFORMATION SecurityInformation =
+        OWNER_SECURITY_INFORMATION | GROUP_SECURITY_INFORMATION |
+        DACL_SECURITY_INFORMATION | SACL_SECURITY_INFORMATION;
     ULONG BufferLength;
 
     Status = UDFReadSecurityDescriptor(IrpContext, Vcb, FileInfo,
