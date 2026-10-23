@@ -48,12 +48,238 @@ UDFIsRecycleBinRoot(
         return FALSE;
 
     FileName = FileObject->FileName;
-    if (FileName.Length >= sizeof(WCHAR) && FileName.Buffer[0] == L'\\') {
+    while (FileName.Length >= sizeof(WCHAR) &&
+           FileName.Buffer[0] == L'\\') {
         FileName.Buffer++;
         FileName.Length -= sizeof(WCHAR);
     }
+    while (FileName.Length >= sizeof(WCHAR) &&
+           FileName.Buffer[(FileName.Length / sizeof(WCHAR)) - 1] == L'\\')
+        FileName.Length -= sizeof(WCHAR);
 
     return RtlEqualUnicodeString(&FileName, &RecycleBinName, TRUE);
+}
+
+static BOOLEAN
+UDFIsRecycleBinDirectory(
+    PUDF_FILE_INFO FileInfo,
+    PVCB Vcb
+    )
+{
+    NTSTATUS Status;
+    UNICODE_STRING FileName;
+    UNICODE_STRING RecycleBinName = RTL_CONSTANT_STRING(L"$RECYCLE.BIN");
+    BOOLEAN IsRecycleBin;
+
+    if (!FileInfo || !FileInfo->ParentFile ||
+        !Vcb || !Vcb->RootIndexFcb ||
+        FileInfo->ParentFile->Fcb != Vcb->RootIndexFcb)
+        return FALSE;
+
+    Status = UDFGetFileNameFromFileInfo(FileInfo, &FileName);
+    if (!NT_SUCCESS(Status) || !FileName.Buffer)
+        return FALSE;
+
+    IsRecycleBin = RtlEqualUnicodeString(&FileName, &RecycleBinName, TRUE);
+    MyFreePool__(FileName.Buffer);
+    return IsRecycleBin;
+}
+
+static NTSTATUS
+UDFSetRecycleBinUsersInheritance(
+    PSECURITY_DESCRIPTOR SecurityDescriptor
+    )
+{
+    NTSTATUS Status;
+    PACL Dacl;
+    BOOLEAN DaclPresent;
+    ULONG i;
+
+    Status = RtlGetDaclSecurityDescriptor(SecurityDescriptor, &DaclPresent,
+                                          &Dacl, NULL);
+    if (!NT_SUCCESS(Status) || !DaclPresent || !Dacl)
+        return Status;
+
+    for (i = 0; i < Dacl->AceCount; i++) {
+        PACE_HEADER AceHeader;
+
+        Status = RtlGetAce(Dacl, i, (PVOID *)&AceHeader);
+        if (!NT_SUCCESS(Status))
+            return Status;
+
+        if (AceHeader->AceType == ACCESS_ALLOWED_ACE_TYPE &&
+            AceHeader->AceSize >=
+                FIELD_OFFSET(ACCESS_ALLOWED_ACE, SidStart) +
+                RtlLengthSid(SeExports->SeAliasUsersSid)) {
+            PACCESS_ALLOWED_ACE Ace = (PACCESS_ALLOWED_ACE)AceHeader;
+
+            if (RtlEqualSid((PSID)&Ace->SidStart,
+                            SeExports->SeAliasUsersSid) ||
+                RtlEqualSid((PSID)&Ace->SidStart,
+                            SeExports->SeAuthenticatedUsersSid)) {
+                AceHeader->AceFlags |= NO_PROPAGATE_INHERIT_ACE;
+                AceHeader->AceFlags |= OBJECT_INHERIT_ACE |
+                                       CONTAINER_INHERIT_ACE;
+            }
+        }
+    }
+
+    return STATUS_SUCCESS;
+}
+
+static NTSTATUS
+UDFAddRecycleBinCreatorAce(
+    PSECURITY_DESCRIPTOR *SecurityDescriptor,
+    PACCESS_STATE AccessState
+    )
+{
+    NTSTATUS Status;
+    PTOKEN_USER UserInfo = NULL;
+    PACL ExistingDacl = NULL;
+    PACL Dacl;
+    PSECURITY_DESCRIPTOR AbsoluteDescriptor = NULL;
+    PSECURITY_DESCRIPTOR RelativeDescriptor = NULL;
+    PSECURITY_DESCRIPTOR OriginalDescriptor;
+    PSECURITY_DESCRIPTOR UpdatedDescriptor;
+    BOOLEAN DaclPresent;
+    BOOLEAN DaclDefaulted;
+    BOOLEAN AcePresent = FALSE;
+    ULONG ExistingAceLength = 0;
+    ULONG AceLength;
+    ULONG DaclLength;
+    ULONG AbsoluteLength;
+    ULONG RelativeLength = 0;
+    ULONG i;
+    SECURITY_INFORMATION SecurityInformation = DACL_SECURITY_INFORMATION;
+    PACCESS_TOKEN Token;
+
+    if (!AccessState)
+        return STATUS_INVALID_PARAMETER;
+
+    Token = SeQuerySubjectContextToken(&AccessState->SubjectSecurityContext);
+    Status = SeQueryInformationToken(Token, TokenUser, (PVOID *)&UserInfo);
+    if (!NT_SUCCESS(Status))
+        return Status;
+
+    Status = RtlGetDaclSecurityDescriptor(*SecurityDescriptor, &DaclPresent,
+                                          &ExistingDacl, &DaclDefaulted);
+    if (!NT_SUCCESS(Status))
+        goto Cleanup;
+
+    if (ExistingDacl) {
+        for (i = 0; i < ExistingDacl->AceCount; i++) {
+            PACE_HEADER ExistingAce;
+
+            Status = RtlGetAce(ExistingDacl, i, (PVOID *)&ExistingAce);
+            if (!NT_SUCCESS(Status))
+                goto Cleanup;
+            ExistingAceLength += ExistingAce->AceSize;
+
+            if (ExistingAce->AceType == ACCESS_ALLOWED_ACE_TYPE &&
+                ExistingAce->AceSize >=
+                    FIELD_OFFSET(ACCESS_ALLOWED_ACE, SidStart) +
+                    RtlLengthSid(UserInfo->User.Sid)) {
+                PACCESS_ALLOWED_ACE AccessAce =
+                    (PACCESS_ALLOWED_ACE)ExistingAce;
+
+                if (RtlEqualSid((PSID)&AccessAce->SidStart,
+                                UserInfo->User.Sid) &&
+                    AccessAce->Mask == FILE_ALL_ACCESS &&
+                    ExistingAce->AceFlags ==
+                        (OBJECT_INHERIT_ACE | CONTAINER_INHERIT_ACE)) {
+                    AcePresent = TRUE;
+                }
+            }
+        }
+    }
+    if (AcePresent) {
+        Status = STATUS_SUCCESS;
+        goto Cleanup;
+    }
+
+    AceLength = FIELD_OFFSET(ACCESS_ALLOWED_ACE, SidStart) +
+                RtlLengthSid(UserInfo->User.Sid);
+    DaclLength = sizeof(ACL) + ExistingAceLength + AceLength;
+    if (DaclLength > MAXUSHORT) {
+        Status = STATUS_INVALID_SECURITY_DESCR;
+        goto Cleanup;
+    }
+
+    AbsoluteLength = sizeof(SECURITY_DESCRIPTOR) + DaclLength;
+    AbsoluteDescriptor = MyAllocatePool__(PagedPool, AbsoluteLength);
+    if (!AbsoluteDescriptor) {
+        Status = STATUS_INSUFFICIENT_RESOURCES;
+        goto Cleanup;
+    }
+
+    Dacl = (PACL)((PUCHAR)AbsoluteDescriptor + sizeof(SECURITY_DESCRIPTOR));
+    Status = RtlCreateSecurityDescriptor(AbsoluteDescriptor,
+                                         SECURITY_DESCRIPTOR_REVISION);
+    if (NT_SUCCESS(Status))
+        Status = RtlCreateAcl(Dacl, DaclLength,
+                              ExistingDacl ? ExistingDacl->AclRevision :
+                                             ACL_REVISION);
+    if (!NT_SUCCESS(Status))
+        goto Cleanup;
+
+    if (ExistingDacl) {
+        for (i = 0; i < ExistingDacl->AceCount; i++) {
+            PACE_HEADER ExistingAce;
+
+            Status = RtlGetAce(ExistingDacl, i, (PVOID *)&ExistingAce);
+            if (!NT_SUCCESS(Status))
+                goto Cleanup;
+            Status = RtlAddAce(Dacl, Dacl->AclRevision, MAXULONG,
+                               ExistingAce, ExistingAce->AceSize);
+            if (!NT_SUCCESS(Status))
+                goto Cleanup;
+        }
+    }
+
+    Status = RtlAddAccessAllowedAceEx(
+        Dacl, Dacl->AclRevision,
+        OBJECT_INHERIT_ACE | CONTAINER_INHERIT_ACE,
+        FILE_ALL_ACCESS, UserInfo->User.Sid);
+    if (NT_SUCCESS(Status))
+        Status = RtlSetDaclSecurityDescriptor(AbsoluteDescriptor, TRUE,
+                                              Dacl, DaclDefaulted);
+    if (NT_SUCCESS(Status))
+        Status = RtlAbsoluteToSelfRelativeSD(AbsoluteDescriptor, NULL,
+                                             &RelativeLength);
+    if (Status == STATUS_BUFFER_TOO_SMALL) {
+        RelativeDescriptor = MyAllocatePool__(PagedPool, RelativeLength);
+        if (!RelativeDescriptor) {
+            Status = STATUS_INSUFFICIENT_RESOURCES;
+            goto Cleanup;
+        }
+        Status = RtlAbsoluteToSelfRelativeSD(AbsoluteDescriptor,
+                                             RelativeDescriptor,
+                                             &RelativeLength);
+    }
+    if (!NT_SUCCESS(Status))
+        goto Cleanup;
+
+    OriginalDescriptor = *SecurityDescriptor;
+    UpdatedDescriptor = OriginalDescriptor;
+    Status = SeSetSecurityDescriptorInfo(
+        NULL, &SecurityInformation, RelativeDescriptor,
+        &UpdatedDescriptor, PagedPool, IoGetFileObjectGenericMapping());
+    if (NT_SUCCESS(Status)) {
+        if (UpdatedDescriptor != OriginalDescriptor)
+            ExFreePool(OriginalDescriptor);
+        *SecurityDescriptor = UpdatedDescriptor;
+    } else if (UpdatedDescriptor != OriginalDescriptor) {
+        ExFreePool(UpdatedDescriptor);
+    }
+
+Cleanup:
+    if (UserInfo)
+        ExFreePool(UserInfo);
+    if (RelativeDescriptor)
+        MyFreePool__(RelativeDescriptor);
+    if (AbsoluteDescriptor)
+        MyFreePool__(AbsoluteDescriptor);
+    return Status;
 }
 
 static NTSTATUS
@@ -113,7 +339,7 @@ UDFAddRecycleBinMandatoryLabel(
 
                 if (ExistingMandatoryAce->Mask ==
                         SYSTEM_MANDATORY_LABEL_NO_WRITE_UP &&
-                    ExistingMandatoryAce->Header.AceFlags ==
+                (ExistingMandatoryAce->Header.AceFlags & ~INHERITED_ACE) ==
                         (OBJECT_INHERIT_ACE | CONTAINER_INHERIT_ACE |
                          INHERIT_ONLY_ACE) &&
                     RtlEqualSid((PSID)&ExistingMandatoryAce->SidStart,
@@ -724,11 +950,34 @@ UDFCreateSecurityDescriptor(
         goto Cleanup;
     }
 
-    if (UDFIsADirectory(FileInfo) &&
-        UDFIsRecycleBinRoot(
-            IoGetCurrentIrpStackLocation(IrpContext->Irp)->FileObject,
-            Vcb, FileInfo)) {
-        Status = UDFAddRecycleBinMandatoryLabel(&AssignedDescriptor);
+    if (UDFIsADirectory(FileInfo)) {
+        BOOLEAN IsRecycleBinRootDirectory =
+            UDFIsRecycleBinDirectory(FileInfo, Vcb) ||
+            UDFIsRecycleBinRoot(
+                IoGetCurrentIrpStackLocation(IrpContext->Irp)->FileObject,
+                Vcb, FileInfo);
+        BOOLEAN IsRecycleBinChild =
+            UDFIsRecycleBinDirectory(ParentFileInfo, Vcb);
+
+        if (IsRecycleBinRootDirectory) {
+            Status = UDFSetRecycleBinUsersInheritance(AssignedDescriptor);
+            if (!NT_SUCCESS(Status)) {
+                UDFPrintErr(("UDF security: setting Recycle Bin Users inheritance failed %08x\n",
+                             Status));
+                goto Cleanup;
+            }
+        } else if (IsRecycleBinChild) {
+            Status = UDFAddRecycleBinCreatorAce(&AssignedDescriptor,
+                                                AccessState);
+            if (!NT_SUCCESS(Status)) {
+                UDFPrintErr(("UDF security: adding Recycle Bin creator ACE failed %08x\n",
+                             Status));
+                goto Cleanup;
+            }
+        }
+
+        if (IsRecycleBinRootDirectory || IsRecycleBinChild)
+            Status = UDFAddRecycleBinMandatoryLabel(&AssignedDescriptor);
         if (!NT_SUCCESS(Status)) {
             UDFPrintErr(("UDF security: adding Recycle Bin label failed %08x\n",
                          Status));
