@@ -343,7 +343,7 @@ UDFResolveSecurityDescriptor(
     Status = SeAssignSecurityEx(
         ParentDescriptor, NULL, &InheritedDescriptor, NULL,
         UDFIsADirectory(FileInfo),
-        SEF_DEFAULT_OWNER_FROM_PARENT | SEF_DEFAULT_GROUP_FROM_PARENT,
+        SEF_DEFAULT_GROUP_FROM_PARENT,
         &SubjectContext, IoGetFileObjectGenericMapping(), PagedPool);
     SeReleaseSubjectContext(&SubjectContext);
     MyFreePool__(ParentDescriptor);
