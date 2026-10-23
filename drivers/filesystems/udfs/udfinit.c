@@ -324,6 +324,8 @@ UDFInitializeFunctionPointers(
     DriverObject->MajorFunction[IRP_MJ_QUERY_INFORMATION]   =
     DriverObject->MajorFunction[IRP_MJ_SET_INFORMATION]     =
     DriverObject->MajorFunction[IRP_MJ_FLUSH_BUFFERS]       =
+    DriverObject->MajorFunction[IRP_MJ_QUERY_SECURITY]      =
+    DriverObject->MajorFunction[IRP_MJ_SET_SECURITY]        =
 
     // To implement support for querying and modifying volume attributes
     // (volume information query/set operations), enable initialization

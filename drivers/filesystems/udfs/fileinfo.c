@@ -1454,7 +1454,7 @@ UDFSetDispositionInfo(
         }
 
         if (Fcb->FcbState & UDF_FCB_READ_ONLY) {
-            RC = UDFCheckAccessRights(NULL, NULL, Fcb->ParentFcb, NULL, FILE_DELETE_CHILD, 0);
+            RC = UDFCheckAccessRights(IrpContext, NULL, NULL, Fcb->ParentFcb, NULL, FILE_DELETE_CHILD, 0);
             if (!NT_SUCCESS(RC)) {
                 try_return (RC = STATUS_CANNOT_DELETE);
             }

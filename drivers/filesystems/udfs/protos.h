@@ -345,6 +345,18 @@ extern NTSTATUS UDFCommonSetInfo(
 PIRP_CONTEXT IrpContext,
 PIRP                    Irp);
 
+NTSTATUS
+UDFCommonQuerySecurity(
+    _In_ PIRP_CONTEXT IrpContext,
+    _In_ PIRP Irp
+    );
+
+NTSTATUS
+UDFCommonSetSecurity(
+    _In_ PIRP_CONTEXT IrpContext,
+    _In_ PIRP Irp
+    );
+
 extern NTSTATUS UDFGetBasicInformation(
     IN PFILE_OBJECT                FileObject,
     IN PFCB                        Fcb,
@@ -1064,6 +1076,7 @@ UDFCompleteMdl(
 
 NTSTATUS
 UDFCheckAccessRights(
+    PIRP_CONTEXT IrpContext,
     PFILE_OBJECT FileObject,
     PACCESS_STATE AccessState,
     PFCB         Fcb,
@@ -1073,6 +1086,7 @@ UDFCheckAccessRights(
 
 extern NTSTATUS
 UDFSetAccessRights(
+    PIRP_CONTEXT IrpContext,
     PFILE_OBJECT FileObject,
     PACCESS_STATE AccessState,
     PFCB         Fcb,

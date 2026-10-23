@@ -209,6 +209,16 @@ Return Value:
                 Status = UDFCommonSetInfo(IrpContext, Irp);
                 break;
 
+            case IRP_MJ_QUERY_SECURITY:
+
+                Status = UDFCommonQuerySecurity(IrpContext, Irp);
+                break;
+
+            case IRP_MJ_SET_SECURITY:
+
+                Status = UDFCommonSetSecurity(IrpContext, Irp);
+                break;
+
             case IRP_MJ_FLUSH_BUFFERS:
 
                 Status = UDFCommonFlush(IrpContext, Irp);

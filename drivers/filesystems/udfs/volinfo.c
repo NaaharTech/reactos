@@ -415,6 +415,7 @@ UDFQueryFsAttributeInfo(
     Buffer->FileSystemAttributes = FILE_CASE_SENSITIVE_SEARCH |
                                    FILE_CASE_PRESERVED_NAMES |
                                    (UDFIsStreamsSupported(Vcb) ? FILE_NAMED_STREAMS : 0) |
+                                   (UDFIsStreamsSupported(Vcb) ? FILE_PERSISTENT_ACLS : 0) |
                                    ((Vcb->VcbState & VCB_STATE_VOLUME_READ_ONLY) ? FILE_READ_ONLY_VOLUME : 0) |
                                    FILE_UNICODE_ON_DISK;
 

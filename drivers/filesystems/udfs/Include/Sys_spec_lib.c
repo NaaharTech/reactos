@@ -626,7 +626,7 @@ UDFDoesOSAllowFileToBeTargetForRename__(
     if (!FileInfo->Fcb)
         return STATUS_SUCCESS;
 
-    RC = UDFCheckAccessRights(NULL, NULL, FileInfo->Fcb, NULL, DELETE, 0);
+    RC = UDFCheckAccessRights(NULL, NULL, NULL, FileInfo->Fcb, NULL, DELETE, 0);
     if (!NT_SUCCESS(RC))
         return RC;
 
@@ -672,7 +672,7 @@ UDFDoesOSAllowFileToBeUnlinked__(
         if (CurDirNdx->FileInfo)
             return STATUS_CANNOT_DELETE;
     }
-//    return UDFCheckAccessRights(NULL, NULL, FileInfo->Fcb, NULL, DELETE, 0);
+//    return UDFCheckAccessRights(NULL, NULL, NULL, FileInfo->Fcb, NULL, DELETE, 0);
     return STATUS_SUCCESS;
 } // end UDFDoesOSAllowFileToBeUnlinked__()
 
@@ -697,4 +697,3 @@ UDFDoesOSAllowFilePretendDeleted__(
     }
     return STATUS_SUCCESS;
 }
-

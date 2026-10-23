@@ -197,7 +197,7 @@ UDFOpenExistingFcb(
     ASSERT(*PtrNewFcb);
 
     // Check share access BEFORE creating CCB/incrementing counts.
-    Status = UDFCheckAccessRights(FileObject, AccessState, *PtrNewFcb, NULL, DesiredAccess, ShareAccess);
+    Status = UDFCheckAccessRights(IrpContext, FileObject, AccessState, *PtrNewFcb, NULL, DesiredAccess, ShareAccess);
     if (!NT_SUCCESS(Status)) {
         AdPrint(("    Access/Share access check failed\n"));
         return Status;
@@ -315,7 +315,7 @@ UDFOpenExistingFcb(
                 RestoreRO = TRUE;
                 (*PtrNewFcb)->FcbState &= ~UDF_FCB_READ_ONLY;
             }
-            Status = UDFCheckAccessRights(NULL, NULL, *PtrNewFcb, NULL, DELETE, 0);
+            Status = UDFCheckAccessRights(IrpContext, NULL, NULL, *PtrNewFcb, NULL, DELETE, 0);
             if (RestoreRO) {
                 (*PtrNewFcb)->FcbState |= UDF_FCB_READ_ONLY;
             }
@@ -324,7 +324,7 @@ UDFOpenExistingFcb(
                 return Status;
             }
         } else {
-            Status = UDFCheckAccessRights(NULL, NULL, *PtrNewFcb, NULL,
+            Status = UDFCheckAccessRights(IrpContext, NULL, NULL, *PtrNewFcb, NULL,
                         FILE_WRITE_DATA | FILE_WRITE_EA | FILE_WRITE_ATTRIBUTES, 0);
             if (!NT_SUCCESS(Status)) {
                 AdPrint(("    Can't overwrite. Permission denied\n"));
@@ -1830,7 +1830,7 @@ UDFCommonCreate(
                 }
 
                 // check traverse rights (uses RelatedFileInfo->Fcb which is now locked as PreviousFcb)
-                Status = UDFCheckAccessRights(NULL, NULL, RelatedFileInfo->Fcb, RelatedCcb, FILE_TRAVERSE, 0);
+                Status = UDFCheckAccessRights(IrpContext, NULL, NULL, RelatedFileInfo->Fcb, RelatedCcb, FILE_TRAVERSE, 0);
                 if (!NT_SUCCESS(Status)) {
                     AdPrint(("    Traverse check failed\n"));
                 } else if (!IsStreamComponent) {
@@ -1865,7 +1865,7 @@ UDFCommonCreate(
                                 NewFileInfo = LastGoodFileInfo;
                                 PtrNewFcb = NewFileInfo->Fcb;
                                 UDFReferenceFile__(NewFileInfo);
-                                Status = UDFCheckAccessRights(FileObject, AccessState, PtrNewFcb, NULL, DesiredAccess, ShareAccess);
+                                Status = UDFCheckAccessRights(IrpContext, FileObject, AccessState, PtrNewFcb, NULL, DesiredAccess, ShareAccess);
                                 if (!NT_SUCCESS(Status)) {
                                     try_return(Status);
                                 }
@@ -1984,7 +1984,7 @@ UDFCommonCreate(
                     NewFileInfo = LastGoodFileInfo;
                     PtrNewFcb = NewFileInfo->Fcb;
                     UDFReferenceFile__(NewFileInfo);
-                    Status = UDFCheckAccessRights(FileObject, AccessState, PtrNewFcb, NULL, DesiredAccess, ShareAccess);
+                    Status = UDFCheckAccessRights(IrpContext, FileObject, AccessState, PtrNewFcb, NULL, DesiredAccess, ShareAccess);
                     if (!NT_SUCCESS(Status)) {
                         try_return(Status);
                     }
@@ -2059,7 +2059,7 @@ UDFCommonCreate(
                         }
                         // Check access rights on parent directory
                         ASSERT(CurrentFcb);
-                        Status = UDFCheckAccessRights(NULL, NULL, OldRelatedFileInfo->Fcb, RelatedCcb,
+                        Status = UDFCheckAccessRights(IrpContext, NULL, NULL, OldRelatedFileInfo->Fcb, RelatedCcb,
                                                       DirectoryFile ? FILE_ADD_SUBDIRECTORY : FILE_ADD_FILE, 0);
                         if (!NT_SUCCESS(Status)) {
                             AdPrint(("    Creation of File/Dir not permitted\n"));
@@ -2243,7 +2243,7 @@ UDFCommonCreate(
             }
             // check access rights
             ASSERT(CurrentFcb);
-            Status = UDFCheckAccessRights(NULL, NULL, OldRelatedFileInfo->Fcb, RelatedCcb, DirectoryFile ? FILE_ADD_SUBDIRECTORY : FILE_ADD_FILE, 0);
+            Status = UDFCheckAccessRights(IrpContext, NULL, NULL, OldRelatedFileInfo->Fcb, RelatedCcb, DirectoryFile ? FILE_ADD_SUBDIRECTORY : FILE_ADD_FILE, 0);
             if (!NT_SUCCESS(Status)) {
                 AdPrint(("    Creation of File/Dir not permitted\n"));
                 try_return(Status);

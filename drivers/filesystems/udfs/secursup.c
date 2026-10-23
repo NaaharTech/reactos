@@ -19,8 +19,31 @@
 // define the file specific bug-check id
 #define         UDF_BUG_CHECK_ID                UDF_FILE_SECURITY
 
+static NTSTATUS
+UDFReadSecurityDescriptor(
+    PIRP_CONTEXT IrpContext,
+    PVCB Vcb,
+    PUDF_FILE_INFO FileInfo,
+    PSECURITY_DESCRIPTOR *SecurityDescriptor
+    );
+
+static NTSTATUS
+UDFBuildDefaultSecurityDescriptor(
+    PSECURITY_DESCRIPTOR *SecurityDescriptor
+    );
+
+static NTSTATUS
+UDFResolveSecurityDescriptor(
+    PIRP_CONTEXT IrpContext,
+    PVCB Vcb,
+    PUDF_FILE_INFO FileInfo,
+    ULONG Depth,
+    PSECURITY_DESCRIPTOR *SecurityDescriptor
+    );
+
 NTSTATUS
 UDFCheckAccessRights(
+    PIRP_CONTEXT IrpContext,
     PFILE_OBJECT FileObject, // OPTIONAL
     PACCESS_STATE AccessState,
     PFCB Fcb,
@@ -31,6 +54,7 @@ UDFCheckAccessRights(
 {
     NTSTATUS RC;
     BOOLEAN ROCheck = FALSE;
+    PSECURITY_DESCRIPTOR SecurityDescriptor = NULL;
 
     // Check attr compatibility
     ASSERT(Fcb);
@@ -75,6 +99,35 @@ UDFCheckAccessRights(
         }
     }
 
+    if (AccessState && DesiredAccess) {
+        ACCESS_MASK GrantedAccess = 0;
+        NTSTATUS AccessStatus = STATUS_SUCCESS;
+        BOOLEAN AccessGranted;
+
+        RC = UDFResolveSecurityDescriptor(IrpContext, Fcb->Vcb, Fcb->FileInfo,
+                                           0, &SecurityDescriptor);
+        if (!NT_SUCCESS(RC))
+            return RC;
+
+        AccessGranted = SeAccessCheck(
+            SecurityDescriptor,
+            &AccessState->SubjectSecurityContext,
+            FALSE,
+            DesiredAccess,
+            AccessState->PreviouslyGrantedAccess,
+            NULL,
+            IoGetFileObjectGenericMapping(),
+            IrpContext && IrpContext->Irp ?
+                IrpContext->Irp->RequestorMode : UserMode,
+            &GrantedAccess,
+            &AccessStatus);
+        MyFreePool__(SecurityDescriptor);
+        if (!AccessGranted)
+            return AccessStatus;
+
+        AccessState->PreviouslyGrantedAccess |= GrantedAccess;
+    }
+
     if (FileObject) {
         if (Fcb->FcbCleanup) {
             // The FCB is currently in use by some thread.
@@ -98,6 +151,7 @@ UDFCheckAccessRights(
 
 NTSTATUS
 UDFSetAccessRights(
+    PIRP_CONTEXT IrpContext,
     PFILE_OBJECT FileObject,
     PACCESS_STATE AccessState,
     PFCB Fcb,
@@ -109,7 +163,445 @@ UDFSetAccessRights(
     ASSERT(Ccb);
     ASSERT(Fcb->FileInfo);
 
-    return UDFCheckAccessRights(FileObject, AccessState, Fcb, Ccb, DesiredAccess, ShareAccess);
+    return UDFCheckAccessRights(IrpContext, FileObject, AccessState, Fcb, Ccb,
+                                DesiredAccess, ShareAccess);
 
 } // end UDFSetAccessRights()
 
+static NTSTATUS
+UDFReadSecurityDescriptor(
+    PIRP_CONTEXT IrpContext,
+    PVCB Vcb,
+    PUDF_FILE_INFO FileInfo,
+    PSECURITY_DESCRIPTOR *SecurityDescriptor
+    )
+{
+    NTSTATUS Status;
+    PUDF_FILE_INFO StreamDirInfo = NULL;
+    PUDF_FILE_INFO AclInfo = NULL;
+    int64 FileSize;
+    BOOLEAN StreamDirOpened = FALSE;
+    BOOLEAN AclOpened = FALSE;
+
+    *SecurityDescriptor = NULL;
+    if (!FileInfo)
+        return STATUS_NO_SECURITY_ON_OBJECT;
+
+    Status = UDFOpenStreamDir__(IrpContext, Vcb, FileInfo, &StreamDirInfo);
+    if (Status == STATUS_NOT_FOUND)
+        return STATUS_NO_SECURITY_ON_OBJECT;
+    if (!NT_SUCCESS(Status))
+        goto Cleanup;
+    StreamDirOpened = TRUE;
+
+    Status = UDFOpenFile__(IrpContext, Vcb, FALSE, TRUE, &UdfData.AclName,
+                           StreamDirInfo, &AclInfo, NULL);
+    if (Status == STATUS_OBJECT_NAME_NOT_FOUND ||
+        Status == STATUS_NOT_FOUND) {
+        Status = STATUS_NO_SECURITY_ON_OBJECT;
+        goto Cleanup;
+    }
+    if (!NT_SUCCESS(Status))
+        goto Cleanup;
+    AclOpened = TRUE;
+
+    FileSize = UDFGetFileSize(AclInfo);
+    if (FileSize < sizeof(SECURITY_DESCRIPTOR_RELATIVE) ||
+        FileSize > 1024 * 1024) {
+        Status = STATUS_INVALID_SECURITY_DESCR;
+        goto Cleanup;
+    }
+
+    *SecurityDescriptor = MyAllocatePool__(PagedPool, (SIZE_T)FileSize);
+    if (!*SecurityDescriptor) {
+        Status = STATUS_INSUFFICIENT_RESOURCES;
+        goto Cleanup;
+    }
+
+    Status = UDFReadFile__(IrpContext, Vcb, AclInfo, 0, (SIZE_T)FileSize,
+                           FALSE, (int8 *)*SecurityDescriptor);
+    if (NT_SUCCESS(Status) &&
+        !RtlValidRelativeSecurityDescriptor(*SecurityDescriptor,
+                                            (ULONG)FileSize, 0)) {
+        Status = STATUS_INVALID_SECURITY_DESCR;
+    }
+
+Cleanup:
+    if (AclInfo) {
+        if (AclOpened)
+            UDFCloseFile__(IrpContext, Vcb, AclInfo);
+        if (UDFCleanUpFile__(Vcb, AclInfo))
+            MyFreePool__(AclInfo);
+    }
+    if (StreamDirInfo) {
+        if (StreamDirOpened)
+            UDFCloseFile__(IrpContext, Vcb, StreamDirInfo);
+        if (UDFCleanUpFile__(Vcb, StreamDirInfo))
+            MyFreePool__(StreamDirInfo);
+    }
+    if (!NT_SUCCESS(Status) && *SecurityDescriptor) {
+        MyFreePool__(*SecurityDescriptor);
+        *SecurityDescriptor = NULL;
+    }
+
+    return Status;
+}
+
+static NTSTATUS
+UDFBuildDefaultSecurityDescriptor(
+    PSECURITY_DESCRIPTOR *SecurityDescriptor
+    )
+{
+    NTSTATUS Status;
+    PSECURITY_DESCRIPTOR AbsoluteDescriptor;
+    PSECURITY_DESCRIPTOR RelativeDescriptor;
+    PACL Acl;
+    ULONG SidLength = RtlLengthSid(SeExports->SeWorldSid);
+    ULONG AbsoluteLength = sizeof(SECURITY_DESCRIPTOR) +
+                           sizeof(ACL) + sizeof(ACCESS_ALLOWED_ACE) +
+                           SidLength - sizeof(ULONG);
+    ULONG RelativeLength = 0;
+
+    AbsoluteDescriptor = MyAllocatePool__(PagedPool, AbsoluteLength);
+    if (!AbsoluteDescriptor)
+        return STATUS_INSUFFICIENT_RESOURCES;
+
+    Acl = (PACL)((PUCHAR)AbsoluteDescriptor + sizeof(SECURITY_DESCRIPTOR));
+    Status = RtlCreateSecurityDescriptor(AbsoluteDescriptor,
+                                         SECURITY_DESCRIPTOR_REVISION);
+    if (NT_SUCCESS(Status))
+        Status = RtlSetOwnerSecurityDescriptor(AbsoluteDescriptor,
+                                               SeExports->SeWorldSid, FALSE);
+    if (NT_SUCCESS(Status))
+        Status = RtlSetGroupSecurityDescriptor(AbsoluteDescriptor,
+                                               SeExports->SeWorldSid, FALSE);
+    if (NT_SUCCESS(Status))
+        Status = RtlCreateAcl(Acl, AbsoluteLength - sizeof(SECURITY_DESCRIPTOR),
+                              ACL_REVISION);
+    if (NT_SUCCESS(Status))
+        Status = RtlAddAccessAllowedAce(Acl, ACL_REVISION, FILE_ALL_ACCESS,
+                                        SeExports->SeWorldSid);
+    if (NT_SUCCESS(Status))
+        Status = RtlSetDaclSecurityDescriptor(AbsoluteDescriptor, TRUE, Acl,
+                                              FALSE);
+    if (NT_SUCCESS(Status))
+        Status = RtlAbsoluteToSelfRelativeSD(AbsoluteDescriptor, NULL,
+                                             &RelativeLength);
+    if (Status == STATUS_BUFFER_TOO_SMALL) {
+        RelativeDescriptor = MyAllocatePool__(PagedPool, RelativeLength);
+        if (!RelativeDescriptor) {
+            Status = STATUS_INSUFFICIENT_RESOURCES;
+        } else {
+            Status = RtlAbsoluteToSelfRelativeSD(AbsoluteDescriptor,
+                                                 RelativeDescriptor,
+                                                 &RelativeLength);
+            if (NT_SUCCESS(Status))
+                *SecurityDescriptor = RelativeDescriptor;
+            else
+                MyFreePool__(RelativeDescriptor);
+        }
+    }
+    MyFreePool__(AbsoluteDescriptor);
+    return Status;
+}
+
+static NTSTATUS
+UDFResolveSecurityDescriptor(
+    PIRP_CONTEXT IrpContext,
+    PVCB Vcb,
+    PUDF_FILE_INFO FileInfo,
+    ULONG Depth,
+    PSECURITY_DESCRIPTOR *SecurityDescriptor
+    )
+{
+    NTSTATUS Status;
+    PSECURITY_DESCRIPTOR ParentDescriptor = NULL;
+    PSECURITY_DESCRIPTOR InheritedDescriptor = NULL;
+    PSECURITY_DESCRIPTOR RelativeDescriptor = NULL;
+    SECURITY_SUBJECT_CONTEXT SubjectContext;
+    SECURITY_INFORMATION SecurityInformation = FULL_SECURITY_INFORMATION;
+    ULONG BufferLength;
+
+    Status = UDFReadSecurityDescriptor(IrpContext, Vcb, FileInfo,
+                                       SecurityDescriptor);
+    if (Status != STATUS_NO_SECURITY_ON_OBJECT)
+        return Status;
+
+    if (!FileInfo || !FileInfo->ParentFile ||
+        FileInfo->ParentFile == FileInfo || Depth >= 32) {
+        return UDFBuildDefaultSecurityDescriptor(SecurityDescriptor);
+    }
+
+    Status = UDFResolveSecurityDescriptor(IrpContext, Vcb,
+                                          FileInfo->ParentFile, Depth + 1,
+                                          &ParentDescriptor);
+    if (!NT_SUCCESS(Status))
+        return Status;
+
+    SeCaptureSubjectContext(&SubjectContext);
+    Status = SeAssignSecurity(ParentDescriptor, NULL, &InheritedDescriptor,
+                              UDFIsADirectory(FileInfo), &SubjectContext,
+                              IoGetFileObjectGenericMapping(), PagedPool);
+    SeReleaseSubjectContext(&SubjectContext);
+    MyFreePool__(ParentDescriptor);
+    if (!NT_SUCCESS(Status))
+        return Status;
+
+    BufferLength = RtlLengthSecurityDescriptor(InheritedDescriptor);
+    RelativeDescriptor = MyAllocatePool__(PagedPool, BufferLength);
+    if (!RelativeDescriptor) {
+        ExFreePool(InheritedDescriptor);
+        return STATUS_INSUFFICIENT_RESOURCES;
+    }
+
+    Status = SeQuerySecurityDescriptorInfo(&SecurityInformation,
+                                           RelativeDescriptor,
+                                           &BufferLength,
+                                           &InheritedDescriptor);
+    if (Status == STATUS_BUFFER_TOO_SMALL) {
+        MyFreePool__(RelativeDescriptor);
+        RelativeDescriptor = MyAllocatePool__(PagedPool, BufferLength);
+        if (!RelativeDescriptor) {
+            ExFreePool(InheritedDescriptor);
+            return STATUS_INSUFFICIENT_RESOURCES;
+        }
+        Status = SeQuerySecurityDescriptorInfo(&SecurityInformation,
+                                               RelativeDescriptor,
+                                               &BufferLength,
+                                               &InheritedDescriptor);
+    }
+    ExFreePool(InheritedDescriptor);
+    if (!NT_SUCCESS(Status)) {
+        MyFreePool__(RelativeDescriptor);
+        return Status;
+    }
+
+    *SecurityDescriptor = RelativeDescriptor;
+    return STATUS_SUCCESS;
+}
+
+static NTSTATUS
+UDFWriteSecurityDescriptor(
+    PIRP_CONTEXT IrpContext,
+    PVCB Vcb,
+    PUDF_FILE_INFO FileInfo,
+    PSECURITY_DESCRIPTOR SecurityDescriptor
+    )
+{
+    NTSTATUS Status;
+    PUDF_FILE_INFO StreamDirInfo = NULL;
+    PUDF_FILE_INFO AclInfo = NULL;
+    SIZE_T WrittenBytes;
+    ULONG SecurityDescriptorLength = RtlLengthSecurityDescriptor(SecurityDescriptor);
+    BOOLEAN StreamDirOpened = FALSE;
+    BOOLEAN AclOpened = FALSE;
+
+    Status = UDFOpenStreamDir__(IrpContext, Vcb, FileInfo, &StreamDirInfo);
+    if (Status == STATUS_NOT_FOUND) {
+        Status = UDFCreateStreamDir__(IrpContext, Vcb, FileInfo, &StreamDirInfo);
+    }
+    if (!NT_SUCCESS(Status))
+        goto Cleanup;
+    StreamDirOpened = TRUE;
+
+    Status = UDFOpenFile__(IrpContext, Vcb, FALSE, TRUE, &UdfData.AclName,
+                           StreamDirInfo, &AclInfo, NULL);
+    if (Status == STATUS_OBJECT_NAME_NOT_FOUND ||
+        Status == STATUS_NOT_FOUND) {
+        Status = UDFCreateFile__(IrpContext, Vcb, FALSE, &UdfData.AclName,
+                                 0, 0, FALSE, FALSE, StreamDirInfo, &AclInfo);
+    }
+    if (!NT_SUCCESS(Status))
+        goto Cleanup;
+    AclOpened = TRUE;
+
+    Status = UDFWriteFile__(IrpContext, Vcb, AclInfo, 0,
+                            SecurityDescriptorLength, FALSE,
+                            (int8 *)SecurityDescriptor, &WrittenBytes);
+    if (NT_SUCCESS(Status) && WrittenBytes != SecurityDescriptorLength)
+        Status = STATUS_DISK_FULL;
+    if (NT_SUCCESS(Status))
+        Status = UDFResizeFile__(IrpContext, Vcb, AclInfo,
+                                 SecurityDescriptorLength);
+
+Cleanup:
+    if (AclInfo) {
+        if (AclOpened) {
+            NTSTATUS CloseStatus = UDFCloseFile__(IrpContext, Vcb, AclInfo);
+            if (NT_SUCCESS(Status))
+                Status = CloseStatus;
+        }
+        if (UDFCleanUpFile__(Vcb, AclInfo))
+            MyFreePool__(AclInfo);
+    }
+    if (StreamDirInfo) {
+        if (StreamDirOpened) {
+            NTSTATUS CloseStatus = UDFCloseFile__(IrpContext, Vcb, StreamDirInfo);
+            if (NT_SUCCESS(Status))
+                Status = CloseStatus;
+        }
+        if (UDFCleanUpFile__(Vcb, StreamDirInfo))
+            MyFreePool__(StreamDirInfo);
+    }
+
+    return Status;
+}
+
+NTSTATUS
+UDFCommonQuerySecurity(
+    PIRP_CONTEXT IrpContext,
+    PIRP Irp
+    )
+{
+    NTSTATUS Status;
+    PIO_STACK_LOCATION IrpSp = IoGetCurrentIrpStackLocation(Irp);
+    PFILE_OBJECT FileObject = IrpSp->FileObject;
+    PFCB Fcb = NULL;
+    PCCB Ccb = NULL;
+    PSECURITY_DESCRIPTOR SecurityDescriptor = NULL;
+    PVOID Buffer = NULL;
+    ULONG BufferLength = IrpSp->Parameters.QuerySecurity.Length;
+    BOOLEAN FcbAcquired = FALSE;
+    TYPE_OF_OPEN TypeOfOpen;
+
+    Irp->IoStatus.Information = 0;
+
+    if (!FileObject) {
+        Status = STATUS_INVALID_PARAMETER;
+        goto Complete;
+    }
+
+    TypeOfOpen = UDFDecodeFileObject(FileObject, &Fcb, &Ccb);
+    if (TypeOfOpen != UserFileOpen && TypeOfOpen != UserDirectoryOpen) {
+        Status = STATUS_INVALID_PARAMETER;
+        goto Complete;
+    }
+
+    if (!UDFAcquireFcbExclusive(IrpContext, Fcb, FALSE)) {
+        Status = STATUS_CANT_WAIT;
+        goto Complete;
+    }
+    FcbAcquired = TRUE;
+
+    Status = UDFResolveSecurityDescriptor(IrpContext, Fcb->Vcb, Fcb->FileInfo,
+                                          0, &SecurityDescriptor);
+    if (!NT_SUCCESS(Status))
+        goto Complete;
+
+    if (BufferLength) {
+        Status = UDFLockUserBuffer(IrpContext, BufferLength, IoWriteAccess);
+        if (!NT_SUCCESS(Status))
+            goto Complete;
+        Buffer = UDFMapUserBuffer(Irp);
+        if (!Buffer) {
+            Status = STATUS_INVALID_USER_BUFFER;
+            goto Complete;
+        }
+    }
+
+    _SEH2_TRY {
+        Status = SeQuerySecurityDescriptorInfo(
+            &IrpSp->Parameters.QuerySecurity.SecurityInformation,
+            (PSECURITY_DESCRIPTOR)Buffer, &BufferLength,
+            &SecurityDescriptor);
+    } _SEH2_EXCEPT(EXCEPTION_EXECUTE_HANDLER) {
+        Status = _SEH2_GetExceptionCode();
+    } _SEH2_END;
+    Irp->IoStatus.Information = BufferLength;
+
+Complete:
+    if (FcbAcquired)
+        UDFReleaseFcb(IrpContext, Fcb);
+    if (SecurityDescriptor)
+        MyFreePool__(SecurityDescriptor);
+    UDFCompleteRequest(IrpContext, Irp, Status);
+    return Status;
+}
+
+NTSTATUS
+UDFCommonSetSecurity(
+    PIRP_CONTEXT IrpContext,
+    PIRP Irp
+    )
+{
+    NTSTATUS Status;
+    PIO_STACK_LOCATION IrpSp = IoGetCurrentIrpStackLocation(Irp);
+    PFILE_OBJECT FileObject = IrpSp->FileObject;
+    PFCB Fcb = NULL;
+    PCCB Ccb = NULL;
+    PSECURITY_DESCRIPTOR ExistingDescriptor = NULL;
+    PSECURITY_DESCRIPTOR UpdatedDescriptor = NULL;
+    SECURITY_INFORMATION SecurityInformation =
+        IrpSp->Parameters.SetSecurity.SecurityInformation;
+    ACCESS_MASK DesiredAccess = 0;
+    BOOLEAN FcbAcquired = FALSE;
+    TYPE_OF_OPEN TypeOfOpen;
+
+    Irp->IoStatus.Information = 0;
+
+    if (!FileObject) {
+        Status = STATUS_INVALID_PARAMETER;
+        goto Complete;
+    }
+
+    TypeOfOpen = UDFDecodeFileObject(FileObject, &Fcb, &Ccb);
+    if (TypeOfOpen != UserFileOpen && TypeOfOpen != UserDirectoryOpen) {
+        Status = STATUS_INVALID_PARAMETER;
+        goto Complete;
+    }
+
+    if (SecurityInformation & (OWNER_SECURITY_INFORMATION |
+                               GROUP_SECURITY_INFORMATION))
+        DesiredAccess |= WRITE_OWNER;
+    if (SecurityInformation & DACL_SECURITY_INFORMATION)
+        DesiredAccess |= WRITE_DAC;
+    if (SecurityInformation & SACL_SECURITY_INFORMATION)
+        DesiredAccess |= ACCESS_SYSTEM_SECURITY;
+    if (FlagOn(Fcb->FcbState, UDF_FCB_READ_ONLY) ||
+        UDFIllegalFcbAccess(Fcb->Vcb, DesiredAccess)) {
+        Status = STATUS_MEDIA_WRITE_PROTECTED;
+        goto Complete;
+    }
+
+    if (!UDFAcquireFcbExclusive(IrpContext, Fcb, FALSE)) {
+        Status = STATUS_CANT_WAIT;
+        goto Complete;
+    }
+    FcbAcquired = TRUE;
+
+    Status = UDFResolveSecurityDescriptor(IrpContext, Fcb->Vcb, Fcb->FileInfo,
+                                          0, &ExistingDescriptor);
+    if (!NT_SUCCESS(Status))
+        goto Complete;
+
+    UpdatedDescriptor = ExistingDescriptor;
+    _SEH2_TRY {
+        Status = SeSetSecurityDescriptorInfo(
+            NULL, &SecurityInformation,
+            IrpSp->Parameters.SetSecurity.SecurityDescriptor,
+            &UpdatedDescriptor, PagedPool,
+            IoGetFileObjectGenericMapping());
+    } _SEH2_EXCEPT(EXCEPTION_EXECUTE_HANDLER) {
+        Status = _SEH2_GetExceptionCode();
+    } _SEH2_END;
+    if (!NT_SUCCESS(Status))
+        goto Complete;
+
+    if (RtlLengthSecurityDescriptor(UpdatedDescriptor) > 1024 * 1024) {
+        Status = STATUS_INVALID_SECURITY_DESCR;
+        goto Complete;
+    }
+
+    Status = UDFWriteSecurityDescriptor(IrpContext, Fcb->Vcb, Fcb->FileInfo,
+                                        UpdatedDescriptor);
+
+Complete:
+    if (FcbAcquired)
+        UDFReleaseFcb(IrpContext, Fcb);
+    if (UpdatedDescriptor && UpdatedDescriptor != ExistingDescriptor)
+        ExFreePool(UpdatedDescriptor);
+    if (ExistingDescriptor)
+        MyFreePool__(ExistingDescriptor);
+    UDFCompleteRequest(IrpContext, Irp, Status);
+    return Status;
+}
