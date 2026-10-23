@@ -272,6 +272,13 @@ UDFUserFsCtrlRequest(
         RC = UDFGetRetrievalPointers(IrpContext, Irp);
         break;
 
+    case FSCTL_GET_REPARSE_POINT:
+
+        Irp->IoStatus.Information = 0;
+        UDFCompleteRequest(IrpContext, Irp, STATUS_NOT_A_REPARSE_POINT);
+        RC = STATUS_NOT_A_REPARSE_POINT;
+        break;
+
     case FSCTL_MOVE_FILE:
 
         //RC = UDFMoveFile(IrpContext, Irp);
