@@ -449,6 +449,53 @@ UDFHoldBatchOwner(PIRP_CONTEXT IrpContext, PVCB Vcb,
     UNREFERENCED_PARAMETER(IrpContext);
 }
 
+/* The caller holds VCB exclusive, FcbTableMutex, VcbMutex and UdfDataMutex.
+ * DelayedCloseQueue owns these FCB lifetimes until a close worker removes
+ * the entry; that worker releases UdfDataMutex before consuming its hold.
+ * Inspect only pending closes, retaining the old signed FileId ordering
+ * and exact table membership. No reference or queue state changes here. */
+static uint32
+UDFSelectQueuedMetadataOwners(PIRP_CONTEXT IrpContext, PVCB Vcb,
+    PFCB CurrentFcb, UDF_FE_OWNER* Candidates, uint32 Limit)
+{
+    PLIST_ENTRY entry;
+    uint32 count = 0;
+    if (!Limit)
+        return 0;
+    for (entry = UdfData.DelayedCloseQueue.Flink;
+         entry != &UdfData.DelayedCloseQueue; entry = entry->Flink) {
+        PIRP_CONTEXT_LITE close = CONTAINING_RECORD(entry,
+            struct IRP_CONTEXT_LITE, DelayedCloseLinks);
+        PFCB fcb = close->Fcb;
+        uint32 position, move;
+        if (!fcb || fcb == CurrentFcb || fcb->Vcb != Vcb)
+            continue;
+        UDF_METADATA_COUNT(Vcb,7);
+        if (!InterlockedCompareExchange(&fcb->MetadataCloseQueued,0,0) ||
+            fcb->FcbReference != 1 || fcb->FcbCleanup ||
+            !UDFNewFileCacheable(Vcb,fcb->FileInfo) ||
+            !UDFNewEntryDirty(fcb->FileInfo) ||
+            UDFLookupFcbTable(IrpContext,Vcb,fcb->FileId) != fcb)
+            continue;
+        position = 0;
+        while (position < count &&
+               Candidates[position].Fcb->FileId.QuadPart < fcb->FileId.QuadPart)
+            position++;
+        /* One registered FCB per FileId. Be conservative if a queue entry
+         * is repeated: the reference table walk could only select it once. */
+        if ((position < count &&
+             Candidates[position].Fcb->FileId.QuadPart == fcb->FileId.QuadPart) ||
+            position >= Limit)
+            continue;
+        if (count < Limit)
+            count++;
+        for (move = count - 1; move > position; move--)
+            Candidates[move].Fcb = Candidates[move-1].Fcb;
+        Candidates[position].Fcb = fcb;
+    }
+    return count;
+}
+
 static NTSTATUS
 UDFReleaseMetadataOwner(PIRP_CONTEXT IrpContext, PVCB Vcb, PFCB Fcb)
 {
@@ -744,11 +791,9 @@ UDFWritebackNewFileBatchInternal(PIRP_CONTEXT IrpContext, PVCB Vcb,
     PFCB CurrentFcb, UDF_FE_VOLUME_SNAPSHOT* Snapshot, PBOOLEAN More)
 {
     UDF_FE_WRITEBACK* batch;
-    PVOID restart = NULL;
-    PFCB fcb;
     uint32 i;
     NTSTATUS status = STATUS_SUCCESS;
-    BOOLEAN tableHeld = FALSE, vcbHeld = FALSE;
+    BOOLEAN tableHeld = FALSE, vcbHeld = FALSE, dataHeld = FALSE;
     BOOLEAN volume = Snapshot != NULL;
     if (More) *More = FALSE;
 
@@ -796,22 +841,25 @@ UDFWritebackNewFileBatchInternal(PIRP_CONTEXT IrpContext, PVCB Vcb,
             UDFLockVcb(IrpContext, Vcb);
             vcbHeld = TRUE;
             UDFHoldBatchOwner(IrpContext, Vcb, batch, CurrentFcb);
-            while (batch->Count < UDF_FE_BATCH_CAPACITY &&
-                   (fcb = UDFGetNextFcb(IrpContext, Vcb, &restart))) {
-#ifdef UDF_METADATA_BATCH_DIAGNOSTICS
-                UDF_METADATA_COUNT(Vcb,7);
-                if (InterlockedCompareExchange(&fcb->MetadataCloseQueued,0,0)) {
-                    UDF_METADATA_COUNT(Vcb,8);
-                    if (fcb->FcbReference == 1) UDF_METADATA_COUNT(Vcb,9);
-                    if (!fcb->FcbCleanup) UDF_METADATA_COUNT(Vcb,10);
-                    if (fcb->FileInfo && fcb->FileInfo->Dloc &&
-                        (fcb->FileInfo->Dloc->FE_Flags & UDF_FE_FLAG_NEW_UNPUBLISHED))
-                        UDF_METADATA_COUNT(Vcb,11);
-                    if (UDFNewFileCacheable(Vcb,fcb->FileInfo)) UDF_METADATA_COUNT(Vcb,12);
-                }
-#endif
-                if (InterlockedCompareExchange(&fcb->MetadataCloseQueued,0,0))
-                    UDFHoldBatchOwner(IrpContext, Vcb, batch, fcb);
+            /* The table mutex keeps registered FCBs resident; VcbMutex
+             * stabilizes their counts. UdfDataMutex is innermost, as both
+             * existing queue paths release it before any close processing.
+             * Drop it before taking the cohort's ordinary reference holds. */
+            UDFLockUdfData();
+            dataHeld = TRUE;
+            uint32 first = batch->Count;
+            uint32 candidates = UDFSelectQueuedMetadataOwners(IrpContext,Vcb,
+                first ? CurrentFcb : NULL, batch->Owner + first,
+                UDF_FE_BATCH_CAPACITY - first);
+            UDFUnlockUdfData();
+            dataHeld = FALSE;
+            /* Only Count's prefix owns references. Capture uses the unused
+             * Owner suffix, then transfers each pointer into that prefix.
+             * A rejected hold can only write behind the next unread slot;
+             * an exception releases only the already acquired references. */
+            for (i = 0; i < candidates; i++) {
+                PFCB candidate = batch->Owner[first+i].Fcb;
+                UDFHoldBatchOwner(IrpContext,Vcb,batch,candidate);
             }
             UDFUnlockVcb(IrpContext, Vcb);
             vcbHeld = FALSE;
@@ -938,6 +986,9 @@ UDFWritebackNewFileBatchInternal(PIRP_CONTEXT IrpContext, PVCB Vcb,
         if (volume && NT_SUCCESS(status))
             status = UDFPublishNewVolumeIdentifiers(batch);
     } _SEH2_FINALLY {
+        if (dataHeld) {
+            UDFUnlockUdfData();
+        }
         if (vcbHeld) {
             UDFUnlockVcb(IrpContext, Vcb);
         }
