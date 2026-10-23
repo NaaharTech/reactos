@@ -2039,6 +2039,30 @@ UDFCheckDirOpenHandles(
     return TRUE;
 }
 
+/* The source FCB and VCB resources are held exclusive by the caller.
+ * IoCheckShareAccess does not count attribute-only opens. Permit those peers
+ * only when the renaming FILE_OBJECT is the sole data/delete participant and
+ * every outstanding cleanup belongs to this same live name link. This keeps
+ * other data handles and unresolved/by-ID ownership on the conservative path.
+ */
+static BOOLEAN
+UDFRenameHasOnlyMetadataPeers(
+    IN PFCB Fcb,
+    IN PCCB Ccb,
+    IN PFILE_OBJECT FileObject
+    )
+{
+    return FileObject->DeleteAccess &&
+           (UDFIsADirectory(Fcb->FileInfo) ||
+            UDFGetFileNameLinkCount(Fcb->FileInfo) == 1) &&
+           Fcb->ShareAccess.OpenCount == 1 &&
+           Ccb->Lcb &&
+           Ccb->Lcb->ChildFcb == Fcb &&
+           Ccb->Lcb->ParentFcb == Fcb->ParentFcb &&
+           !FlagOn(Ccb->Lcb->Flags, UDF_LCB_FLAG_LINK_DELETED) &&
+           Ccb->Lcb->Reference == Fcb->FcbCleanup;
+}
+
 /*
     Rename or move file
  */
@@ -2062,6 +2086,7 @@ UDFSetRenameInfo(
     PVCB Vcb = Fcb->Vcb;
     PFCB TargetFcb;
     BOOLEAN IgnoreCase;
+    BOOLEAN SourceFcbAcquired = FALSE;
     BOOLEAN ParentFcbAcquired = FALSE;
     BOOLEAN TargetParentFcbAcquired = FALSE;
     BOOLEAN StaleFcbAcquired = FALSE;
@@ -2099,6 +2124,12 @@ UDFSetRenameInfo(
 
             try_return (RC = STATUS_INVALID_PARAMETER);
         }
+
+        /* Serialize the open/share counters and keep the source FI/LCB stable.
+         * Use the same child-before-parent order as cleanup. */
+        UDF_CHECK_PAGING_IO_RESOURCE(Fcb);
+        UDFAcquireFcbExclusive(IrpContext, Fcb, FALSE);
+        SourceFcbAcquired = TRUE;
 
         FileInfo = Fcb->FileInfo;
         ASSERT(FileInfo);
@@ -2228,8 +2259,9 @@ UDFSetRenameInfo(
             }
         }
 
-        // check if the source file is in use
-        if (Fcb->FcbCleanup > 1) {
+        // Extra metadata-only opens do not make the source data busy.
+        if (Fcb->FcbCleanup > 1 &&
+            !UDFRenameHasOnlyMetadataPeers(Fcb, Ccb, FileObject)) {
 
             try_return (RC = STATUS_ACCESS_DENIED);
         }
@@ -2497,6 +2529,9 @@ try_exit:    NOTHING;
         }
         if (ParentFcbAcquired) {
             UDFReleaseFcb(IrpContext, DirInfo->Fcb);
+        }
+        if (SourceFcbAcquired) {
+            UDFReleaseFcb(IrpContext, Fcb);
         }
         if (LocalPath.Buffer) {
             MyFreePool__(LocalPath.Buffer);
