@@ -837,6 +837,7 @@ struct VCB {
     // FE location cache
     PUDF_DATALOC_INDEX DlocList;
     ULONG           DlocCount;
+    ULONG           DlocFreeHint; // all earlier slots are occupied
     // FS compatibility
     BOOLEAN         LowFreeSpace;
     enum UDFFSD_MEDIA_TYPE MediaTypeEx;

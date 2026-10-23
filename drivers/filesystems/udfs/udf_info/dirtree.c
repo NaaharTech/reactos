@@ -1288,11 +1288,16 @@ UDFFindFreeDloc(
             return (-1);
         RtlZeroMemory(Vcb->DlocList, DLOC_LIST_GRANULARITY*sizeof(UDF_DATALOC_INDEX));
         Vcb->DlocCount = DLOC_LIST_GRANULARITY;
+        Vcb->DlocFreeHint = 0;
     }
-    // scan for free entry
-    DlocList = Vcb->DlocList;
+    /* DlocResource protects this lower bound. Retain first-free selection,
+     * but do not rescan the occupied prefix. Store advances the hint only
+     * after allocating and publishing the Dloc; allocation failure must
+     * leave this same free slot available for the next request. */
     l = Vcb->DlocCount;
-    for(uint32 i=0; i<l; i++, DlocList++) {
+    uint32 first = Vcb->DlocFreeHint <= l ? Vcb->DlocFreeHint : 0;
+    DlocList = Vcb->DlocList + first;
+    for(uint32 i=first; i<l; i++, DlocList++) {
         if (!DlocList->Dloc)
             return i;
     }
@@ -1390,6 +1395,7 @@ UDFStoreDloc(
     Vcb->DlocList[i].Lba = Lba;
     Vcb->DlocList[i].Dloc = Dloc;
     RtlZeroMemory(Dloc, sizeof(UDF_DATALOC_INFO));
+    Vcb->DlocFreeHint = (ULONG)i + 1;
     Dloc->LinkedFileInfo = fi;
     UDFAcquireDloc(Vcb, Dloc);
     UDFReleaseResource(&(Vcb->DlocResource));
@@ -1421,6 +1427,7 @@ UDFRemoveDloc(
     // remove from cache
     ASSERT(Vcb->DlocList);
     RtlZeroMemory(&(Vcb->DlocList[i]), sizeof(UDF_DATALOC_INDEX));
+    Vcb->DlocFreeHint = min(Vcb->DlocFreeHint, (ULONG)i);
     UDFReleaseResource(&(Vcb->DlocResource));
     UDFReleaseDirectoryFECheckpoint(Vcb, Dloc);
     MyFreePool__(Dloc);
@@ -1450,6 +1457,7 @@ UDFUnlinkDloc(
     // remove from cache
     ASSERT(Vcb->DlocList);
     RtlZeroMemory(&(Vcb->DlocList[i]), sizeof(UDF_DATALOC_INDEX));
+    Vcb->DlocFreeHint = min(Vcb->DlocFreeHint, (ULONG)i);
     UDFReleaseResource(&(Vcb->DlocResource));
     return STATUS_SUCCESS;
 } // end UDFUnlinkDloc()
@@ -1473,6 +1481,7 @@ UDFFreeDloc(
     if ((i = UDFFindDlocInMem(Vcb, Dloc)) != (-1)) {
         ASSERT(Vcb->DlocList);
         RtlZeroMemory(&(Vcb->DlocList[i]), sizeof(UDF_DATALOC_INDEX));
+        Vcb->DlocFreeHint = min(Vcb->DlocFreeHint, (ULONG)i);
     }
     UDFReleaseResource(&(Vcb->DlocResource));
     UDFReleaseDirectoryFECheckpoint(Vcb, Dloc);
@@ -1520,6 +1529,7 @@ UDFReleaseDlocList(
     MyFreePool__(Vcb->DlocList);
     Vcb->DlocList = NULL;
     Vcb->DlocCount = 0;
+    Vcb->DlocFreeHint = 0;
     UDFReleaseResource(&(Vcb->DlocResource));
 } // end UDFReleaseDlocList()
 
