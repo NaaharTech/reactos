@@ -29,6 +29,7 @@ UDFReadSecurityDescriptor(
 
 static NTSTATUS
 UDFBuildDefaultSecurityDescriptor(
+    BOOLEAN IsDirectory,
     PSECURITY_DESCRIPTOR *SecurityDescriptor
     );
 
@@ -247,18 +248,21 @@ Cleanup:
 
 static NTSTATUS
 UDFBuildDefaultSecurityDescriptor(
+    BOOLEAN IsDirectory,
     PSECURITY_DESCRIPTOR *SecurityDescriptor
     )
 {
     NTSTATUS Status;
     PSECURITY_DESCRIPTOR AbsoluteDescriptor;
+    PSECURITY_DESCRIPTOR AssignedDescriptor = NULL;
     PSECURITY_DESCRIPTOR RelativeDescriptor;
+    SECURITY_SUBJECT_CONTEXT SubjectContext;
     PACL Acl;
     ULONG SidLength = RtlLengthSid(SeExports->SeWorldSid);
     ULONG AbsoluteLength = sizeof(SECURITY_DESCRIPTOR) +
                            sizeof(ACL) + sizeof(ACCESS_ALLOWED_ACE) +
                            SidLength - sizeof(ULONG);
-    ULONG RelativeLength = 0;
+    ULONG RelativeLength;
 
     AbsoluteDescriptor = MyAllocatePool__(PagedPool, AbsoluteLength);
     if (!AbsoluteDescriptor)
@@ -268,12 +272,6 @@ UDFBuildDefaultSecurityDescriptor(
     Status = RtlCreateSecurityDescriptor(AbsoluteDescriptor,
                                          SECURITY_DESCRIPTOR_REVISION);
     if (NT_SUCCESS(Status))
-        Status = RtlSetOwnerSecurityDescriptor(AbsoluteDescriptor,
-                                               SeExports->SeWorldSid, FALSE);
-    if (NT_SUCCESS(Status))
-        Status = RtlSetGroupSecurityDescriptor(AbsoluteDescriptor,
-                                               SeExports->SeWorldSid, FALSE);
-    if (NT_SUCCESS(Status))
         Status = RtlCreateAcl(Acl, AbsoluteLength - sizeof(SECURITY_DESCRIPTOR),
                               ACL_REVISION);
     if (NT_SUCCESS(Status))
@@ -282,24 +280,28 @@ UDFBuildDefaultSecurityDescriptor(
     if (NT_SUCCESS(Status))
         Status = RtlSetDaclSecurityDescriptor(AbsoluteDescriptor, TRUE, Acl,
                                               FALSE);
-    if (NT_SUCCESS(Status))
-        Status = RtlAbsoluteToSelfRelativeSD(AbsoluteDescriptor, NULL,
-                                             &RelativeLength);
-    if (Status == STATUS_BUFFER_TOO_SMALL) {
-        RelativeDescriptor = MyAllocatePool__(PagedPool, RelativeLength);
-        if (!RelativeDescriptor) {
-            Status = STATUS_INSUFFICIENT_RESOURCES;
-        } else {
-            Status = RtlAbsoluteToSelfRelativeSD(AbsoluteDescriptor,
-                                                 RelativeDescriptor,
-                                                 &RelativeLength);
-            if (NT_SUCCESS(Status))
-                *SecurityDescriptor = RelativeDescriptor;
-            else
-                MyFreePool__(RelativeDescriptor);
-        }
+    if (NT_SUCCESS(Status)) {
+        SeCaptureSubjectContext(&SubjectContext);
+        Status = SeAssignSecurityEx(
+            NULL, AbsoluteDescriptor, &AssignedDescriptor, NULL,
+            IsDirectory, 0, &SubjectContext,
+            IoGetFileObjectGenericMapping(), PagedPool);
+        SeReleaseSubjectContext(&SubjectContext);
     }
     MyFreePool__(AbsoluteDescriptor);
+
+    if (!NT_SUCCESS(Status))
+        return Status;
+
+    RelativeLength = RtlLengthSecurityDescriptor(AssignedDescriptor);
+    RelativeDescriptor = MyAllocatePool__(PagedPool, RelativeLength);
+    if (!RelativeDescriptor) {
+        ExFreePool(AssignedDescriptor);
+        return STATUS_INSUFFICIENT_RESOURCES;
+    }
+    RtlCopyMemory(RelativeDescriptor, AssignedDescriptor, RelativeLength);
+    ExFreePool(AssignedDescriptor);
+    *SecurityDescriptor = RelativeDescriptor;
     return Status;
 }
 
@@ -330,7 +332,8 @@ UDFResolveSecurityDescriptor(
     if (Depth >= 32)
         return STATUS_ACCESS_DENIED;
     if (!FileInfo || !FileInfo->ParentFile || FileInfo->ParentFile == FileInfo) {
-        return UDFBuildDefaultSecurityDescriptor(SecurityDescriptor);
+        return UDFBuildDefaultSecurityDescriptor(
+            UDFIsADirectory(FileInfo), SecurityDescriptor);
     }
 
     Status = UDFResolveSecurityDescriptor(IrpContext, Vcb,
