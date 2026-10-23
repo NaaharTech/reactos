@@ -299,11 +299,13 @@ UDFBuildDefaultSecurityDescriptor(
     if (NT_SUCCESS(Status))
         Status = RtlCreateAcl(Acl, AclLength, ACL_REVISION);
     if (NT_SUCCESS(Status))
-        Status = RtlAddAccessAllowedAce(Acl, ACL_REVISION, FILE_ALL_ACCESS,
-                                        SeExports->SeLocalSystemSid);
+        Status = RtlAddAccessAllowedAceEx(
+            Acl, ACL_REVISION, OBJECT_INHERIT_ACE | CONTAINER_INHERIT_ACE,
+            FILE_ALL_ACCESS, SeExports->SeLocalSystemSid);
     if (NT_SUCCESS(Status))
-        Status = RtlAddAccessAllowedAce(Acl, ACL_REVISION, FILE_ALL_ACCESS,
-                                        SeExports->SeAliasAdminsSid);
+        Status = RtlAddAccessAllowedAceEx(
+            Acl, ACL_REVISION, OBJECT_INHERIT_ACE | CONTAINER_INHERIT_ACE,
+            FILE_ALL_ACCESS, SeExports->SeAliasAdminsSid);
     if (NT_SUCCESS(Status))
         Status = RtlAddAccessAllowedAceEx(
             Acl, ACL_REVISION, OBJECT_INHERIT_ACE | CONTAINER_INHERIT_ACE,
@@ -398,6 +400,10 @@ UDFResolveSecurityDescriptor(
                                            &BufferLength,
                                            &InheritedDescriptor);
     if (Status == STATUS_BUFFER_TOO_SMALL) {
+        if (!BufferLength || BufferLength > 1024 * 1024) {
+            Status = STATUS_INVALID_SECURITY_DESCR;
+            goto Cleanup;
+        }
         MyFreePool__(RelativeDescriptor);
         RelativeDescriptor = MyAllocatePool__(PagedPool, BufferLength);
         if (!RelativeDescriptor) {
@@ -560,6 +566,11 @@ UDFCreateSecurityDescriptor(
     if (!NT_SUCCESS(Status)) {
         UDFPrintErr(("UDF security: serializing descriptor failed %08x for %p\n",
                      Status, FileInfo));
+        goto Cleanup;
+    }
+    if (!RtlValidRelativeSecurityDescriptor(RelativeDescriptor,
+                                            BufferLength, 0)) {
+        Status = STATUS_INVALID_SECURITY_DESCR;
         goto Cleanup;
     }
 
