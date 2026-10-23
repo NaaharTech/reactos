@@ -34,13 +34,17 @@ UDFBuildDefaultSecurityDescriptor(
 
 static BOOLEAN
 UDFIsRecycleBinRoot(
-    PFILE_OBJECT FileObject
+    PFILE_OBJECT FileObject,
+    PVCB Vcb,
+    PUDF_FILE_INFO FileInfo
     )
 {
     UNICODE_STRING FileName;
     UNICODE_STRING RecycleBinName = RTL_CONSTANT_STRING(L"$RECYCLE.BIN");
 
-    if (!FileObject)
+    if (!FileObject || !Vcb || !Vcb->RootIndexFcb ||
+        !FileInfo || !FileInfo->ParentFile ||
+        FileInfo->ParentFile->Fcb != Vcb->RootIndexFcb)
         return FALSE;
 
     FileName = FileObject->FileName;
@@ -722,7 +726,8 @@ UDFCreateSecurityDescriptor(
 
     if (UDFIsADirectory(FileInfo) &&
         UDFIsRecycleBinRoot(
-            IoGetCurrentIrpStackLocation(IrpContext->Irp)->FileObject)) {
+            IoGetCurrentIrpStackLocation(IrpContext->Irp)->FileObject,
+            Vcb, FileInfo)) {
         Status = UDFAddRecycleBinMandatoryLabel(&AssignedDescriptor);
         if (!NT_SUCCESS(Status)) {
             UDFPrintErr(("UDF security: adding Recycle Bin label failed %08x\n",
