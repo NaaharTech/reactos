@@ -402,7 +402,9 @@ UDFResolveSecurityDescriptor(
     if (Status == STATUS_BUFFER_TOO_SMALL) {
         if (!BufferLength || BufferLength > 1024 * 1024) {
             Status = STATUS_INVALID_SECURITY_DESCR;
-            goto Cleanup;
+            MyFreePool__(RelativeDescriptor);
+            ExFreePool(InheritedDescriptor);
+            return Status;
         }
         MyFreePool__(RelativeDescriptor);
         RelativeDescriptor = MyAllocatePool__(PagedPool, BufferLength);
