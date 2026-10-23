@@ -32,6 +32,190 @@ UDFBuildDefaultSecurityDescriptor(
     PSECURITY_DESCRIPTOR *SecurityDescriptor
     );
 
+static BOOLEAN
+UDFIsRecycleBinRoot(
+    PFILE_OBJECT FileObject
+    )
+{
+    UNICODE_STRING FileName;
+    UNICODE_STRING RecycleBinName = RTL_CONSTANT_STRING(L"$RECYCLE.BIN");
+
+    if (!FileObject)
+        return FALSE;
+
+    FileName = FileObject->FileName;
+    if (FileName.Length >= sizeof(WCHAR) && FileName.Buffer[0] == L'\\') {
+        FileName.Buffer++;
+        FileName.Length -= sizeof(WCHAR);
+    }
+
+    return RtlEqualUnicodeString(&FileName, &RecycleBinName, TRUE);
+}
+
+static NTSTATUS
+UDFAddRecycleBinMandatoryLabel(
+    PSECURITY_DESCRIPTOR *SecurityDescriptor
+    )
+{
+    NTSTATUS Status;
+    PSECURITY_DESCRIPTOR AbsoluteDescriptor = NULL;
+    PSECURITY_DESCRIPTOR RelativeDescriptor = NULL;
+    PSECURITY_DESCRIPTOR OriginalDescriptor;
+    PSECURITY_DESCRIPTOR UpdatedDescriptor;
+    PACL ExistingSacl = NULL;
+    PACL Sacl;
+    BOOLEAN SaclPresent;
+    BOOLEAN SaclDefaulted;
+    BOOLEAN LabelPresent = FALSE;
+    SID_IDENTIFIER_AUTHORITY MandatoryLabelAuthority =
+        SECURITY_MANDATORY_LABEL_AUTHORITY;
+    SID LowMandatorySid;
+    ULONG AceLength;
+    ULONG SaclLength;
+    ULONG AbsoluteLength;
+    ULONG RelativeLength = 0;
+    ULONG ExistingAceLength = 0;
+    ULONG SaclRevision = ACL_REVISION;
+    ULONG i;
+    PVOID Ace = NULL;
+    PSYSTEM_MANDATORY_LABEL_ACE MandatoryAce;
+    SECURITY_INFORMATION SecurityInformation = SACL_SECURITY_INFORMATION;
+
+    Status = RtlInitializeSid(&LowMandatorySid, &MandatoryLabelAuthority, 1);
+    if (!NT_SUCCESS(Status))
+        return Status;
+    *RtlSubAuthoritySid(&LowMandatorySid, 0) = SECURITY_MANDATORY_LOW_RID;
+
+    Status = RtlGetSaclSecurityDescriptor(*SecurityDescriptor, &SaclPresent,
+                                          &ExistingSacl, &SaclDefaulted);
+    if (!NT_SUCCESS(Status))
+        return Status;
+
+    if (ExistingSacl) {
+        SaclRevision = ExistingSacl->AclRevision;
+        for (i = 0; i < ExistingSacl->AceCount; i++) {
+            PACE_HEADER ExistingAce;
+
+            Status = RtlGetAce(ExistingSacl, i, (PVOID *)&ExistingAce);
+            if (!NT_SUCCESS(Status))
+                return Status;
+            ExistingAceLength += ExistingAce->AceSize;
+            if (ExistingAce->AceType == SYSTEM_MANDATORY_LABEL_ACE_TYPE &&
+                ExistingAce->AceSize >=
+                    FIELD_OFFSET(SYSTEM_MANDATORY_LABEL_ACE, SidStart) +
+                    RtlLengthSid(&LowMandatorySid)) {
+                PSYSTEM_MANDATORY_LABEL_ACE ExistingMandatoryAce =
+                    (PSYSTEM_MANDATORY_LABEL_ACE)ExistingAce;
+
+                if (ExistingMandatoryAce->Mask ==
+                        SYSTEM_MANDATORY_LABEL_NO_WRITE_UP &&
+                    ExistingMandatoryAce->Header.AceFlags ==
+                        (OBJECT_INHERIT_ACE | CONTAINER_INHERIT_ACE |
+                         INHERIT_ONLY_ACE) &&
+                    RtlEqualSid((PSID)&ExistingMandatoryAce->SidStart,
+                                &LowMandatorySid)) {
+                    LabelPresent = TRUE;
+                }
+            }
+        }
+    }
+    if (LabelPresent)
+        return STATUS_SUCCESS;
+
+    AceLength = FIELD_OFFSET(SYSTEM_MANDATORY_LABEL_ACE, SidStart) +
+                RtlLengthSid(&LowMandatorySid);
+    SaclLength = sizeof(ACL) + ExistingAceLength + AceLength;
+    if (SaclLength > MAXUSHORT)
+        return STATUS_INVALID_SECURITY_DESCR;
+
+    AbsoluteLength = sizeof(SECURITY_DESCRIPTOR) + SaclLength;
+    AbsoluteDescriptor = MyAllocatePool__(PagedPool, AbsoluteLength);
+    if (!AbsoluteDescriptor)
+        return STATUS_INSUFFICIENT_RESOURCES;
+
+    Sacl = (PACL)((PUCHAR)AbsoluteDescriptor + sizeof(SECURITY_DESCRIPTOR));
+    Status = RtlCreateSecurityDescriptor(AbsoluteDescriptor,
+                                         SECURITY_DESCRIPTOR_REVISION);
+    if (NT_SUCCESS(Status))
+        Status = RtlCreateAcl(Sacl, SaclLength, SaclRevision);
+
+    if (NT_SUCCESS(Status) && ExistingSacl) {
+        for (i = 0; i < ExistingSacl->AceCount; i++) {
+            PACE_HEADER ExistingAce;
+
+            Status = RtlGetAce(ExistingSacl, i, (PVOID *)&ExistingAce);
+            if (!NT_SUCCESS(Status))
+                break;
+            Status = RtlAddAce(Sacl, SaclRevision, MAXULONG,
+                               ExistingAce, ExistingAce->AceSize);
+            if (!NT_SUCCESS(Status))
+                break;
+        }
+    }
+
+    if (NT_SUCCESS(Status)) {
+        Ace = MyAllocatePool__(PagedPool, AceLength);
+        if (!Ace) {
+            Status = STATUS_INSUFFICIENT_RESOURCES;
+        } else {
+            MandatoryAce = (PSYSTEM_MANDATORY_LABEL_ACE)Ace;
+            MandatoryAce->Header.AceType = SYSTEM_MANDATORY_LABEL_ACE_TYPE;
+            MandatoryAce->Header.AceFlags =
+                OBJECT_INHERIT_ACE | CONTAINER_INHERIT_ACE |
+                INHERIT_ONLY_ACE;
+            MandatoryAce->Header.AceSize = (USHORT)AceLength;
+            MandatoryAce->Mask = SYSTEM_MANDATORY_LABEL_NO_WRITE_UP;
+            Status = RtlCopySid(RtlLengthSid(&LowMandatorySid),
+                                (PSID)&MandatoryAce->SidStart,
+                                &LowMandatorySid);
+            if (NT_SUCCESS(Status))
+                Status = RtlAddAce(Sacl, SaclRevision, MAXULONG,
+                                   Ace, AceLength);
+        }
+    }
+
+    if (NT_SUCCESS(Status))
+        Status = RtlSetSaclSecurityDescriptor(AbsoluteDescriptor, TRUE,
+                                              Sacl, FALSE);
+    if (NT_SUCCESS(Status))
+        Status = RtlAbsoluteToSelfRelativeSD(AbsoluteDescriptor, NULL,
+                                             &RelativeLength);
+    if (Status == STATUS_BUFFER_TOO_SMALL) {
+        RelativeDescriptor = MyAllocatePool__(PagedPool, RelativeLength);
+        if (!RelativeDescriptor) {
+            Status = STATUS_INSUFFICIENT_RESOURCES;
+        } else {
+            Status = RtlAbsoluteToSelfRelativeSD(AbsoluteDescriptor,
+                                                 RelativeDescriptor,
+                                                 &RelativeLength);
+        }
+    }
+
+    if (NT_SUCCESS(Status)) {
+        OriginalDescriptor = *SecurityDescriptor;
+        UpdatedDescriptor = OriginalDescriptor;
+        Status = SeSetSecurityDescriptorInfo(
+            NULL, &SecurityInformation, RelativeDescriptor,
+            &UpdatedDescriptor, PagedPool,
+            IoGetFileObjectGenericMapping());
+        if (NT_SUCCESS(Status)) {
+            if (UpdatedDescriptor != OriginalDescriptor)
+                ExFreePool(OriginalDescriptor);
+            *SecurityDescriptor = UpdatedDescriptor;
+        } else if (UpdatedDescriptor != OriginalDescriptor) {
+            ExFreePool(UpdatedDescriptor);
+        }
+    }
+
+    if (Ace)
+        MyFreePool__(Ace);
+    if (RelativeDescriptor)
+        MyFreePool__(RelativeDescriptor);
+    if (AbsoluteDescriptor)
+        MyFreePool__(AbsoluteDescriptor);
+    return Status;
+}
+
 static NTSTATUS
 UDFResolveSecurityDescriptor(
     PIRP_CONTEXT IrpContext,
@@ -534,6 +718,17 @@ UDFCreateSecurityDescriptor(
         UDFPrintErr(("UDF security: assigning descriptor failed %08x for %p\n",
                      Status, FileInfo));
         goto Cleanup;
+    }
+
+    if (UDFIsADirectory(FileInfo) &&
+        UDFIsRecycleBinRoot(
+            IoGetCurrentIrpStackLocation(IrpContext->Irp)->FileObject)) {
+        Status = UDFAddRecycleBinMandatoryLabel(&AssignedDescriptor);
+        if (!NT_SUCCESS(Status)) {
+            UDFPrintErr(("UDF security: adding Recycle Bin label failed %08x\n",
+                         Status));
+            goto Cleanup;
+        }
     }
 
     BufferLength = RtlLengthSecurityDescriptor(AssignedDescriptor);
