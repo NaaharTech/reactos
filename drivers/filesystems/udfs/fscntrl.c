@@ -772,7 +772,7 @@ UDFCleanupVCB(
         UDFReleaseFileIdCache(Vcb);
         UDFReleaseDlocList(Vcb);
     } _SEH2_EXCEPT(EXCEPTION_EXECUTE_HANDLER) {
-        BrutePoint();
+        DbgBreakPoint();
     } _SEH2_END;
 
     MyFreeMemoryAndPointer(Vcb->Partitions);

@@ -388,7 +388,7 @@ UDFOpenExistingFcb(
             MmPrint(("    CcIsFileCached()\n"));
             if (CcIsFileCached(FileObject)) {
                  MmPrint(("    CcSetFileSizes()\n"));
-                 BrutePoint();
+                 DbgBreakPoint();
                  CcSetFileSizes(FileObject, (PCC_FILE_SIZES)&(*PtrNewFcb)->Header.AllocationSize);
                  (*PtrNewFcb)->NtReqFCBFlags |= UDF_NTREQ_FCB_MODIFIED;
             }
@@ -485,7 +485,7 @@ UDFOpenObjectFromDirContext(
         }
         if (Status == STATUS_SHARING_PAUSED) {
             AdPrint(("    Dloc is being initialized\n"));
-            BrutePoint();
+            DbgBreakPoint();
             return STATUS_SHARING_VIOLATION;
         }
         if (!NT_SUCCESS(Status)) {
@@ -500,7 +500,7 @@ UDFOpenObjectFromDirContext(
         Status = UDFFirstOpenFile(IrpContext, Vcb,
                                   &PtrNewFcb, RelatedFileInfo, NewFileInfo);
         if (!NT_SUCCESS(Status)) {
-            BrutePoint();
+            DbgBreakPoint();
             AdPrint(("    Can't perform FirstOpen\n"));
             if (ExistingFileInfo) {
                 // Caller provided pre-created FileInfo — return it for cleanup.
@@ -527,7 +527,7 @@ UDFOpenObjectFromDirContext(
     } else {
         // FCB already exists — validate it
         if (!(PtrNewFcb->FcbState & UDF_FCB_VALID)) {
-            BrutePoint();
+            DbgBreakPoint();
             AdPrint(("    Fcb not valid\n"));
             if (ExistingFileInfo) {
                 *OutFileInfo = NewFileInfo;
@@ -2319,7 +2319,7 @@ UDFCommonCreate(
                     &NewFileInfo, &PtrNewFcb);
                 if (!NT_SUCCESS(Status)) {
                     AdPrint(("    Can't open file for stream creation\n"));
-                    BrutePoint();
+                    DbgBreakPoint();
                     try_return(Status);
                 }
                 LastGoodFileInfo = NewFileInfo;
@@ -2338,7 +2338,7 @@ UDFCommonCreate(
                 Status = UDFCreateStreamDir__(IrpContext, Vcb, RelatedFileInfo, &StreamDirInfo);
                 if (!NT_SUCCESS(Status)) {
                     AdPrint(("    Can't create SDir\n"));
-                    BrutePoint();
+                    DbgBreakPoint();
                     try_return(Status);
                 }
 
@@ -2353,7 +2353,7 @@ UDFCommonCreate(
                     &NewFileInfo, &PtrNewFcb);
                 if (!NT_SUCCESS(Status)) {
                     AdPrint(("    Can't open SDir\n"));
-                    BrutePoint();
+                    DbgBreakPoint();
                     UDFCloseFile__(IrpContext, Vcb, StreamDirInfo);
                     try_return(Status);
                 }
@@ -2370,7 +2370,7 @@ UDFCommonCreate(
                          RelatedFileInfo, &NewFileInfo);
                 if (!NT_SUCCESS(Status)) {
                     AdPrint(("    Can't create Stream\n"));
-                    BrutePoint();
+                    DbgBreakPoint();
                     try_return(Status);
                 }
             }
@@ -2390,7 +2390,7 @@ UDFCommonCreate(
             }
             if (!NT_SUCCESS(Status)) {
                 AdPrint(("    Can't open created file or stream\n"));
-                BrutePoint();
+                DbgBreakPoint();
                 // Undo create — flush and unlink from disk
                 if (NewFileInfo &&
                     (Status != STATUS_FILE_IS_A_DIRECTORY) &&
@@ -2440,7 +2440,7 @@ UDFCommonCreate(
 
         // File path — final component not yet opened, DirContext has the entry
         if (!DirContext.DirNdx) {
-            BrutePoint();
+            DbgBreakPoint();
             try_return(Status = STATUS_OBJECT_NAME_NOT_FOUND);
         }
 
@@ -2778,7 +2778,7 @@ UDFFirstOpenFile(
         hDirIndex = UDFGetDirIndexByFileInfo(NewFileInfo);
 #ifdef UDF_DBG
         if (!hDirIndex) {
-            BrutePoint();
+            DbgBreakPoint();
         } else {
 #endif // UDF_DBG
             (*PtrNewFcb)->FileAttributes = UDFAttributesToNT(DirIndex = UDFDirIndex(hDirIndex, NewFileInfo->Index),NULL);
@@ -2797,7 +2797,7 @@ UDFFirstOpenFile(
         }
         // Names are now stored in LCB, not appended to FCBName
 //    } else {
-//        BrutePoint();
+//        DbgBreakPoint();
     }
 
     // Insert FCB into table and mark valid.

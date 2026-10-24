@@ -92,7 +92,7 @@ UDFPrepareXSpaceBitmap(
         TmpExt.extLength = XSpaceBitmap->extLength;
         TmpExt.extLocation = UDFPartLbaToPhys(Vcb, &locAddr);
         if (TmpExt.extLocation == LBA_OUT_OF_EXTENT) {
-            BrutePoint();
+            DbgBreakPoint();
         }
         XSBMExtInfo->Mapping = UDFExtentToMapping(&TmpExt);
         XSBMExtInfo->Offset = 0;
@@ -121,7 +121,7 @@ UDFPrepareXSpaceBitmap(
         TmpExt.extLength = XSpaceBitmap->extLength = *XSl;
         TmpExt.extLocation = UDFPartLbaToPhys(Vcb, &locAddr);
         if (TmpExt.extLocation == LBA_OUT_OF_EXTENT) {
-            BrutePoint();
+            DbgBreakPoint();
         }
         XSBMExtInfo->Mapping = UDFExtentToMapping(&TmpExt);
         XSBMExtInfo->Offset = 0;
@@ -131,7 +131,7 @@ UDFPrepareXSpaceBitmap(
     }
 
     if (!_XSBM) {
-        BrutePoint();
+        DbgBreakPoint();
         return STATUS_INSUFFICIENT_RESOURCES;
     }
 
@@ -143,7 +143,7 @@ UDFPrepareXSpaceBitmap(
            (Ident != TID_SPACE_BITMAP_DESC) ||
            (!NT_SUCCESS(status = UDFReadExtent(IrpContext, Vcb, XSBMExtInfo, 0, *XSl, FALSE, *XSBM))) ) {
             if (NT_SUCCESS(status)) {
-                BrutePoint();
+                DbgBreakPoint();
                 status = STATUS_FILE_CORRUPT_ERROR;
             }
             if (XSBMExtInfo->Mapping) {
@@ -155,7 +155,7 @@ UDFPrepareXSpaceBitmap(
             *XSBM = NULL;
             return status;
         } else {
-//            BrutePoint();
+//            DbgBreakPoint();
         }
         return STATUS_SUCCESS;
     }
@@ -214,7 +214,7 @@ UDFUpdateXSpaceBitmaps(
     status2 = UDFPrepareXSpaceBitmap(IrpContext, Vcb, &phd->freedSpaceBitmap, &FSBMExtInfo, &FSBM, &FSl);
     if (!NT_SUCCESS(status) ||
        !NT_SUCCESS(status2)) {
-        BrutePoint();
+        DbgBreakPoint();
     }
 
     pstart = UDFPartStart(Vcb, RefPartNum);
@@ -962,7 +962,7 @@ UDFUpdateNonAllocated(
     // Bitmap is LBN-indexed (0..PartitionLen)
     pend = min(plen, Vcb->FSBM_BitCount);
 
-    //BrutePoint();
+    //DbgBreakPoint();
     for(i=0; i<pend; i++) {
         if (!UDFGetBadBit(bad_bm, i))
             continue;
@@ -2060,7 +2060,7 @@ UDFVerifyFreeSpaceBitmap(
             locAddr.logicalBlockNum = Extent[i].extLocation;
             Extent[i].extLocation = UDFPartLbaToPhys(Vcb, &locAddr);
             if (Extent[i].extLocation == LBA_OUT_OF_EXTENT) {
-                BrutePoint();
+                DbgBreakPoint();
                 MyFreePool__(AllocDesc);
                 return STATUS_DISK_CORRUPT_ERROR;
             }
@@ -2180,7 +2180,7 @@ UDFBuildFreeSpaceBitmap(
             locAddr.logicalBlockNum = Extent[i].extLocation;
             Extent[i].extLocation = UDFPartLbaToPhys(Vcb, &locAddr);
             if (Extent[i].extLocation == LBA_OUT_OF_EXTENT) {
-                BrutePoint();
+                DbgBreakPoint();
                 MyFreePool__(AllocDesc);
                 return STATUS_DISK_CORRUPT_ERROR;
             }

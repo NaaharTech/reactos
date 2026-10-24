@@ -86,12 +86,12 @@ UDFExceptionFilter(
         // better free up the IrpContext now ...
         if (IrpContext) {
             UDFPrint(("    UDF Driver internal error\n"));
-            BrutePoint();
+            DbgBreakPoint();
         } else {
             // we are not ok, propagate this exception.
             //  NOTE: we will bring down the machine ...
             //ReturnCode = EXCEPTION_CONTINUE_SEARCH;
-            BrutePoint();
+            DbgBreakPoint();
         }
     }
 
@@ -1306,17 +1306,17 @@ UDFDeleteVCB(
         if (!ExIsResourceAcquiredShared(&UdfData.GlobalDataResource)) {
             UDFPrint(("UDF: attempt to access to not protected data\n"));
             UDFPrint(("UDF: UDFGlobalData\n"));
-            BrutePoint();
+            DbgBreakPoint();
         }
     } _SEH2_EXCEPT(EXCEPTION_EXECUTE_HANDLER) {
-        BrutePoint();
+        DbgBreakPoint();
     } _SEH2_END;
 #endif
 
     _SEH2_TRY {
         RemoveEntryList(&(Vcb->VcbLinks));
     } _SEH2_EXCEPT(EXCEPTION_EXECUTE_HANDLER) {
-        BrutePoint();
+        DbgBreakPoint();
     } _SEH2_END;
 
     _SEH2_TRY {
@@ -1329,7 +1329,7 @@ UDFDeleteVCB(
         UDFDeleteResource(&(Vcb->FlushResource));
         UDFDeleteResource(&(Vcb->PreallocResource));
     } _SEH2_EXCEPT(EXCEPTION_EXECUTE_HANDLER) {
-        BrutePoint();
+        DbgBreakPoint();
     } _SEH2_END;
 
     _SEH2_TRY {
@@ -1338,7 +1338,7 @@ UDFDeleteVCB(
         FsRtlNotifyUninitializeSync(&Vcb->NotifySync);
         UDFCleanupVCB(Vcb);
     } _SEH2_EXCEPT(EXCEPTION_EXECUTE_HANDLER) {
-        BrutePoint();
+        DbgBreakPoint();
     } _SEH2_END;
 
     // Chuck the backpocket Vpb we kept just in case.
@@ -1422,7 +1422,7 @@ UDFAcquireResourceExclusiveWithCheck(
     if (ReAcqRes) {
         UDFPrint(("UDFAcquireResourceExclusiveWithCheck: ReAcqRes, %x\n", ReAcqRes));
     } else {
-//        BrutePoint();
+//        DbgBreakPoint();
     }
 
     if (ReAcqRes == 1) {
@@ -1430,7 +1430,7 @@ UDFAcquireResourceExclusiveWithCheck(
     } else
     if (ReAcqRes == 2) {
         UDFPrint(("UDFAcquireResourceExclusiveWithCheck: !!! Shared !!!\n"));
-        //BrutePoint();
+        //DbgBreakPoint();
     } else {
         UDFAcquireResourceExclusive(Resource, TRUE);
         return TRUE;
@@ -1449,7 +1449,7 @@ UDFAcquireResourceSharedWithCheck(
     if (ReAcqRes) {
         UDFPrint(("UDFAcquireResourceSharedWithCheck: ReAcqRes, %x\n", ReAcqRes));
 /*    } else {
-        BrutePoint();*/
+        DbgBreakPoint();*/
     }
 
     if (ReAcqRes == 2) {
@@ -1457,7 +1457,7 @@ UDFAcquireResourceSharedWithCheck(
     } else
     if (ReAcqRes == 1) {
         UDFPrint(("UDFAcquireResourceSharedWithCheck: Exclusive\n"));
-        //BrutePoint();
+        //DbgBreakPoint();
     } else {
         UDFAcquireResourceShared(Resource, TRUE);
         return TRUE;

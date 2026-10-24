@@ -1260,7 +1260,7 @@ UDFMarkStreamsForDeletion(
                             // Currently, UDF_INFO package doesn't
                             // support this case, so we'll inform developer
                             // about this to prevent on-disk space leaks...
-                            BrutePoint();
+                            DbgBreakPoint();
                             try_return(RC = STATUS_CANNOT_DELETE);
                         }
 #endif //UDF_ALLOW_LINKS_TO_STREAMS
@@ -1739,7 +1739,7 @@ UDFSetEndOfFileInfo(
            (Fcb->NtReqFCBFlags & UDF_NTREQ_FCB_DELETED)) {
 #ifdef UDF_DBG
             if (UDFGetFileLinkCount(Fcb->FileInfo) < 1) {
-                BrutePoint();
+                DbgBreakPoint();
                 try_return(RC = STATUS_SUCCESS);
             } else
 #endif // UDF_DBG
@@ -2698,7 +2698,7 @@ UDFHardLink(
             try_return (RC = STATUS_ACCESS_DENIED);
 /*            if (UDFIsADirectory(File1) ||
                UDFHasAStreamDir(File1)) {
-                BrutePoint();
+                DbgBreakPoint();
                 try_return (RC = STATUS_ACCESS_DENIED);
             }*/
         }

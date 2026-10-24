@@ -592,7 +592,7 @@ UDFDetermineVolumeLayout(
         Status = UDFReallocTrackMap(Vcb, MAXIMUM_NUMBER_TRACKS_LARGE+1);
 
         if (!NT_SUCCESS(Status)) {
-            BrutePoint();
+            DbgBreakPoint();
             try_return(Status);
         }
         // find 1st and last session
@@ -640,7 +640,7 @@ UDFDetermineVolumeLayout(
             if (TrkNum >= MAXIMUM_NUMBER_TRACKS_LARGE &&
                 TrkNum != TOC_LastTrack_ID) {
                 UDFPrint(("UDFUseStandard: Array out of bounds\n"));
-                BrutePoint();
+                DbgBreakPoint();
                 try_return(Status = STATUS_SUCCESS);
             }
             UDFPrint(("Track N %d (0x%x) first LBA %ld (%lx) \n",TrkNum,TrkNum,
@@ -671,7 +671,7 @@ UDFDetermineVolumeLayout(
                 if (TrkNum) {
                     if (TOC_LastTrack_ID == OldTrkNum) {
                         UDFPrint(("UDFUseStandard: Wrong previous track number\n"));
-                        BrutePoint();
+                        DbgBreakPoint();
                     } else {
                         Vcb->TrackMap[OldTrkNum].LastLba = Vcb->TrackMap[TrkNum].FirstLba-1;
                     }
@@ -1215,7 +1215,7 @@ UDFWriteInSector(
 
     tmp_buff = (int8*)MyAllocatePool__(NonPagedPool, Vcb->SectorSize);
     if (!tmp_buff) {
-        BrutePoint();
+        DbgBreakPoint();
         return STATUS_INSUFFICIENT_RESOURCES;
     }
 

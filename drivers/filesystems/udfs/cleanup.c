@@ -160,7 +160,7 @@ UDFCommonCleanup(
         // (f) Update time stamp values (e.g. fast-IO had been performed)
         // (g) Inform the Cache Manager to uninitialize Cache Maps ...
         // and other similar stuff.
-        //  BrutePoint();
+        //  DbgBreakPoint();
 
         if (TypeOfOpen == UserVolumeOpen) {
 
@@ -367,7 +367,7 @@ UDFCommonCleanup(
 
                         // Can't delete file with open streams — pretend deleted.
                         // Streams will trigger parent deletion on their cleanup.
-                        BrutePoint();
+                        DbgBreakPoint();
                         if (!UDFIsSDirDeleted(NextFileInfo->Dloc->SDirInfo)) {
                             UDFPretendFileDeleted__(Vcb, Fcb->FileInfo);
                         }

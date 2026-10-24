@@ -352,7 +352,7 @@ UDFFlushAFile(
                 UDFFlushADirectory(IrpContext, Fcb->Vcb, Fcb->FileInfo->Dloc->SDirInfo, PtrIoStatus, FlushFlags);
         }
     } _SEH2_EXCEPT(EXCEPTION_EXECUTE_HANDLER) {
-        BrutePoint();
+        DbgBreakPoint();
         UDFRememberFlushStatus(PtrIoStatus, _SEH2_GetExceptionCode());
     } _SEH2_END;
     // Flush File
@@ -395,7 +395,7 @@ UDFFlushAFile(
             }
         }
     } _SEH2_EXCEPT(EXCEPTION_EXECUTE_HANDLER) {
-        BrutePoint();
+        DbgBreakPoint();
         UDFRememberFlushStatus(PtrIoStatus, _SEH2_GetExceptionCode());
         CacheFlushFailed = TRUE;
     } _SEH2_END;
@@ -418,7 +418,7 @@ UDFFlushAFile(
         UDFRememberFlushStatus(PtrIoStatus,
             UDFFlushFile__(IrpContext, Fcb->Vcb, Fcb->FileInfo, FlushFlags));
     } _SEH2_EXCEPT(EXCEPTION_EXECUTE_HANDLER) {
-        BrutePoint();
+        DbgBreakPoint();
         UDFRememberFlushStatus(PtrIoStatus, _SEH2_GetExceptionCode());
     } _SEH2_END;
 
@@ -427,7 +427,7 @@ UDFFlushAFile(
             MmPrint(("    CcPurgeCacheSection()\n"));
             CcPurgeCacheSection( &(Fcb->NTRequiredFCB->SectionObject), NULL, 0, FALSE );
         } _SEH2_EXCEPT(EXCEPTION_EXECUTE_HANDLER) {
-            BrutePoint();
+            DbgBreakPoint();
         } _SEH2_END;
     }*/
 
@@ -476,7 +476,7 @@ UDFFlushADirectory(
                 UDFFlushADirectory(IrpContext, Vcb, FI->Dloc->SDirInfo, PtrIoStatus, FlushFlags);
         }
     } _SEH2_EXCEPT(EXCEPTION_EXECUTE_HANDLER) {
-        BrutePoint();
+        DbgBreakPoint();
         UDFRememberFlushStatus(PtrIoStatus, _SEH2_GetExceptionCode());
     } _SEH2_END;
 
@@ -509,7 +509,7 @@ UDFFlushADirectory(
                         UDFFlushAFile(IrpContext, tempFI->Fcb, NULL, PtrIoStatus, FlushFlags);
                     }
                 } _SEH2_EXCEPT(EXCEPTION_EXECUTE_HANDLER) {
-                    BrutePoint();
+                    DbgBreakPoint();
                     UDFRememberFlushStatus(PtrIoStatus, _SEH2_GetExceptionCode());
                 } _SEH2_END;
                 if (UDFFlushIsBreaking(Vcb, FlushFlags)) {
@@ -519,7 +519,7 @@ UDFFlushADirectory(
             }
         }
     } _SEH2_EXCEPT(EXCEPTION_EXECUTE_HANDLER) {
-        BrutePoint();
+        DbgBreakPoint();
         UDFRememberFlushStatus(PtrIoStatus, _SEH2_GetExceptionCode());
     } _SEH2_END;
 SkipFlushDir:
@@ -528,7 +528,7 @@ SkipFlushDir:
         UDFRememberFlushStatus(PtrIoStatus,
             UDFFlushFile__(IrpContext, Vcb, FI, FlushFlags));
     } _SEH2_EXCEPT(EXCEPTION_EXECUTE_HANDLER) {
-        BrutePoint();
+        DbgBreakPoint();
         UDFRememberFlushStatus(PtrIoStatus, _SEH2_GetExceptionCode());
     } _SEH2_END;
 

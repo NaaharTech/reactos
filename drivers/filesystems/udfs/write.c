@@ -994,7 +994,7 @@ UDFPurgeCacheEx_(
                 Fcb->Header.ValidDataLength.QuadPart = Offset;
         }
     } _SEH2_EXCEPT(EXCEPTION_EXECUTE_HANDLER) {
-        BrutePoint();
+        DbgBreakPoint();
     } _SEH2_END;
 } // end UDFPurgeCacheEx_()
 

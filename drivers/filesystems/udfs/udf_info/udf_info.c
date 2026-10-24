@@ -1799,7 +1799,7 @@ UDFUnlinkFile__(
     SDirInfo = Dloc->SDirInfo;
 /*    if (FreeSpace && SDirInfo) {
         UDFPrint(("Unlink: SDirInfo should be NULL !!!\n"));
-        BrutePoint();
+        DbgBreakPoint();
         return STATUS_CANNOT_DELETE;
     }*/
     // stream directory can be deleted even being not empty
@@ -1893,7 +1893,7 @@ cleanup_SDir:
                 // abort Unlink on error
                 UDFCloseFile__(IrpContext, Vcb, SDirInfo);
                 SFileInfo = SDirInfo;
-                BrutePoint();
+                DbgBreakPoint();
                 goto cleanup_SDir;
             }
             // delete SDir
@@ -2220,7 +2220,7 @@ UDFOpenFile__(
         if ((FileInfo->ParentFile != DirInfo) &&
            (FileInfo->Index >= 2)) {
             ParFileInfo = UDFLocateParallelFI(DirInfo, i, FileInfo);
-            BrutePoint();
+            DbgBreakPoint();
             if (ParFileInfo->ParentFile != DirInfo) {
                 FileInfo = (PUDF_FILE_INFO)MyAllocatePoolTag__(UDF_FILE_INFO_MT,sizeof(UDF_FILE_INFO), MEM_FINF_TAG);
                 *_FileInfo = FileInfo;
@@ -2266,7 +2266,7 @@ UDFOpenFile__(
                              DirNdx->Length, FALSE, (int8*)(FileInfo->FileIdent)) ))
         return status;
     if (FileInfo->FileIdent->descTag.tagIdent != TID_FILE_IDENT_DESC) {
-        BrutePoint();
+        DbgBreakPoint();
         return STATUS_FILE_CORRUPT_ERROR;
     }
     // check for opened links
@@ -2389,7 +2389,7 @@ UDFOpenFileInfoFromDirContext(
         if ((FileInfo->ParentFile != DirInfo) &&
            (FileInfo->Index >= 2)) {
             ParFileInfo = UDFLocateParallelFI(DirInfo, i, FileInfo);
-            BrutePoint();
+            DbgBreakPoint();
             if (ParFileInfo->ParentFile != DirInfo) {
                 FileInfo = (PUDF_FILE_INFO)MyAllocatePoolTag__(UDF_FILE_INFO_MT, sizeof(UDF_FILE_INFO), MEM_FINF_TAG);
                 *_FileInfo = FileInfo;
@@ -2435,7 +2435,7 @@ UDFOpenFileInfoFromDirContext(
                              DirNdx->Length, FALSE, (int8*)(FileInfo->FileIdent))))
         return status;
     if (FileInfo->FileIdent->descTag.tagIdent != TID_FILE_IDENT_DESC) {
-        BrutePoint();
+        DbgBreakPoint();
         return STATUS_FILE_CORRUPT_ERROR;
     }
     // check for opened links
@@ -2633,7 +2633,7 @@ UDFCleanUpFile__(
     if (FileInfo->Fcb) {
         UDFPrint(("Operating System still has references to this file\n"));
         UDFPrint(("     Skipping cleanup\n"));
-//        BrutePoint();
+//        DbgBreakPoint();
         return UDF_FREE_NOTHING;
     }
 
@@ -2776,7 +2776,7 @@ UDFCleanUpFile__(
                         // the chain & nothing wrong will happen.
                         if (DirNdx2 && (DirNdx2->FileInfo == FileInfo)) {
                             if (FileInfo->PrevLinkedFile == FileInfo) {
-                                BrutePoint();
+                                DbgBreakPoint();
                                 DirNdx2->FileInfo = NULL;
                             } else {
                                 DirNdx2->FileInfo = Parallel ?
@@ -2793,7 +2793,7 @@ UDFCleanUpFile__(
 
             // (Update Child Objects - II)
             if (Dloc->SDirInfo->ParentFile == FileInfo) {
-                BrutePoint();
+                DbgBreakPoint();
                 ASSERT(ParFileInfo);
                 Dloc->SDirInfo->ParentFile = ParFileInfo;
             }
@@ -2801,7 +2801,7 @@ UDFCleanUpFile__(
             // and there is no possibility to store pointer in some other
             // place (in parallel object)
             if (!KeepDloc) {
-                BrutePoint();
+                DbgBreakPoint();
                 UDFPrint(("     Skipping cleanup\n"));
                 return UDF_FREE_NOTHING;
             }
@@ -2904,7 +2904,7 @@ UDFCleanUpFile__(
             }
         } else // KeepDloc cannot be FALSE if (Linked == TRUE)
         if (Linked) {
-//            BrutePoint();
+//            DbgBreakPoint();
             // Update pointers in ParentObject (if any)
             if (FileInfo->ParentFile->Dloc->SDirInfo == FileInfo)
                 FileInfo->ParentFile->Dloc->SDirInfo = FileInfo->PrevLinkedFile;
@@ -2955,12 +2955,12 @@ UDFCleanUpFile__(
         } else {
             // We can get here after incomplete Open
             if (!Parallel && DirNdx->FileInfo)
-                BrutePoint();
+                DbgBreakPoint();
 #endif
         }
 #ifdef UDF_DBG
     } else {
-//        BrutePoint();
+//        DbgBreakPoint();
 #endif
     }
 
@@ -3156,14 +3156,14 @@ UDFCreateFile__(
                 // we needn't allocating new FileIdent inside Dir stream
                 // perform 'undel'
                 if (DirNdx->FileInfo) {
-    //                BrutePoint();
+    //                DbgBreakPoint();
                     status = UDFPretendFileDeleted__(Vcb, DirNdx->FileInfo);
                     if (!NT_SUCCESS(status))
                         try_return (status = STATUS_FILE_DELETED);
                 } else {
                     undel = TRUE;
                 }
-    //            BrutePoint();
+    //            DbgBreakPoint();
                 goto CreateUndel;
             }
 CreateBothFound:
@@ -3172,7 +3172,7 @@ CreateBothFound:
                 try_return (status = STATUS_ACCESS_DENIED);
             }
             // try to open it
-            BrutePoint();
+            DbgBreakPoint();
             status = UDFOpenFile__(IrpContext, Vcb, IgnoreCase, TRUE, _fn, DirInfo, _FileInfo, &i);
     //        *_FileInfo = FileInfo; // OpenFile__ has already done it, so update it...
             DirNdx = UDFDirIndex(hDirNdx,i);
@@ -3184,16 +3184,16 @@ CreateBothFound:
                     MyFreePool__(FileInfo);
                     *_FileInfo = NULL;
                 }
-                BrutePoint();
+                DbgBreakPoint();
                 try_return (status);
             }
             // check if we can delete this file
             if (FileInfo->OpenCount || (FileInfo->RefCount > 1)) {
-                BrutePoint();
+                DbgBreakPoint();
                 UDFCloseFile__(IrpContext, Vcb, FileInfo);
                 try_return (status = STATUS_CANNOT_DELETE);
             }
-            BrutePoint();
+            DbgBreakPoint();
             // remove DIRECTORY flag
             DirNdx->FileCharacteristics &= ~FILE_DIRECTORY;
             FileInfo->FileIdent->fileCharacteristics &= ~FILE_DIRECTORY;
@@ -3201,7 +3201,7 @@ CreateBothFound:
             // truncate file size to ZERO
             status = UDFResizeFile__(IrpContext, Vcb, FileInfo, 0);
             if (!NT_SUCCESS(status)) {
-                BrutePoint();
+                DbgBreakPoint();
                 UDFCloseFile__(IrpContext, Vcb, FileInfo);
             }
             // set NORMAL flag
@@ -3229,7 +3229,7 @@ CreateUndel:
         // allocate space for FileEntry
         if (!NT_SUCCESS(status =
             UDFBuildFileEntry(IrpContext, Vcb, DirInfo, FileInfo, PartNum, ICB_FLAG_AD_IN_ICB, ExtAttrSz, Extended) )) {
-            BrutePoint();
+            DbgBreakPoint();
             try_return (status);
         }
         FEAllocated = TRUE;
@@ -3379,7 +3379,7 @@ CrF__2:
            a separate zero-sector write here is immediately overwritten. */
 #if 0
         if ((i >= 2) && (DirNdx->FName.Buffer[0] == L'.')) {
-            BrutePoint();
+            DbgBreakPoint();
         }
 #endif
 
@@ -3390,7 +3390,7 @@ CrF__2:
             if (!FileInfo->FileIdent ||
                !(FileInfo->FileIdent->fileCharacteristics & FILE_DELETED)) {
                 AdPrint(("Flushing to Discarded block %x\n", FileInfo->Dloc->FELoc.Mapping[0].extLocation));
-                BrutePoint();
+                DbgBreakPoint();
             }
         }
 #endif // UDF_CHECK_DISK_ALLOCATION
@@ -3568,7 +3568,7 @@ UDFCloseFile__Internal(
                 InterlockedDecrement((PLONG)&FileInfo->Dloc->LinkRefCount);
 #ifdef UDF_DBG
         } else {
-            BrutePoint();
+            DbgBreakPoint();
             UDFPrint(("ERROR: Closing unreferenced file!\n"));
 #endif // UDF_DBG
         }
@@ -3576,7 +3576,7 @@ UDFCloseFile__Internal(
             InterlockedDecrement((PLONG)&FileInfo->ParentFile->OpenCount);
 #ifdef UDF_DBG
         } else {
-            BrutePoint();
+            DbgBreakPoint();
             UDFPrint(("ERROR: Closing unopened file!\n"));
 #endif // UDF_DBG
         }
@@ -3592,7 +3592,7 @@ UDFCloseFile__Internal(
             InterlockedDecrement((PLONG)&FileInfo->Dloc->LinkRefCount);
 #ifdef UDF_DBG
     } else {
-        BrutePoint();
+        DbgBreakPoint();
         UDFPrint(("ERROR: Closing unreferenced file!\n"));
 #endif // UDF_DBG
     }
@@ -3604,7 +3604,7 @@ UDFCloseFile__Internal(
             InterlockedDecrement((PLONG)&DirInfo->OpenCount);
 #ifdef UDF_DBG
         } else {
-            BrutePoint();
+            DbgBreakPoint();
             UDFPrint(("ERROR: Closing unopened file!\n"));
 #endif // UDF_DBG
         }
@@ -3632,7 +3632,7 @@ UDFCloseFile__Internal(
         if (DirInfo) {
             PartNum = UDFGetRefPartNumByPhysLba(Vcb, DirInfo->Dloc->FELoc.Mapping[0].extLocation);
         } else {
-            BrutePoint();
+            DbgBreakPoint();
         }
     }
 #ifdef UDF_CHECK_DISK_ALLOCATION
@@ -3643,7 +3643,7 @@ UDFCloseFile__Internal(
         if (UDFIsAStreamDir(FileInfo)) {
             if (!UDFIsSDirDeleted(FileInfo)) {
                 UDFPrint(("  Not DELETED SDir\n"));
-                BrutePoint();
+                DbgBreakPoint();
             }
             ASSERT(!FileInfo->Dloc->FELoc.Modified);
         } else
@@ -3657,7 +3657,7 @@ UDFCloseFile__Internal(
                 AdPrint(("  Not DELETED\n"));
             ASSERT(FileInfo->Dloc->FELoc.Mapping[0].extLocation);
             AdPrint(("Flushing to Discarded block %x\n", FileInfo->Dloc->FELoc.Mapping[0].extLocation));
-            BrutePoint();
+            DbgBreakPoint();
         } else {
             UDFCheckSpaceAllocation(Vcb, 0, FileInfo->Dloc->DataLoc.Mapping, AS_FREE); // check if free
             UDFCheckSpaceAllocation(Vcb, 0, FileInfo->Dloc->FELoc.Mapping, AS_FREE); // check if free
@@ -4202,7 +4202,7 @@ mark_data_map_0:
             } else {
                 if ((FileInfo->Dloc->DataLoc.Mapping[0].extLength & UDF_EXTENT_LENGTH_MASK)
                        > Vcb->SectorSize) {
-                    BrutePoint();
+                    DbgBreakPoint();
                     FileInfo->Dloc->DataLoc.Mapping[0].extLength -= Vcb->SectorSize;
                     FileInfo->Dloc->DataLoc.Mapping[0].extLocation += 1;
                     goto mark_data_map_0;
@@ -5130,11 +5130,11 @@ UDFFlushFEInternal(
 #ifdef UDF_DBG
 /*    if (UDFIsADirectory(FileInfo) && (UDFGetFileSize(FileInfo) < 0x28) &&
        !UDFIsDeleted(UDFDirIndex(DirInfo->Dloc->DirIndex, FileInfo->Index)) ) {
-        BrutePoint();
+        DbgBreakPoint();
     }*/
 //    ASSERT(FileInfo->Dloc->FELoc.Mapping[0].extLocation);
     if (FileInfo->Dloc->FELoc.Offset) {
-        BrutePoint();
+        DbgBreakPoint();
     }
     if (FileInfo->Dloc->AllocLoc.Mapping) {
         ASSERT(AllocMode != ICB_FLAG_AD_IN_ICB);
@@ -5229,7 +5229,7 @@ retry_flush_FE:
 /*    if (FileInfo->Fcb &&
        ((FileInfo->Dloc->FELoc.Mapping[0].extLocation > Vcb->SessionEndLba) ||
         (Vcb->BitmapFcb ? UDFIsBitmapBitFree(Vcb, FileInfo->Dloc->FELoc.Mapping[0].extLocation - Vcb->Partitions[0].PartitionRoot) : UDFGetFreeBit(((uint32*)(Vcb->FSBM_Bitmap)), FileInfo->Dloc->FELoc.Mapping[0].extLocation - Vcb->Partitions[0].PartitionRoot))) ) {
-        BrutePoint();
+        DbgBreakPoint();
     }*/
 /*    if (FileInfo->Dloc->FELoc.Mapping[0].extLocation) {
         ASSERT( FileInfo->Dloc->FileEntry->tagLocation ==
@@ -5334,7 +5334,7 @@ relocate_FE:
                     goto retry_flush_FE;
                 }
             }
-            BrutePoint();
+            DbgBreakPoint();
             return status;
         }
         FileInfo->Dloc->FE_Flags &= ~UDF_FE_FLAG_FE_MODIFIED;
@@ -5421,7 +5421,7 @@ UDFFlushFI(
         if (lba == (uint32)LBA_OUT_OF_EXTENT) {
             // write 1 byte
             if (!NT_SUCCESS(status = UDFWriteFile__(IrpContext, Vcb, DirInfo, DirNdx->Offset, 1, FALSE, (int8*)(FileInfo->FileIdent), &WrittenBytes) )) {
-                BrutePoint();
+                DbgBreakPoint();
                 return status;
             }
             lba = UDFExtentOffsetToLba(Vcb, DirInfo->Dloc->DataLoc.Mapping,
@@ -5429,7 +5429,7 @@ UDFFlushFI(
             AdPrint(("  allocated FI lba %x\n", lba));
             // check if requested Offset is allocated
             if (lba == (uint32)LBA_OUT_OF_EXTENT) {
-                BrutePoint();
+                DbgBreakPoint();
                 return STATUS_UNSUCCESSFUL;
             }
         }
@@ -5505,7 +5505,7 @@ UDFFlushFile__Internal(
         if (FileInfo->ParentFile) {
             PartNum = UDFGetRefPartNumByPhysLba(Vcb, FileInfo->ParentFile->Dloc->FELoc.Mapping[0].extLocation);
         } else {
-            BrutePoint();
+            DbgBreakPoint();
         }
     }
 #ifdef UDF_CHECK_DISK_ALLOCATION
@@ -5515,7 +5515,7 @@ UDFFlushFile__Internal(
         if (UDFIsAStreamDir(FileInfo)) {
             if (!UDFIsSDirDeleted(FileInfo)) {
                 UDFPrint(("  Not DELETED SDir\n"));
-                BrutePoint();
+                DbgBreakPoint();
             }
             ASSERT(!FileInfo->Dloc->FELoc.Modified);
         } else
@@ -5527,7 +5527,7 @@ UDFFlushFile__Internal(
                !(FileInfo->FileIdent->fileCharacteristics & FILE_DELETED))
                 AdPrint(("  Not DELETED\n"));
             AdPrint(("Flushing to Discarded block %x\n", FileInfo->Dloc->FELoc.Mapping[0].extLocation));
-            BrutePoint();
+            DbgBreakPoint();
         }
     }
 #endif // UDF_CHECK_DISK_ALLOCATION
@@ -6216,7 +6216,7 @@ UDFOpenStreamDir__(
         // All right. Look for parallel SDir (if any)
         if (SDirInfo->ParentFile != FileInfo) {
             ParSDirInfo = UDFLocateParallelFI(FileInfo, 0, SDirInfo);
-            BrutePoint();
+            DbgBreakPoint();
             if (ParSDirInfo->ParentFile != FileInfo) {
                 SDirInfo = (PUDF_FILE_INFO)MyAllocatePoolTag__(UDF_FILE_INFO_MT,sizeof(UDF_FILE_INFO), MEM_SDFINF_TAG);
                 *_SDirInfo = SDirInfo;

@@ -234,7 +234,7 @@ UDFMergeMappings(
         RtlCopyMemory(((int8*)NewExt)+len-sizeof(EXTENT_MAP), (int8*)Extent2, len2);
     } else {
         ExtPrint(("UDFMergeMappings failed\n"));
-        BrutePoint();
+        DbgBreakPoint();
     }
     return NewExt;
 } // end UDFMergeMappings()
@@ -986,7 +986,7 @@ UDFBuildShortAllocDescs(
     }
     Alloc = (PSHORT_AD)MyAllocatePoolTag__(NonPagedPool, (len+1)*sizeof(SHORT_AD), MEM_SHAD_TAG);
     if (!Alloc) {
-        BrutePoint();
+        DbgBreakPoint();
         return STATUS_INSUFFICIENT_RESOURCES;
     }
     // fill contiguous AllocDesc buffer (decribing UserData)
@@ -1009,7 +1009,7 @@ UDFBuildShortAllocDescs(
     if (!(FileInfo->Dloc->AllocLoc.Mapping)) {
         FileInfo->Dloc->AllocLoc.Mapping = (PEXTENT_MAP)MyAllocatePoolTag__(NonPagedPool, 2 * sizeof(EXTENT_MAP), MEM_EXTMAP_TAG);
         if (!(FileInfo->Dloc->AllocLoc.Mapping)) {
-            BrutePoint();
+            DbgBreakPoint();
             MyFreePool__(Alloc);
             return STATUS_INSUFFICIENT_RESOURCES;
         }
@@ -1050,14 +1050,14 @@ UDFBuildShortAllocDescs(
         if (!(*Buff)) {
             status = STATUS_INSUFFICIENT_RESOURCES;
             UDFPrint(("UDFResizeExtent() failed (%x)\n",status));
-            BrutePoint();
+            DbgBreakPoint();
             goto sh_alloc_err;
         }
         if (UDFGetExtentLength(AllocExtent->Mapping) < NewLen) {
             status = UDFResizeExtent(IrpContext, Vcb, PartNum, NewLen, TRUE, AllocExtent);
             if (!NT_SUCCESS(status)) {
                 UDFPrint(("UDFResizeExtent(2) failed (%x)\n",status));
-                BrutePoint();
+                DbgBreakPoint();
 sh_alloc_err:
                 MyFreePool__(Alloc);
                 return status;
@@ -1868,7 +1868,7 @@ UDFMarkNotAllocatedAsAllocated(
     // Just belive that it works
     /*lba = */
 #ifndef ALLOW_SPARSE
-    BrutePoint();
+    DbgBreakPoint();
 #endif
     AdPrint(("Not->Alloc  ExtInfo %x, Extent %x\n", ExtInfo, Extent));
     UDFExtentOffsetToLba(Vcb, ExtInfo->Mapping, Offset, NULL, NULL, NULL, &i);
@@ -2022,7 +2022,7 @@ UDFMarkAllocatedAsNotXXX(
     /*lba = */
 #ifndef ALLOW_SPARSE
     if (Deallocate) {
-        BrutePoint();
+        DbgBreakPoint();
     }
 #endif
 
@@ -2031,7 +2031,7 @@ UDFMarkAllocatedAsNotXXX(
     DeadMapping[0].extLocation =
         UDFExtentOffsetToLba(Vcb, ExtInfo->Mapping, Offset, NULL, NULL, NULL, &i);
     if (i == (ULONG)-1) {
-        BrutePoint();
+        DbgBreakPoint();
         return STATUS_INVALID_PARAMETER;
     }
     DeadMapping[0].extLength = Extent[i].extLength;
@@ -2462,7 +2462,7 @@ tail_cached:;
            (flags != EXTENT_NOT_RECORDED_NOT_ALLOCATED)) {
             AdPrint(("i=%x, lba=%x, len=%x\n",i,lba,lim));
             ASSERT(lim);
-//            BrutePoint();
+//            DbgBreakPoint();
             EXTENT_MAP ClrMap[2];
 
             ClrMap[0].extLength = ALIGN_DOWN_BY(lim - 1, LBS);
@@ -2978,7 +2978,7 @@ UDFReadExtentLocation(
     while(Length && SubExtInfoSz) {
         // EOF check
         if (Lba == LBA_OUT_OF_EXTENT) {
-            BrutePoint();
+            DbgBreakPoint();
             return STATUS_END_OF_FILE;
         }
         Extent += (Skip_MapEntries + 1);
@@ -3078,7 +3078,7 @@ UDFWriteExtent(
             // rebuild mapping, allocate space, etc.
             // to indicate this, set Buffer to NULL
             AdPrint(("UDFWriteExtent: Prepare\n"));
-            BrutePoint();
+            DbgBreakPoint();
             _WrittenBytes = 0;
             status = UDFWriteExtent(Vcb, ExtInfo, Offset, Length, *//*Direct*//*FALSE, NULL, &_WrittenBytes);
             if (!NT_SUCCESS(status)) {

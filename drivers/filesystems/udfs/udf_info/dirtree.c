@@ -340,7 +340,7 @@ UDFDirIndexScan(
                                                   FileInfo);
 #ifdef UDF_DBG
                 if (ParFileInfo->ParentFile != Context->DirInfo) {
-                    BrutePoint();
+                    DbgBreakPoint();
                 }
 #endif // UDF_DBG
                 FileInfo = ParFileInfo;
@@ -575,7 +575,7 @@ UDFIndexDirectory(
     }
     DirPrint(("  final Offset %x\n", Offset));
     if (Offset > ExtInfo->Length) {
-        BrutePoint();
+        DbgBreakPoint();
         UDFPrint(("  Unexpected end of Dir\n"));
         DbgFreePool(buff);
         return STATUS_FILE_CORRUPT_ERROR;
@@ -688,12 +688,12 @@ UDFIndexDirectory(
              (Vcb->BitmapFcb ? UDFIsBitmapBitFree(Vcb, UDFPartLbaToPhys(Vcb, &(DirNdx->FileEntryLoc)) - Vcb->Partitions[0].PartitionRoot) : UDFGetFreeBit(((uint32*)(Vcb->FSBM_Bitmap)), UDFPartLbaToPhys(Vcb, &(DirNdx->FileEntryLoc)) - Vcb->Partitions[0].PartitionRoot))) {
 
             AdPrint(("Ref to Discarded block %x\n",UDFPartLbaToPhys(Vcb, &(DirNdx->FileEntryLoc)) ));
-            BrutePoint();
+            DbgBreakPoint();
             FileId->fileCharacteristics |= FILE_DELETED;
         } else
         if (UDFPartLbaToPhys(Vcb, &(DirNdx->FileEntryLoc)) == LBA_OUT_OF_EXTENT) {
             AdPrint(("Ref to Invalid block %x\n", UDFPartLbaToPhys(Vcb, &(DirNdx->FileEntryLoc)) ));
-            BrutePoint();
+            DbgBreakPoint();
             FileId->fileCharacteristics |= FILE_DELETED;
         }
 #endif // UDF_CHECK_DISK_ALLOCATION
@@ -1202,7 +1202,7 @@ UDFGetDirIndexByFileInfo(
     ValidateFileInfo(FileInfo);
 
     if (!FileInfo) {
-        BrutePoint();
+        DbgBreakPoint();
         return NULL;
     }
     if (FileInfo->ParentFile) {
@@ -1542,7 +1542,7 @@ UDFLocateParallelFI(
         ParFileInfo = ParFileInfo->NextLinkedFile;
     }
     return ParFileInfo;
-//   BrutePoint();
+//   DbgBreakPoint();
 } // end UDFLocateParallelFI()
 
 /*
@@ -1577,7 +1577,7 @@ UDFLocateAnyParallelFI(
     }
     return ParFileInfo;*/
     return NotFound ? NULL : ParFileInfo;
-//   BrutePoint();
+//   DbgBreakPoint();
 } // end UDFLocateAnyParallelFI()
 
 void

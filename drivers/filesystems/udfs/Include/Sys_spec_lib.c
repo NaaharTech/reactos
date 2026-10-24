@@ -687,7 +687,7 @@ UDFDoesOSAllowFilePretendDeleted__(
     if (!DirNdx) return STATUS_CANNOT_DELETE;
     // we can't hide file that is not marked as deleted
     if (!(DirNdx->FileCharacteristics & FILE_DELETED)) {
-        BrutePoint();
+        DbgBreakPoint();
 
         if (!(FileInfo->Fcb->FcbState & (UDF_FCB_DELETE_ON_CLOSE |
                                         UDF_FCB_DELETED) )) {

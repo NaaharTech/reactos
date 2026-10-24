@@ -358,7 +358,7 @@ UDFPartLbaToPhys(
                 i, Vcb->Partitions[i].PartitionRoot, Addr->logicalBlockNum,
                 Vcb->Partitions[i].PartitionLen)
         );
-        BrutePoint();
+        DbgBreakPoint();
         return LBA_OUT_OF_EXTENT;
     }
     if (Vcb->MetadataFileInfo && (i == Vcb->MetadataRef))
@@ -911,14 +911,14 @@ UDFPartLbaToPhysCompat(
         if (Vcb->Partitions[i].PartitionNum == Addr->partitionReferenceNum) {
             a = Vcb->Partitions[i].PartitionRoot + Addr->logicalBlockNum;
             if (a > Vcb->LastPossibleLBA) {
-                BrutePoint();
+                DbgBreakPoint();
             }
             return a;
         }
     }
     a = Vcb->Partitions[i-1].PartitionRoot + Addr->logicalBlockNum;
     if (a > Vcb->LastPossibleLBA) {
-        BrutePoint();
+        DbgBreakPoint();
     }
     return a;
 } // end UDFPartLbaToPhysCompat()*/
@@ -1367,12 +1367,12 @@ UDFCheckSpaceAllocation_(
             ASSERT(len);
             for(j=0;j<len;j++) {
                 if (lbn+j >= Vcb->FSBM_BitCount) {
-                    BrutePoint();
+                    DbgBreakPoint();
                     AdPrint(("USED Mapping covers block(s) beyond bitmap @%x\n",lba+j));
                     break;
                 }
                 if (Vcb->BitmapFcb ? UDFIsBitmapBitFree(Vcb, lbn+j) : !UDFGetUsedBit(Vcb->FSBM_Bitmap, lbn+j)) {
-                    BrutePoint();
+                    DbgBreakPoint();
                     AdPrint(("USED Mapping covers FREE block(s) @%x\n",lba+j));
                     break;
                 }
@@ -1383,12 +1383,12 @@ UDFCheckSpaceAllocation_(
             ASSERT(len);
             for(j=0;j<len;j++) {
                 if (lbn+j >= Vcb->FSBM_BitCount) {
-                    BrutePoint();
+                    DbgBreakPoint();
                     AdPrint(("USED Mapping covers block(s) beyond bitmap @%x\n",lba+j));
                     break;
                 }
                 if (Vcb->BitmapFcb ? !UDFIsBitmapBitFree(Vcb, lbn+j) : !UDFGetFreeBit(Vcb->FSBM_Bitmap, lbn+j)) {
-                    BrutePoint();
+                    DbgBreakPoint();
                     AdPrint(("FREE Mapping covers USED block(s) @%x\n",lba+j));
                     break;
                 }
@@ -1793,7 +1793,7 @@ no_free_space_err:
             ExtInfo->Mapping = UDFExtentToMapping(&Ext);
 #endif // UDF_TRACK_ALLOC_FREE_EXTENT
             if (!ExtInfo->Mapping) {
-                BrutePoint();
+                DbgBreakPoint();
                 UDFReleaseResource(&(Vcb->BitMapResource1));
                 ExtInfo->Length = 0;
                 return STATUS_INSUFFICIENT_RESOURCES;
@@ -1809,7 +1809,7 @@ no_free_space_err:
             // update existing
             Map = UDFExtentToMapping(&Ext);
             if (!Map) {
-                BrutePoint();
+                DbgBreakPoint();
                 UDFReleaseResource(&(Vcb->BitMapResource1));
                 ExtInfo->Length = UDFGetExtentLength(ExtInfo->Mapping);
                 return STATUS_INSUFFICIENT_RESOURCES;
@@ -1819,7 +1819,7 @@ no_free_space_err:
             MyFreePool__(Map);
         }
         if (!ExtInfo->Mapping) {
-            BrutePoint();
+            DbgBreakPoint();
             UDFReleaseResource(&(Vcb->BitMapResource1));
             ExtInfo->Length = 0;
             return STATUS_INSUFFICIENT_RESOURCES;

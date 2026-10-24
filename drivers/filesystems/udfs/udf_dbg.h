@@ -100,20 +100,6 @@
 
 #ifdef UDF_DBG
 
-#ifdef _X86_
-// This is an illegal use of INT3
-#define UDFBreakPoint() { __asm int 3 }
-#else // _X86_
-
-#define UDFBreakPoint() DbgBreakPoint()
-#endif // _X86_
-
-#ifdef BRUTE
-#define BrutePoint() UDFBreakPoint()
-#else
-#define BrutePoint() {}
-#endif // BRUTE
-
 #ifdef CHECK_REF_COUNTS
 #define ASSERT_REF(_a_) ASSERT(_a_)
 #else
@@ -157,11 +143,11 @@ VOID DebugFreePool(PVOID addr);
 {    /* validate FileInfo */            \
     if(!fi || (fi)->IntegrityTag) {            \
         KdPrint(("UDF: ERROR! Using deallocated structure !!!\n"));\
-        BrutePoint();                   \
+        DbgBreakPoint();                \
     }                                   \
     if(fi && !fi->Dloc) {               \
         KdPrint(("UDF: ERROR! FI without Dloc !!!\n"));\
-        BrutePoint();                   \
+        DbgBreakPoint();                \
     }                                   \
 }
 
@@ -181,8 +167,6 @@ VOID DebugFreePool(PVOID addr);
 
 #define ASSERT_REF(_a_) {NOTHING;}
 
-#define UDFBreakPoint() {}
-#define BrutePoint() {}
 #define ValidateFileInfo(fi)  {}
 
 #endif // UDF_DBG
