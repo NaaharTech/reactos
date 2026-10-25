@@ -859,6 +859,10 @@ Return Value:
             NewFcb->Vcb = IrpContext->Vcb;
             NewFcb->FileId = FileId;
 
+            // Failed mount cleanup can run before UDFInitializeFCB.
+            InitializeListHead(&NewFcb->ParentLcbQueue);
+            InitializeListHead(&NewFcb->ChildLcbQueue);
+
             //  Now create the non-paged section object.
 
             NewFcb->FcbNonpaged = UDFCreateFcbNonpaged(IrpContext);
