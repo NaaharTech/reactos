@@ -1445,6 +1445,25 @@ UDFLoadLogicalVolInt(
 
             struct LogicalVolIntegrityDesc* lvid = (struct LogicalVolIntegrityDesc*)Buf;
 
+            /* A fixed disk's clean checkpoint must cover both partition
+             * tables and the implementation-use file/directory counters.
+             * Each partition contributes one free and one size entry. */
+            if (Vcb->TargetDeviceObject->DeviceType == FILE_DEVICE_DISK &&
+                SectorSize(Vcb) == 512 &&
+                (lvid->numOfPartitions == 0 ||
+                 lvid->numOfPartitions > (512 - 120) / (2 * sizeof(uint32)) ||
+                 lvid->descTag.descCRCLength <
+                     120 - sizeof(tag) + 2 * sizeof(uint32) * lvid->numOfPartitions ||
+                 lvid->descTag.descCRCLength > SectorSize(Vcb) - sizeof(tag) ||
+                 lvid->descTag.descCRC !=
+                     UDFCrc((uint8*)Buf + sizeof(tag),
+                            lvid->descTag.descCRCLength, 0))) {
+                UDFPrint(("UDF: untrusted LVID CRC at %x; read-only mount\n",
+                          Lbn));
+                Vcb->VcbState |= VCB_STATE_VOLUME_READ_ONLY;
+                try_return(RC = STATUS_SUCCESS);
+            }
+
             if (lvid->integrityType != INTEGRITY_TYPE_OPEN &&
                 lvid->integrityType != INTEGRITY_TYPE_CLOSE) {
                 try_return(RC = STATUS_DISK_CORRUPT_ERROR);

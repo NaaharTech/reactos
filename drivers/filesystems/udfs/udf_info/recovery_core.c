@@ -1363,6 +1363,10 @@ UdfsRecoveryPeekIntegrity(const UDFS_RECOVERY_READER *reader,
         if (Read16(sector) != 9) return UdfsRecoveryProbeCorrupt;
         status = ValidateTag(sector, 9, extentLba + i);
         if (status != UdfsRecoveryProbeValidLayout) return status;
+        /* Cover both partition tables and the file/directory counters
+         * before CLOSED can suppress the full recovery probe. */
+        if (Read16(sector + 10) < 136 - 16)
+            return UdfsRecoveryProbeCorrupt;
         if (Read32(sector + 72) != 2 || Read32(sector + 28) > 1)
             return UdfsRecoveryProbeUnsupported;
         *integrityType = (uint8_t)Read32(sector + 28);
