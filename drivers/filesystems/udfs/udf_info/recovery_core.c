@@ -1314,6 +1314,85 @@ SelectRecoveryDescriptors(const UDFS_RECOVERY_READER *reader,
     return status;
 }
 
+/* Match UDFLoadLogicalVolInt's prevailing descriptor walk: an LVID with a
+ * nextIntegrityExt jumps to that extent before the remaining sectors of the
+ * current extent. The earlier CLOSED descriptor must not hide a later OPEN
+ * checkpoint. Bound both each extent and the total walk before any repair. */
+static UDFS_RECOVERY_PROBE_STATUS
+ReadPrevailingIntegrity(const UDFS_RECOVERY_READER *reader,
+                        UDFS_RECOVERY_PROBE *result, uint32_t extentBytes,
+                        uint32_t extentLba, uint8_t *sector,
+                        uint8_t *prevailing, uint32_t *prevailingLba,
+                        uint8_t *integrityType)
+{
+    uint32_t visited = 0;
+    uint8_t lastType = 0xff;
+    int found = 0;
+
+    *integrityType = 0xff;
+    if (prevailingLba) *prevailingLba = 0;
+    for (;;) {
+        uint32_t i, count;
+
+        if (!extentBytes || (extentBytes & (UDFS_RECOVERY_SECTOR_SIZE - 1)))
+            return UdfsRecoveryProbeCorrupt;
+        if (extentBytes > 256 * UDFS_RECOVERY_SECTOR_SIZE)
+            return UdfsRecoveryProbeUnsupported;
+        count = extentBytes / UDFS_RECOVERY_SECTOR_SIZE;
+        if (extentLba >= reader->SectorCount ||
+            count > reader->SectorCount - extentLba)
+            return UdfsRecoveryProbeCorrupt;
+        for (i = 0; i < count; ++i) {
+            uint32_t lba = extentLba + i;
+            uint32_t nextBytes, nextLba;
+            uint16_t kind;
+            UDFS_RECOVERY_PROBE_STATUS status;
+
+            result->FailureLba = lba;
+            if (++visited > 1024)
+                return UdfsRecoveryProbeUnsupported;
+            status = ReadSector(reader, result, lba, sector);
+            if (status != UdfsRecoveryProbeValidLayout) return status;
+            kind = Read16(sector);
+            if (kind == 8) {
+                status = ValidateTag(sector, 8, lba);
+                if (status != UdfsRecoveryProbeValidLayout) return status;
+                if (!found) return UdfsRecoveryProbeCorrupt;
+                result->FailureLba = 0;
+                *integrityType = lastType;
+                return UdfsRecoveryProbeValidLayout;
+            }
+            if (kind != 9) return UdfsRecoveryProbeCorrupt;
+            status = ValidateTag(sector, 9, lba);
+            if (status != UdfsRecoveryProbeValidLayout) return status;
+            /* A CLOSED decision requires CRC coverage of the integrity type,
+             * free/size tables and counters, not just a valid tag checksum. */
+            if (Read16(sector + 10) < 136 - 16)
+                return UdfsRecoveryProbeCorrupt;
+            if (Read32(sector + 72) != 2 || Read32(sector + 28) > 1)
+                return UdfsRecoveryProbeUnsupported;
+            lastType = (uint8_t)Read32(sector + 28);
+            if (prevailing) memcpy(prevailing, sector,
+                                   UDFS_RECOVERY_SECTOR_SIZE);
+            if (prevailingLba) *prevailingLba = lba;
+            found = 1;
+            nextBytes = Read32(sector + 32);
+            if (!nextBytes) continue;
+            nextLba = Read32(sector + 36);
+            if (nextLba == lba) return UdfsRecoveryProbeCorrupt;
+            extentBytes = nextBytes;
+            extentLba = nextLba;
+            goto next_extent;
+        }
+        if (!found) return UdfsRecoveryProbeCorrupt;
+        result->FailureLba = 0;
+        *integrityType = lastType;
+        return UdfsRecoveryProbeValidLayout;
+next_extent:
+        ;
+    }
+}
+
 UDFS_RECOVERY_PROBE_STATUS
 UdfsRecoveryPeekIntegrity(const UDFS_RECOVERY_READER *reader,
                           uint8_t *integrityType)
@@ -1324,8 +1403,6 @@ UdfsRecoveryPeekIntegrity(const UDFS_RECOVERY_READER *reader,
     UDFS_RECOVERY_PROBE scratch;
     UDFS_RECOVERY_PROBE_STATUS status;
     uint32_t extentBytes, extentLba;
-    uint32_t i, count;
-    int haveLvid = 0;
 
     if (!reader || !reader->ReadSector || !integrityType ||
         reader->SectorCount <= 256)
@@ -1345,34 +1422,8 @@ UdfsRecoveryPeekIntegrity(const UDFS_RECOVERY_READER *reader,
 
     extentBytes = Read32(lvd + 432) & 0x3fffffff;
     extentLba = Read32(lvd + 436);
-    if (!extentBytes || extentBytes > 256 * UDFS_RECOVERY_SECTOR_SIZE)
-        return UdfsRecoveryProbeUnsupported;
-    count = (extentBytes + UDFS_RECOVERY_SECTOR_SIZE - 1) /
-            UDFS_RECOVERY_SECTOR_SIZE;
-    if (extentLba >= reader->SectorCount ||
-        count > reader->SectorCount - extentLba)
-        return UdfsRecoveryProbeCorrupt;
-    for (i = 0; i < count; ++i) {
-        status = ReadSector(reader, &scratch, extentLba + i, sector);
-        if (status != UdfsRecoveryProbeValidLayout) return status;
-        if (Read16(sector) == 8) {
-            status = ValidateTag(sector, 8, extentLba + i);
-            if (status != UdfsRecoveryProbeValidLayout) return status;
-            break;
-        }
-        if (Read16(sector) != 9) return UdfsRecoveryProbeCorrupt;
-        status = ValidateTag(sector, 9, extentLba + i);
-        if (status != UdfsRecoveryProbeValidLayout) return status;
-        /* Cover both partition tables and the file/directory counters
-         * before CLOSED can suppress the full recovery probe. */
-        if (Read16(sector + 10) < 136 - 16)
-            return UdfsRecoveryProbeCorrupt;
-        if (Read32(sector + 72) != 2 || Read32(sector + 28) > 1)
-            return UdfsRecoveryProbeUnsupported;
-        *integrityType = (uint8_t)Read32(sector + 28);
-        haveLvid = 1;
-    }
-    return haveLvid ? UdfsRecoveryProbeValidLayout : UdfsRecoveryProbeCorrupt;
+    return ReadPrevailingIntegrity(reader, &scratch, extentBytes, extentLba,
+                                   sector, NULL, NULL, integrityType);
 }
 
 UDFS_RECOVERY_PROBE_STATUS
@@ -1570,44 +1621,11 @@ UdfsRecoveryProbeLayout(const UDFS_RECOVERY_READER *reader,
     }
     result->BitmapContentsScanned = 1;
 
-    {
-        uint32_t extentBytes = Read32(lvd + 432) & 0x3fffffff;
-        uint32_t extentLba = Read32(lvd + 436);
-        uint32_t extentSectors;
-        int found = 0;
-        if (!extentBytes || extentBytes > 256 * UDFS_RECOVERY_SECTOR_SIZE) {
-            status = UdfsRecoveryProbeUnsupported;
-            goto done;
-        }
-        extentSectors = (extentBytes + UDFS_RECOVERY_SECTOR_SIZE - 1) /
-                        UDFS_RECOVERY_SECTOR_SIZE;
-        if (extentLba >= reader->SectorCount ||
-            extentSectors > reader->SectorCount - extentLba) {
-            status = UdfsRecoveryProbeCorrupt;
-            goto done;
-        }
-        for (i = 0; i < extentSectors; ++i) {
-            uint16_t kind;
-            status = ReadSector(reader, result, extentLba + i, sector);
-            if (status != UdfsRecoveryProbeValidLayout) goto done;
-            kind = Read16(sector);
-            if (kind == 8) {
-                status = ValidateTag(sector, 8, extentLba + i);
-                if (status != UdfsRecoveryProbeValidLayout) goto done;
-                break;
-            }
-            if (kind != 9) {
-                status = UdfsRecoveryProbeCorrupt;
-                goto done;
-            }
-            status = ValidateTag(sector, 9, extentLba + i);
-            if (status != UdfsRecoveryProbeValidLayout) goto done;
-            memcpy(prevailingLvid, sector, UDFS_RECOVERY_SECTOR_SIZE);
-            result->PrevailingLvidLba = extentLba + i;
-            found = 1;
-        }
-        if (!found) { status = UdfsRecoveryProbeCorrupt; goto done; }
-    }
+    status = ReadPrevailingIntegrity(reader, result,
+                Read32(lvd + 432) & 0x3fffffff, Read32(lvd + 436),
+                sector, prevailingLvid, &result->PrevailingLvidLba,
+                &result->LvidIntegrityType);
+    if (status != UdfsRecoveryProbeValidLayout) goto done;
     if (Read16(prevailingLvid + 10) < 136 - 16) {
         status = UdfsRecoveryProbeCorrupt;
         goto done;
