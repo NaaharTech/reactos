@@ -1476,16 +1476,44 @@ UDFDirIndex(
 #define UDFClrBit(arr, bit) ( (((uint32*)(arr))[(bit)>>5]) &= (~(((uint32)1) << ((bit)&31))) )
 
 #define UDFSetBits(arr, bit, bc) \
-{uint32 j;                       \
-    for(j=0;j<bc;j++) {          \
-        UDFSetBit(arr, (bit)+j); \
-}}
+{                                                  \
+    uint32 udfBit = (uint32)(bit);                 \
+    uint32 udfRemaining = (uint32)(bc);            \
+    uint32 *udfArray = (uint32 *)(arr);            \
+    while (udfRemaining != 0) {                    \
+        uint32 udfOffset = udfBit & 31;            \
+        uint32 udfChunk = 32 - udfOffset;          \
+        uint32 udfMask;                            \
+        if (udfChunk > udfRemaining) {             \
+            udfChunk = udfRemaining;               \
+        }                                          \
+        udfMask = (~(uint32)0 >> (32 - udfChunk))  \
+                  << udfOffset;                    \
+        udfArray[udfBit >> 5] |= udfMask;          \
+        udfBit += udfChunk;                        \
+        udfRemaining -= udfChunk;                  \
+    }                                              \
+}
 
 #define UDFClrBits(arr, bit, bc) \
-{uint32 j;                       \
-    for(j=0;j<bc;j++) {          \
-        UDFClrBit(arr, (bit)+j); \
-}}
+{                                                  \
+    uint32 udfBit = (uint32)(bit);                 \
+    uint32 udfRemaining = (uint32)(bc);            \
+    uint32 *udfArray = (uint32 *)(arr);            \
+    while (udfRemaining != 0) {                    \
+        uint32 udfOffset = udfBit & 31;            \
+        uint32 udfChunk = 32 - udfOffset;          \
+        uint32 udfMask;                            \
+        if (udfChunk > udfRemaining) {             \
+            udfChunk = udfRemaining;               \
+        }                                          \
+        udfMask = (~(uint32)0 >> (32 - udfChunk))  \
+                  << udfOffset;                    \
+        udfArray[udfBit >> 5] &= ~udfMask;         \
+        udfBit += udfChunk;                        \
+        udfRemaining -= udfChunk;                  \
+    }                                              \
+}
 
 #define UDFGetUsedBit(arr,bit)      (!UDFGetBit(arr,bit))
 #define UDFGetFreeBit(arr,bit)      UDFGetBit(arr,bit)
