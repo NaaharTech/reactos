@@ -975,76 +975,81 @@ GraphRun(const UDFS_RECOVERY_READER *reader, UDFS_RECOVERY_PROBE *result,
          const RECOVERY_EXTENT_LIST *mirrorFile,
          const RECOVERY_EXTENT_LIST *bitmapFile,
          const uint8_t lvd[UDFS_RECOVERY_SECTOR_SIZE],
-         uint32_t bitmapExtentBytes)
+         uint32_t bitmapExtentBytes,
+         uint8_t fsd[UDFS_RECOVERY_SECTOR_SIZE])
 {
-    RECOVERY_GRAPH graph;
+    RECOVERY_GRAPH *graph;
     UDFS_RECOVERY_PROBE_STATUS status = UdfsRecoveryProbeValidLayout;
-    uint8_t fsd[UDFS_RECOVERY_SECTOR_SIZE];
     uint32_t metadataBytes, i;
     uint32_t fsdEncoded, rootEncoded;
     uint16_t fsdRef;
 
-    memset(&graph, 0, sizeof(graph));
-    graph.Reader = reader;
-    graph.Result = result;
-    graph.Metadata = mainFile;
-    graph.BitmapFile = bitmapFile;
-    graph.ScratchExtents = (RECOVERY_EXTENT_LIST *)reader->Allocate(
-        reader->Context, sizeof(*graph.ScratchExtents));
+    /* Lower-device I/O runs while this graph is live. Keep the graph
+     * and its sector caches off the mount thread's kernel stack. */
+    graph = (RECOVERY_GRAPH *)reader->Allocate(reader->Context,
+                                               sizeof(*graph));
+    if (!graph) return UdfsRecoveryProbeNoMemory;
+    memset(graph, 0, sizeof(*graph));
+    graph->Reader = reader;
+    graph->Result = result;
+    graph->Metadata = mainFile;
+    graph->BitmapFile = bitmapFile;
+    graph->ScratchExtents = (RECOVERY_EXTENT_LIST *)reader->Allocate(
+        reader->Context, sizeof(*graph->ScratchExtents));
     metadataBytes = (uint32_t)(((uint64_t)result->MetadataBlocks + 7) / 8);
-    status = BitmapInitialize(reader, &graph.PhysicalOwned,
+    status = BitmapInitialize(reader, &graph->PhysicalOwned,
                                result->PartitionBlocks);
     if (status != UdfsRecoveryProbeValidLayout) goto done;
-    status = BitmapInitialize(reader, &graph.PhysicalVisited,
+    status = BitmapInitialize(reader, &graph->PhysicalVisited,
                                result->PartitionBlocks);
     if (status != UdfsRecoveryProbeValidLayout) goto done;
-    status = BitmapInitialize(reader, &graph.PhysicalDirs,
+    status = BitmapInitialize(reader, &graph->PhysicalDirs,
                                result->PartitionBlocks);
     if (status != UdfsRecoveryProbeValidLayout) goto done;
-    graph.MetadataOwned = (uint8_t *)reader->Allocate(reader->Context,
+    graph->MetadataOwned = (uint8_t *)reader->Allocate(reader->Context,
                                                        metadataBytes);
-    graph.MetadataVisited = (uint8_t *)reader->Allocate(reader->Context,
+    graph->MetadataVisited = (uint8_t *)reader->Allocate(reader->Context,
                                                          metadataBytes);
-    graph.MetadataDirs = (uint8_t *)reader->Allocate(reader->Context,
+    graph->MetadataDirs = (uint8_t *)reader->Allocate(reader->Context,
                                                       metadataBytes);
-    graph.MetadataInlineFileFes = (uint8_t *)reader->Allocate(
+    graph->MetadataInlineFileFes = (uint8_t *)reader->Allocate(
         reader->Context, metadataBytes);
-    if (!graph.ScratchExtents || !graph.MetadataOwned ||
-        !graph.MetadataVisited || !graph.MetadataDirs ||
-        !graph.MetadataInlineFileFes) {
+    if (!graph->ScratchExtents || !graph->MetadataOwned ||
+        !graph->MetadataVisited || !graph->MetadataDirs ||
+        !graph->MetadataInlineFileFes) {
         status = UdfsRecoveryProbeNoMemory;
         goto done;
     }
-    memset(graph.MetadataOwned, 0, metadataBytes);
-    memset(graph.MetadataVisited, 0, metadataBytes);
-    memset(graph.MetadataDirs, 0, metadataBytes);
-    memset(graph.MetadataInlineFileFes, 0, metadataBytes);
+    memset(graph->MetadataOwned, 0, metadataBytes);
+    memset(graph->MetadataVisited, 0, metadataBytes);
+    memset(graph->MetadataDirs, 0, metadataBytes);
+    memset(graph->MetadataInlineFileFes, 0, metadataBytes);
 
     for (i = 0; i < mainFile->Count; ++i) {
-        status = GraphOwn(&graph, 0, mainFile->Items[i].Lbn,
+        status = GraphOwn(graph, 0, mainFile->Items[i].Lbn,
                            mainFile->Items[i].Bytes);
         if (status != UdfsRecoveryProbeValidLayout) goto done;
     }
     if (result->MetadataDuplicated)
         for (i = 0; i < mirrorFile->Count; ++i) {
-            status = GraphOwn(&graph, 0, mirrorFile->Items[i].Lbn,
+            status = GraphOwn(graph, 0, mirrorFile->Items[i].Lbn,
                                mirrorFile->Items[i].Bytes);
             if (status != UdfsRecoveryProbeValidLayout) goto done;
         }
-    status = GraphOwn(&graph, 0, result->PhysicalBitmapLbn,
+    status = GraphOwn(graph, 0, result->PhysicalBitmapLbn,
                        bitmapExtentBytes);
     if (status != UdfsRecoveryProbeValidLayout) goto done;
-    status = GraphOwn(&graph, 0, result->MetadataMainFeLbn,
+    status = GraphOwn(graph, 0, result->MetadataMainFeLbn,
                        UDFS_RECOVERY_SECTOR_SIZE);
     if (status != UdfsRecoveryProbeValidLayout) goto done;
-    status = GraphOwn(&graph, 0, result->MetadataMirrorFeLbn,
+    status = GraphOwn(graph, 0, result->MetadataMirrorFeLbn,
                        UDFS_RECOVERY_SECTOR_SIZE);
     if (status != UdfsRecoveryProbeValidLayout) goto done;
-    status = GraphOwn(&graph, 0, result->MetadataBitmapFeLbn,
+    status = GraphOwn(graph, 0, result->MetadataBitmapFeLbn,
                        UDFS_RECOVERY_SECTOR_SIZE);
     if (status != UdfsRecoveryProbeValidLayout) goto done;
     for (i = 0; i < bitmapFile->Count; ++i) {
-        status = GraphOwn(&graph, 0, bitmapFile->Items[i].Lbn,
+        status = GraphOwn(graph, 0, bitmapFile->Items[i].Lbn,
                            bitmapFile->Items[i].Bytes);
         if (status != UdfsRecoveryProbeValidLayout) goto done;
     }
@@ -1056,10 +1061,10 @@ GraphRun(const UDFS_RECOVERY_READER *reader, UDFS_RECOVERY_PROBE *result,
         status = UdfsRecoveryProbeUnsupported;
         goto done;
     }
-    status = GraphOwn(&graph, fsdRef, Read32(lvd + 252),
+    status = GraphOwn(graph, fsdRef, Read32(lvd + 252),
                        UDFS_RECOVERY_SECTOR_SIZE);
     if (status != UdfsRecoveryProbeValidLayout) goto done;
-    status = GraphReadLogical(&graph, fsdRef, Read32(lvd + 252), fsd);
+    status = GraphReadLogical(graph, fsdRef, Read32(lvd + 252), fsd);
     if (status != UdfsRecoveryProbeValidLayout) goto done;
     status = ValidateTag(fsd, 256, Read32(lvd + 252));
     if (status != UdfsRecoveryProbeValidLayout) goto done;
@@ -1073,14 +1078,14 @@ GraphRun(const UDFS_RECOVERY_READER *reader, UDFS_RECOVERY_PROBE *result,
         status = UdfsRecoveryProbeUnsupported;
         goto done;
     }
-    status = GraphPush(&graph, Read16(fsd + 408),
+    status = GraphPush(graph, Read16(fsd + 408),
                        Read32(fsd + 404), rootEncoded & 0x3fffffff, 1,
                        Read16(fsd + 408), Read32(fsd + 404));
     if (status != UdfsRecoveryProbeValidLayout) goto done;
 
-    while (graph.QueueCount) {
-        RECOVERY_GRAPH_ENTRY entry = graph.Queue[--graph.QueueCount];
-        status = GraphProcessFile(&graph, &entry);
+    while (graph->QueueCount) {
+        RECOVERY_GRAPH_ENTRY entry = graph->Queue[--graph->QueueCount];
+        status = GraphProcessFile(graph, &entry);
         if (status != UdfsRecoveryProbeValidLayout) {
             result->FailureObjectRef = entry.Ref;
             result->FailureObjectLbn = entry.Lbn;
@@ -1088,7 +1093,7 @@ GraphRun(const UDFS_RECOVERY_READER *reader, UDFS_RECOVERY_PROBE *result,
         }
     }
 
-    if (graph.FileReferences != result->FilesVisited) {
+    if (graph->FileReferences != result->FilesVisited) {
         status = UdfsRecoveryProbeCorrupt;
         goto done;
     }
@@ -1098,12 +1103,12 @@ GraphRun(const UDFS_RECOVERY_READER *reader, UDFS_RECOVERY_PROBE *result,
         uint32_t first = i * 8, remaining = result->PartitionBlocks - first;
         uint8_t value, owned, referencedFree, unowned;
         uint8_t mask = remaining < 8 ? (uint8_t)((1U << remaining) - 1) : 0xff;
-        status = ReadCachedByte(reader, result, &graph.PhysicalBitmapCache,
+        status = ReadCachedByte(reader, result, &graph->PhysicalBitmapCache,
                     result->PartitionStart + result->PhysicalBitmapLbn +
                     byteOffset / UDFS_RECOVERY_SECTOR_SIZE,
                     byteOffset % UDFS_RECOVERY_SECTOR_SIZE, &value);
         if (status != UdfsRecoveryProbeValidLayout) goto done;
-        owned = BitmapReadByte(&graph.PhysicalOwned, i);
+        owned = BitmapReadByte(&graph->PhysicalOwned, i);
         referencedFree = value & owned & mask;
         unowned = (uint8_t)~(value | owned) & mask;
         if (referencedFree) {
@@ -1123,11 +1128,11 @@ GraphRun(const UDFS_RECOVERY_READER *reader, UDFS_RECOVERY_PROBE *result,
         status = MapExtentByte(result, bitmapFile, 24ULL + (i >> 3),
                                &bitmapLba, &bitmapOffset);
         if (status != UdfsRecoveryProbeValidLayout) goto done;
-        status = ReadCachedByte(reader, result, &graph.MetadataBitmapCache,
+        status = ReadCachedByte(reader, result, &graph->MetadataBitmapCache,
                                 bitmapLba, bitmapOffset, &value);
         if (status != UdfsRecoveryProbeValidLayout) goto done;
         if ((value >> (i & 7)) & 1) {
-            if (BitIsSet(graph.MetadataOwned, i)) {
+            if (BitIsSet(graph->MetadataOwned, i)) {
                 if (result->MetadataDuplicated) {
                     uint32_t mainLba, mirrorLba;
                     status = MapMetadataBlock(result, mainFile, i, &mainLba);
@@ -1137,9 +1142,9 @@ GraphRun(const UDFS_RECOVERY_READER *reader, UDFS_RECOVERY_PROBE *result,
                     status = ReadSector(reader, result, mainLba, fsd);
                     if (status != UdfsRecoveryProbeValidLayout) goto done;
                     status = ReadSector(reader, result, mirrorLba,
-                                        graph.PhysicalBitmapCache.Data);
+                                        graph->PhysicalBitmapCache.Data);
                     if (status != UdfsRecoveryProbeValidLayout) goto done;
-                    if (RecoveryDifference(fsd, graph.PhysicalBitmapCache.Data,
+                    if (RecoveryDifference(fsd, graph->PhysicalBitmapCache.Data,
                                UDFS_RECOVERY_SECTOR_SIZE) != 0) {
                         result->FailureLba = mainLba;
                         status = UdfsRecoveryProbeCorrupt;
@@ -1149,7 +1154,7 @@ GraphRun(const UDFS_RECOVERY_READER *reader, UDFS_RECOVERY_PROBE *result,
                 }
                 if (!result->ReferencedFreeMetadataBlocks)
                     result->FirstReferencedFreeMetadataLbn = i;
-                if (BitIsSet(graph.MetadataInlineFileFes, i))
+                if (BitIsSet(graph->MetadataInlineFileFes, i))
                     result->ReferencedFreeInlineFileFeBlocks++;
                 if (result->ReferencedFreeMetadataBlocks <
                     UDFS_RECOVERY_MAX_REPAIR_BLOCKS)
@@ -1157,7 +1162,7 @@ GraphRun(const UDFS_RECOVERY_READER *reader, UDFS_RECOVERY_PROBE *result,
                         result->ReferencedFreeMetadataBlocks] = i;
                 result->ReferencedFreeMetadataBlocks++;
             }
-        } else if (!BitIsSet(graph.MetadataOwned, i)) {
+        } else if (!BitIsSet(graph->MetadataOwned, i)) {
             if (!result->UnownedMetadataBlocks)
                 result->FirstUnownedMetadataLbn = i;
             result->UnownedMetadataBlocks++;
@@ -1170,17 +1175,18 @@ GraphRun(const UDFS_RECOVERY_READER *reader, UDFS_RECOVERY_PROBE *result,
     else
         result->CompleteOwnershipGraph = 1;
 done:
-    if (graph.ScratchExtents) reader->Free(reader->Context, graph.ScratchExtents);
-    if (graph.Queue) reader->Free(reader->Context, graph.Queue);
-    if (graph.UniqueIds) reader->Free(reader->Context, graph.UniqueIds);
-    BitmapRelease(reader, &graph.PhysicalOwned);
-    if (graph.MetadataOwned) reader->Free(reader->Context, graph.MetadataOwned);
-    BitmapRelease(reader, &graph.PhysicalVisited);
-    if (graph.MetadataVisited) reader->Free(reader->Context, graph.MetadataVisited);
-    BitmapRelease(reader, &graph.PhysicalDirs);
-    if (graph.MetadataDirs) reader->Free(reader->Context, graph.MetadataDirs);
-    if (graph.MetadataInlineFileFes)
-        reader->Free(reader->Context, graph.MetadataInlineFileFes);
+    if (graph->ScratchExtents) reader->Free(reader->Context, graph->ScratchExtents);
+    if (graph->Queue) reader->Free(reader->Context, graph->Queue);
+    if (graph->UniqueIds) reader->Free(reader->Context, graph->UniqueIds);
+    BitmapRelease(reader, &graph->PhysicalOwned);
+    if (graph->MetadataOwned) reader->Free(reader->Context, graph->MetadataOwned);
+    BitmapRelease(reader, &graph->PhysicalVisited);
+    if (graph->MetadataVisited) reader->Free(reader->Context, graph->MetadataVisited);
+    BitmapRelease(reader, &graph->PhysicalDirs);
+    if (graph->MetadataDirs) reader->Free(reader->Context, graph->MetadataDirs);
+    if (graph->MetadataInlineFileFes)
+        reader->Free(reader->Context, graph->MetadataInlineFileFes);
+    reader->Free(reader->Context, graph);
     return status;
 }
 
@@ -1621,7 +1627,7 @@ UdfsRecoveryProbeLayout(const UDFS_RECOVERY_READER *reader,
         result->LvidPhysicalSizeBlocks == result->PartitionBlocks &&
         result->LvidMetadataSizeBlocks == result->MetadataBlocks;
     status = GraphRun(reader, result, mainFile, mirrorFile,
-                      bitmapFile, lvd, bitmapExtentBytes);
+                      bitmapFile, lvd, bitmapExtentBytes, pd);
     if (status == UdfsRecoveryProbeValidLayout &&
         !result->LvidCountersMatch)
         status = UdfsRecoveryProbeLvidMismatch;
