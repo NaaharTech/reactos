@@ -170,6 +170,8 @@ UdfsRecoveryProbeLayout(const UDFS_RECOVERY_READER *reader,
                         UDFS_RECOVERY_PROBE *result);
 
 /* Cheap read-only discriminator for the supported duplicated-metadata class.
+ * ReadSector, Allocate and Free are required; the driver supplies nonpaged
+ * storage for the working sectors instead of using the mount thread stack.
  * ValidLayout returns an integrity type of 0 (OPEN) or 1 (CLOSED). All other
  * results require the existing mount policy and authorize no repair. */
 UDFS_RECOVERY_PROBE_STATUS

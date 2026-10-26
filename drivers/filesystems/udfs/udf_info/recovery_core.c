@@ -2314,17 +2314,30 @@ SelectRecoveryDescriptors(const UDFS_RECOVERY_READER *reader,
     return status;
 }
 
+/* Keep transient sector snapshots off the mount thread's limited kernel
+ * stack. The caller's allocator supplies nonpaged memory in the driver. */
+typedef struct _RECOVERY_INTEGRITY_WORK {
+    uint8_t PreviousClosed[UDFS_RECOVERY_SECTOR_SIZE];
+    uint8_t JournalOpen[UDFS_RECOVERY_SECTOR_SIZE];
+    uint8_t OlderJournal[UDFS_RECOVERY_SECTOR_SIZE];
+    uint8_t Expected[UDFS_RECOVERY_SECTOR_SIZE];
+    uint8_t Terminator[UDFS_RECOVERY_SECTOR_SIZE];
+    uint8_t Candidate[UDFS_RECOVERY_SECTOR_SIZE];
+} RECOVERY_INTEGRITY_WORK;
+
 /* Match UDFLoadLogicalVolInt's prevailing descriptor walk: an LVID with a
  * nextIntegrityExt jumps to that extent before the remaining sectors of the
  * current extent. The earlier CLOSED descriptor must not hide a later OPEN
  * checkpoint. Bound both each extent and the total walk before any repair. */
 static UDFS_RECOVERY_PROBE_STATUS
-ReadPrevailingIntegrity(const UDFS_RECOVERY_READER *reader,
-                        UDFS_RECOVERY_PROBE *result, uint32_t extentBytes,
-                        uint32_t extentLba, uint8_t *sector,
-                        uint8_t *prevailing, uint32_t *prevailingLba,
-                        uint8_t *integrityType,
-                        uint8_t *checksumRepair)
+ReadPrevailingIntegrityWorker(const UDFS_RECOVERY_READER *reader,
+                              UDFS_RECOVERY_PROBE *result,
+                              uint32_t extentBytes, uint32_t extentLba,
+                              uint8_t *sector, uint8_t *prevailing,
+                              uint32_t *prevailingLba,
+                              uint8_t *integrityType,
+                              uint8_t *checksumRepair,
+                              RECOVERY_INTEGRITY_WORK *work)
 {
     uint32_t visited = 0;
     uint32_t anchors[8];
@@ -2332,9 +2345,12 @@ ReadPrevailingIntegrity(const UDFS_RECOVERY_READER *reader,
     uint16_t previousVersion = 0, previousSerial = 0;
     uint16_t previousCrcLength = 0;
     uint32_t previousClosedLba = 0;
-    uint8_t previousClosed[UDFS_RECOVERY_SECTOR_SIZE];
-    uint8_t journalOpen[UDFS_RECOVERY_SECTOR_SIZE];
-    uint8_t olderJournal[UDFS_RECOVERY_SECTOR_SIZE];
+    uint8_t *previousClosed = work->PreviousClosed;
+    uint8_t *journalOpen = work->JournalOpen;
+    uint8_t *olderJournal = work->OlderJournal;
+    uint8_t *expected = work->Expected;
+    uint8_t *terminator = work->Terminator;
+    uint8_t *candidate = work->Candidate;
     uint32_t journalOpenLba = 0, journalOtherLba = 0;
     uint32_t journalTargetLba = 0;
     uint64_t journalGeneration = 0;
@@ -2475,11 +2491,11 @@ ReadPrevailingIntegrity(const UDFS_RECOVERY_READER *reader,
                             olderGeneration + 1 == journalGeneration ?
                                 olderJournal : NULL, &repaired);
                     } else if (targetGeneration == journalGeneration) {
-                        uint8_t expected[UDFS_RECOVERY_SECTOR_SIZE];
-                        memcpy(expected, journalOpen, sizeof(expected));
+                        memcpy(expected, journalOpen,
+                               UDFS_RECOVERY_SECTOR_SIZE);
                         RetagLvid(expected, lba);
                         if (RecoveryDifference(sector, expected,
-                                               sizeof(expected)))
+                                               UDFS_RECOVERY_SECTOR_SIZE))
                             return UdfsRecoveryProbeCorrupt;
                         /* Keep the validated sidecar identity even when the
                          * target OPEN tag is intact. Repair may need a new
@@ -2533,8 +2549,6 @@ ReadPrevailingIntegrity(const UDFS_RECOVERY_READER *reader,
                  * lie at the end of this same integrity extent. Without a
                  * valid sidecar the old fail-closed behavior is unchanged. */
                 if (i == 0 && count >= 5 && i + 2 < count - 2) {
-                    uint8_t terminator[UDFS_RECOVERY_SECTOR_SIZE];
-                    uint8_t candidate[UDFS_RECOVERY_SECTOR_SIZE];
                     uint32_t slot, target = lba + 1;
                     int conflict = 0;
                     status = ReadSector(reader, result, lba + 2,
@@ -2559,7 +2573,7 @@ ReadPrevailingIntegrity(const UDFS_RECOVERY_READER *reader,
                                 return status;
                             if (!JournalOpenValid(candidate, slotLba,
                                                   target, sector)) {
-                                for (k = 0; k < sizeof(candidate); ++k)
+                                for (k = 0; k < UDFS_RECOVERY_SECTOR_SIZE; ++k)
                                     if (candidate[k]) {
                                         journalSlotBad = 1;
                                         break;
@@ -2608,7 +2622,6 @@ ReadPrevailingIntegrity(const UDFS_RECOVERY_READER *reader,
                 extentLba + count - 2 > lba + 1 &&
                 nextLba != extentLba + count - 2 &&
                 nextLba != extentLba + count - 1) {
-                uint8_t candidate[UDFS_RECOVERY_SECTOR_SIZE];
                 uint32_t slot;
                 int conflict = 0;
                 for (slot = 0; slot < 2; ++slot) {
@@ -2622,7 +2635,7 @@ ReadPrevailingIntegrity(const UDFS_RECOVERY_READER *reader,
                     }
                     if (!JournalOpenValid(candidate, slotLba, nextLba,
                                           sector)) {
-                        for (k = 0; k < sizeof(candidate); ++k)
+                        for (k = 0; k < UDFS_RECOVERY_SECTOR_SIZE; ++k)
                             if (candidate[k]) {
                                 journalSlotBad = 1;
                                 break;
@@ -2679,44 +2692,89 @@ next_extent:
     }
 }
 
+static UDFS_RECOVERY_PROBE_STATUS
+ReadPrevailingIntegrity(const UDFS_RECOVERY_READER *reader,
+                        UDFS_RECOVERY_PROBE *result, uint32_t extentBytes,
+                        uint32_t extentLba, uint8_t *sector,
+                        uint8_t *prevailing, uint32_t *prevailingLba,
+                        uint8_t *integrityType,
+                        uint8_t *checksumRepair)
+{
+    RECOVERY_INTEGRITY_WORK *work;
+    UDFS_RECOVERY_PROBE_STATUS status;
+
+    if (!reader || !reader->Allocate || !reader->Free)
+        return UdfsRecoveryProbeInvalidInput;
+    work = (RECOVERY_INTEGRITY_WORK *)reader->Allocate(reader->Context,
+                                                       sizeof(*work));
+    if (!work) return UdfsRecoveryProbeNoMemory;
+    memset(work, 0, sizeof(*work));
+    status = ReadPrevailingIntegrityWorker(reader, result, extentBytes,
+                                           extentLba, sector, prevailing,
+                                           prevailingLba, integrityType,
+                                           checksumRepair, work);
+    reader->Free(reader->Context, work);
+    return status;
+}
+
+typedef struct _RECOVERY_PEEK_WORK {
+    uint8_t Sector[UDFS_RECOVERY_SECTOR_SIZE];
+    uint8_t Pd[UDFS_RECOVERY_SECTOR_SIZE];
+    uint8_t Lvd[UDFS_RECOVERY_SECTOR_SIZE];
+    UDFS_RECOVERY_PROBE Scratch;
+} RECOVERY_PEEK_WORK;
+
 UDFS_RECOVERY_PROBE_STATUS
 UdfsRecoveryPeekIntegrity(const UDFS_RECOVERY_READER *reader,
                           uint8_t *integrityType)
 {
-    uint8_t sector[UDFS_RECOVERY_SECTOR_SIZE];
-    uint8_t pd[UDFS_RECOVERY_SECTOR_SIZE];
-    uint8_t lvd[UDFS_RECOVERY_SECTOR_SIZE];
-    UDFS_RECOVERY_PROBE scratch;
+    RECOVERY_PEEK_WORK *work;
+    UDFS_RECOVERY_PROBE *scratch;
+    uint8_t *sector, *pd, *lvd;
     UDFS_RECOVERY_PROBE_STATUS status;
     uint32_t extentBytes, extentLba;
 
-    if (!reader || !reader->ReadSector || !integrityType ||
-        reader->SectorCount <= 256)
+    if (!reader || !reader->ReadSector || !reader->Allocate ||
+        !reader->Free || !integrityType || reader->SectorCount <= 256)
         return UdfsRecoveryProbeInvalidInput;
     *integrityType = 0xff;
-    memset(&scratch, 0, sizeof(scratch));
-    status = SelectRecoveryDescriptors(reader, &scratch, sector, pd, lvd);
-    if (status != UdfsRecoveryProbeValidLayout) return status;
+    work = (RECOVERY_PEEK_WORK *)reader->Allocate(reader->Context,
+                                                  sizeof(*work));
+    if (!work) return UdfsRecoveryProbeNoMemory;
+    memset(work, 0, sizeof(*work));
+    sector = work->Sector;
+    pd = work->Pd;
+    lvd = work->Lvd;
+    scratch = &work->Scratch;
+    status = SelectRecoveryDescriptors(reader, scratch, sector, pd, lvd);
+    if (status != UdfsRecoveryProbeValidLayout) goto done;
     if (Read32(lvd + 212) != UDFS_RECOVERY_SECTOR_SIZE ||
         Read32(lvd + 268) != 2 || Read32(lvd + 264) != 70 ||
         lvd[440] != 1 || lvd[441] != 6 ||
         lvd[446] != 2 || lvd[447] != 64 ||
         RecoveryDifference(lvd + 451,
                            "*UDF Metadata Partition", 23) != 0 ||
-        lvd[504] != 1)
-        return UdfsRecoveryProbeUnsupported;
-    scratch.PartitionStart = Read32(pd + 188);
-    scratch.PartitionBlocks = Read32(pd + 192);
-    if (!scratch.PartitionBlocks ||
-        scratch.PartitionStart >= reader->SectorCount ||
-        scratch.PartitionBlocks >
-            reader->SectorCount - scratch.PartitionStart)
-        return UdfsRecoveryProbeCorrupt;
+        lvd[504] != 1) {
+        status = UdfsRecoveryProbeUnsupported;
+        goto done;
+    }
+    scratch->PartitionStart = Read32(pd + 188);
+    scratch->PartitionBlocks = Read32(pd + 192);
+    if (!scratch->PartitionBlocks ||
+        scratch->PartitionStart >= reader->SectorCount ||
+        scratch->PartitionBlocks >
+            reader->SectorCount - scratch->PartitionStart) {
+        status = UdfsRecoveryProbeCorrupt;
+        goto done;
+    }
 
     extentBytes = Read32(lvd + 432) & 0x3fffffff;
     extentLba = Read32(lvd + 436);
-    return ReadPrevailingIntegrity(reader, &scratch, extentBytes, extentLba,
-                                   sector, NULL, NULL, integrityType, NULL);
+    status = ReadPrevailingIntegrity(reader, scratch, extentBytes, extentLba,
+                                     sector, NULL, NULL, integrityType, NULL);
+done:
+    reader->Free(reader->Context, work);
+    return status;
 }
 
 static UDFS_RECOVERY_PROBE_STATUS
