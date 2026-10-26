@@ -67,6 +67,7 @@ typedef struct _UDFS_RECOVERY_PROBE {
     uint32_t AllocatedMirrorBlocksCompared;
     uint32_t ReferencedFreeMirrorBlocksCompared;
     uint32_t PrevailingLvidLba;
+    uint32_t PrecedingClosedLvidLba;
     uint32_t LvidPhysicalFreeBlocks;
     uint32_t LvidMetadataFreeBlocks;
     uint32_t LvidPhysicalSizeBlocks;
@@ -117,7 +118,7 @@ typedef struct _UDFS_RECOVERY_PROBE {
     uint8_t MetadataDuplicated;
     uint8_t BitmapContentsScanned;
     uint8_t LvidIntegrityType;
-    uint8_t LvidTagChecksumRepair;
+    uint8_t LvidTagRepairMode; /* 0 none, 1 checksum, 2 linked header */
     uint8_t LvidCountersMatch;
     uint8_t OwnershipGraphScanned;
     uint8_t CompleteOwnershipGraph;
@@ -142,7 +143,9 @@ typedef struct _UDFS_RECOVERY_REPAIR_PLAN {
     uint32_t FidLiveLba;
     UDFS_RECOVERY_SECTOR_EDIT FidEdit;
     UDFS_RECOVERY_SECTOR_EDIT LvidEdit;
-    uint8_t LvidTagChecksumRepair;
+    uint32_t PrecedingClosedLvidLba;
+    uint8_t PrecedingClosedLvid[UDFS_RECOVERY_SECTOR_SIZE];
+    uint8_t LvidTagRepairMode;
     uint8_t Ready;
 } UDFS_RECOVERY_REPAIR_PLAN;
 
