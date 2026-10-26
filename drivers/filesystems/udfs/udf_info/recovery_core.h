@@ -152,6 +152,9 @@ typedef struct _UDFS_RECOVERY_REPAIR_PLAN {
     uint8_t JournalOpenLvid[UDFS_RECOVERY_SECTOR_SIZE];
     UDFS_RECOVERY_SECTOR_EDIT JournalNextLvidEdit;
     uint8_t LvidTagRepairMode;
+    /* A clean, unlinked legacy extent has no durable sidecar yet. During
+     * its first recovery, write this prepared sidecar before CLOSED LVID. */
+    uint8_t LegacyJournalBootstrap;
     uint8_t Ready;
 } UDFS_RECOVERY_REPAIR_PLAN;
 
