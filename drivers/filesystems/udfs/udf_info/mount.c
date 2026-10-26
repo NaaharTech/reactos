@@ -423,6 +423,21 @@ static const uint8 UdfLvidJournalMagic[8] = {
     'R', 'O', 'S', 'L', 'V', 'I', 'D', '1'
 };
 
+static NTSTATUS
+UDFJournalDiscoveryUnavailable(
+    IN PVCB Vcb,
+    IN BOOLEAN Required
+    )
+{
+    if (!Required)
+        return STATUS_SUCCESS; /* A volume without our journal uses legacy I/O. */
+    /* A journaled final LVID must not silently fall back to unjournaled
+     * writes when its reserved slots or layout no longer validate. */
+    Vcb->VcbState |= VCB_STATE_VOLUME_READ_ONLY;
+    UDFPrint(("UDF: required LVID journal unavailable; refusing writes\n"));
+    return STATUS_FILE_CORRUPT_ERROR;
+}
+
 static BOOLEAN
 UDFJournalSlotValid(
     IN uint8* Sector,
@@ -469,9 +484,18 @@ UDFDiscoverLvidJournal(
     ULONGLONG Generation, Latest = 0;
     BOOLEAN Valid[2] = {FALSE, FALSE};
     BOOLEAN Empty[2] = {FALSE, FALSE};
+    BOOLEAN Required;
     NTSTATUS Status;
 
     if (Vcb->LvidJournalState) return STATUS_SUCCESS;
+    Required = Vcb->LVid &&
+               Vcb->LVid_loc.extLength == 512 &&
+               Vcb->LVid->descTag.descCRCLength ==
+                   UDF_LVID_JOURNAL_CRC_LENGTH &&
+               Vcb->LVid->lengthOfImpUse ==
+                   UDF_LVID_JOURNAL_IMP_LENGTH &&
+               RtlCompareMemory((uint8*)Vcb->LVid + 142,
+                                UdfLvidJournalMagic, 8) == 8;
     Vcb->LvidJournalState = 2; /* unavailable unless all bounds validate */
     if (SectorSize(Vcb) != 512 ||
         Vcb->TargetDeviceObject->DeviceType != FILE_DEVICE_DISK ||
@@ -488,23 +512,24 @@ UDFDiscoverLvidJournal(
         Vcb->LvidJournalSlot[0] + 1 != Vcb->LvidJournalSlot[1] ||
         Vcb->LvidJournalSlot[1] == Vcb->LvidJournalTarget ||
         Vcb->LvidJournalSlot[0] == Vcb->LvidJournalTarget)
-        return STATUS_SUCCESS;
+        return UDFJournalDiscoveryUnavailable(Vcb, Required);
 
     PhysicalRoot = Vcb->Partitions[Vcb->MetadataPhysRef].PartitionRoot;
     if (!PhysicalRoot || Vcb->LvidJournalSlot[1] >= PhysicalRoot)
-        return STATUS_SUCCESS;
+        return UDFJournalDiscoveryUnavailable(Vcb, Required);
     for (i = 0; i < 2; ++i) {
         Slot = Vcb->LvidJournalSlot[i];
         for (j = 0; j < sizeof(Vcb->Anchor) /
                         sizeof(Vcb->Anchor[0]); ++j)
-            if (Slot == Vcb->Anchor[j]) return STATUS_SUCCESS;
+            if (Slot == Vcb->Anchor[j])
+                return UDFJournalDiscoveryUnavailable(Vcb, Required);
         if ((Vcb->VDS1_Len && Slot >= Vcb->VDS1 &&
              (ULONGLONG)Slot <
                  (ULONGLONG)Vcb->VDS1 + Vcb->VDS1_Len) ||
             (Vcb->VDS2_Len && Slot >= Vcb->VDS2 &&
              (ULONGLONG)Slot <
                  (ULONGLONG)Vcb->VDS2 + Vcb->VDS2_Len))
-            return STATUS_SUCCESS;
+            return UDFJournalDiscoveryUnavailable(Vcb, Required);
         Status = UDFReadSectors(IrpContext, Vcb, FALSE, Slot,
                                 1, FALSE, (int8*)Sector);
         if (!NT_SUCCESS(Status)) return Status;
@@ -514,7 +539,8 @@ UDFDiscoverLvidJournal(
         Valid[i] = UDFJournalSlotValid(Sector, Slot,
                         Vcb->LvidJournalTarget, &Generation);
         if (Valid[i]) {
-            if (Generation == Latest) return STATUS_SUCCESS;
+            if (Generation == Latest)
+                return UDFJournalDiscoveryUnavailable(Vcb, Required);
             if (Generation > Latest) {
                 Latest = Generation;
                 Vcb->LvidJournalLatestSlot = (uint8)i;
@@ -522,7 +548,7 @@ UDFDiscoverLvidJournal(
         }
     }
     if (!Valid[0] && !Valid[1] && (!Empty[0] || !Empty[1]))
-        return STATUS_SUCCESS;
+        return UDFJournalDiscoveryUnavailable(Vcb, Required);
     Vcb->LvidJournalGeneration = Latest;
     if (!Latest) Vcb->LvidJournalLatestSlot = 1; /* first write uses slot 0 */
     Vcb->LvidJournalState = 1;
