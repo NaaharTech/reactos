@@ -1361,39 +1361,69 @@ UDFGetFileEALength(
 /*
     This routine sets UniqueID field in (Ext)FileEntry
  */
-int64
-UDFAssingNewFUID(
-    IN PVCB Vcb
+NTSTATUS
+UDFAllocateFileUID(
+    IN PIRP_CONTEXT IrpContext,
+    IN PVCB Vcb,
+    OUT PULONGLONG UniqueId
     )
 {
-    int64 uid = 0;
+    ULONGLONG next, after, oldEnd, newEnd;
+    NTSTATUS status;
 
-    if ((uint32)(Vcb->NextUniqueId) < 16)
-        Vcb->NextUniqueId += 16 - (uint32)(Vcb->NextUniqueId);
-    
-    uid = Vcb->NextUniqueId++;
+    *UniqueId = 0;
+    /* Make the volume's OPEN checkpoint durable before an ID can reach an
+     * FE or FID.  The bitmap resource also serializes the 64-bit counter on
+     * i386 and all LVID writers, including the clean-close path. */
+    status = UDFOpenIntegrityForWrite(IrpContext, Vcb, FALSE);
+    if (!NT_SUCCESS(status))
+        return status;
 
-    if (!((uint32)(Vcb->NextUniqueId)))
-        Vcb->NextUniqueId += 16;
+    UDFAcquireResourceExclusive(&(Vcb->BitMapResource1), TRUE);
+    next = Vcb->NextUniqueId;
+    if ((uint32)next < 16)
+        next += 16 - (uint32)next;
+    if (next == ~(ULONGLONG)0) {
+        status = STATUS_INTEGER_OVERFLOW;
+        goto release;
+    }
+    after = next + 1;
+    if ((uint32)after == 0)
+        after += 16;
 
-    return uid;
+    if (Vcb->LvidJournalState == 1 &&
+        after > Vcb->UniqueIdReservedEnd) {
+        oldEnd = Vcb->UniqueIdReservedEnd;
+        newEnd = after > ~(ULONGLONG)0 - 4096 ?
+                 ~(ULONGLONG)0 : after + 4096;
+        Vcb->UniqueIdReservedEnd = newEnd;
+        status = UDFUpdateLogicalVolInt(IrpContext, Vcb, FALSE);
+        if (NT_SUCCESS(status))
+            status = UDFBarrierFlushDevice(Vcb->TargetDeviceObject);
+        if (!NT_SUCCESS(status)) {
+            Vcb->UniqueIdReservedEnd = oldEnd;
+            Vcb->VcbState |= VCB_STATE_VOLUME_READ_ONLY;
+            goto release;
+        }
+    }
+    Vcb->NextUniqueId = after;
+    *UniqueId = next;
+    status = STATUS_SUCCESS;
+
+release:
+    UDFReleaseResource(&(Vcb->BitMapResource1));
+    return status;
 }
 
 void
 UDFSetFileUID(
-    IN PVCB Vcb,
-    IN PUDF_FILE_INFO FileInfo
+    IN PUDF_FILE_INFO FileInfo,
+    IN ULONGLONG UniqueId
     )
 {
     uint16 Ident;
-    int64 UID;
 
     ValidateFileInfo(FileInfo);
-
-    if (FileInfo->ParentFile && UDFIsAStreamDir(FileInfo->ParentFile))
-        UID = UDFGetFileUID(FileInfo->ParentFile);
-    else 
-        UID = UDFAssingNewFUID(Vcb);
 
 /*    UID = FileInfo->Dloc->FELoc.Mapping[0].extLocation |
           ( FileInfo->ParentFile ? (((int64)(FileInfo->ParentFile->Dloc->FELoc.Mapping[0].extLocation)) << 32) : 0);*/
@@ -1402,13 +1432,13 @@ UDFSetFileUID(
     Ident = FileInfo->Dloc->FileEntry->tagIdent;
     if (Ident == TID_FILE_ENTRY) {
         PFILE_ENTRY fe = (PFILE_ENTRY)(FileInfo->Dloc->FileEntry);
-        fe->uniqueID = UID;
+        fe->uniqueID = UniqueId;
     } else if (Ident == TID_EXTENDED_FILE_ENTRY) {
         PEXTENDED_FILE_ENTRY fe = (PEXTENDED_FILE_ENTRY)(FileInfo->Dloc->FileEntry);
-        fe->uniqueID = UID;
+        fe->uniqueID = UniqueId;
     }
     if (FileInfo->FileIdent)
-        ((struct FidADImpUse*)&(FileInfo->FileIdent->icb.impUse))->uniqueID = (uint32)UID;
+        ((struct FidADImpUse*)&(FileInfo->FileIdent->icb.impUse))->uniqueID = (uint32)UniqueId;
     return;
 } // end UDFSetFileUID()
 
@@ -3960,6 +3990,7 @@ UDFCreateFile__(
     BOOLEAN FEAllocated = FALSE;
     BOOLEAN NewNameAppend = FALSE;
     BOOLEAN InitialFEDeferred = FALSE;
+    ULONGLONG NewUniqueId = 0;
 
     ValidateFileInfo(DirInfo);
     *_FileInfo = NULL;
@@ -4046,6 +4077,15 @@ CreateBothFound:
         }
 
 CreateUndel:
+        /* Reserve the ID before allocating or publishing a new FE/FID.
+         * A failed journal write must leave the namespace untouched. */
+        if (UDFIsAStreamDir(DirInfo))
+            NewUniqueId = (ULONGLONG)UDFGetFileUID(DirInfo);
+        else {
+            status = UDFAllocateFileUID(IrpContext, Vcb, &NewUniqueId);
+            if (!NT_SUCCESS(status))
+                try_return(status);
+        }
 
         // allocate FileInfo
         FileInfo = (PUDF_FILE_INFO)MyAllocatePoolTag__(UDF_FILE_INFO_MT,sizeof(UDF_FILE_INFO), MEM_FE_TAG);
@@ -4195,7 +4235,7 @@ CrF__2:
         FileInfo->Dloc->DataLoc.Offset = FileInfo->Dloc->FileEntryLen;
         FileInfo->ParentFile = DirInfo;
         // init FileEntry
-        UDFSetFileUID(Vcb, FileInfo);
+        UDFSetFileUID(FileInfo, NewUniqueId);
         UDFSetFileSize(FileInfo, 0);
         UDFIncFileLinkCount(FileInfo); // increase to 1
         if (UDFIsAStreamDir(DirInfo))
@@ -7060,6 +7100,7 @@ UDFHardLinkFile__(
     BOOLEAN Recovery = FALSE;
     BOOLEAN SameFE = FALSE;
     uint32 NTAttr = 0;
+    ULONGLONG NewFidUniqueId;
 
     // validate FileInfo
     ValidateFileInfo(DirInfo1);
@@ -7085,6 +7126,12 @@ UDFHardLinkFile__(
             return STATUS_OBJECT_NAME_COLLISION;
         }
     }
+
+    /* Acquire the replacement FID's ID before phase 0 so a failed durable
+     * high-water reservation cannot strand a half-linked object. */
+    status = UDFAllocateFileUID(IrpContext, Vcb, &NewFidUniqueId);
+    if (!NT_SUCCESS(status))
+        return status;
 
     // PHASE 0
     // try to create new FileIdent & FileEntry in Dir2
@@ -7173,7 +7220,7 @@ cleanup_and_abort_hlink:
 //    UDFUpdateModifyTime(Vcb, FileInfo);
     FileInfo->Dloc->LinkRefCount += FileInfo2->Dloc->LinkRefCount;
     if (FileInfo2->FileIdent)
-        ((struct FidADImpUse*)&(FileInfo2->FileIdent->icb.impUse))->uniqueID = (uint32)UDFAssingNewFUID(Vcb);
+        ((struct FidADImpUse*)&(FileInfo2->FileIdent->icb.impUse))->uniqueID = (uint32)NewFidUniqueId;
 
     // PHASE 3
     // drop all unnecessary info from FileInfo2
@@ -7219,6 +7266,11 @@ UDFCreateRootFile__(
     PUDF_FILE_INFO FileInfo;
     *_FileInfo = NULL;
     SIZE_T ReadBytes;
+    ULONGLONG NewUniqueId;
+
+    status = UDFAllocateFileUID(IrpContext, Vcb, &NewUniqueId);
+    if (!NT_SUCCESS(status))
+        return status;
 
     FileInfo = (PUDF_FILE_INFO)MyAllocatePoolTag__(UDF_FILE_INFO_MT,sizeof(UDF_FILE_INFO), MEM_FINF_TAG);
     *_FileInfo = FileInfo;
@@ -7244,7 +7296,7 @@ UDFCreateRootFile__(
     FileInfo->Dloc->DataLoc.Length = 0;
     FileInfo->Dloc->DataLoc.Offset = FileInfo->Dloc->FileEntryLen;
     // init FileEntry
-    UDFSetFileUID(Vcb, FileInfo);
+    UDFSetFileUID(FileInfo, NewUniqueId);
     UDFSetFileSize(FileInfo, 0);
     UDFIncFileLinkCount(FileInfo); // increase to 1
     UDFUpdateCreateTime(Vcb, FileInfo);

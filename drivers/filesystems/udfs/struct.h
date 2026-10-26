@@ -851,6 +851,9 @@ struct VCB {
     uint32          NSRDesc;
     // File Id cache
     ULONGLONG       NextUniqueId;
+    // Exclusive upper bound durably recorded in the OPEN LVID journal.
+    // Only the journal-enabled layout uses this crash reservation.
+    ULONGLONG       UniqueIdReservedEnd;
     // FE location cache
     PUDF_DATALOC_INDEX DlocList;
     ULONG           DlocCount;

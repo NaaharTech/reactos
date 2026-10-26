@@ -558,6 +558,7 @@ UDFUpdateLogicalVolInt(
     BOOLEAN     equal = FALSE;
     LONGLONG NtTime;
     uint32 OldIntegrityType;
+    ULONGLONG CheckpointUniqueId;
 
     if (Vcb->CDR_Mode)
         return STATUS_SUCCESS;
@@ -621,8 +622,16 @@ UDFUpdateLogicalVolInt(
 
     // Update LVID Header Descriptor
     LVID_hd = (struct LogicalVolHeaderDesc*)&(lvid->logicalVolContentsUse);
-    equal = equal && (LVID_hd->uniqueID == Vcb->NextUniqueId);
-    LVID_hd->uniqueID = Vcb->NextUniqueId;
+    /* OPEN checkpoints must never retreat below an ID already reserved on
+     * disk: a created-then-deleted file is absent from the recovery graph.
+     * The CLOSED checkpoint follows the fully drained namespace and may
+     * record the actual next ID, returning unused reservations. */
+    CheckpointUniqueId = Vcb->NextUniqueId;
+    if (!Close && Vcb->LvidJournalState == 1 &&
+        CheckpointUniqueId < Vcb->UniqueIdReservedEnd)
+        CheckpointUniqueId = Vcb->UniqueIdReservedEnd;
+    equal = equal && (LVID_hd->uniqueID == CheckpointUniqueId);
+    LVID_hd->uniqueID = CheckpointUniqueId;
 
     if (equal) {
         UDFPrint(("UDF: equal Ids\n"));
@@ -1844,6 +1853,7 @@ UDFLoadLogicalVolInt(
 
         LVID_hd = (struct LogicalVolHeaderDesc*)&(Vcb->LVid->logicalVolContentsUse);
         Vcb->NextUniqueId = LVID_hd->uniqueID;
+        Vcb->UniqueIdReservedEnd = Vcb->NextUniqueId;
         UDFPrint(("     Next FID: %x\n",Vcb->NextUniqueId));
 
 try_exit: NOTHING;

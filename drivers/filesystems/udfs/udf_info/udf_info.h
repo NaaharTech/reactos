@@ -709,8 +709,11 @@ void     UDFReadEntityID_Domain(PVCB Vcb,
 // get lengthExtendedAttr field in (Ext)FileEntry
 uint32    UDFGetFileEALength(IN PUDF_FILE_INFO FileInfo);
 // set UniqueID field in (Ext)FileEntry
-void     UDFSetFileUID(IN PVCB Vcb,
-                       IN PUDF_FILE_INFO FileInfo);
+NTSTATUS UDFAllocateFileUID(IN PIRP_CONTEXT IrpContext,
+                            IN PVCB Vcb,
+                            OUT PULONGLONG UniqueId);
+void     UDFSetFileUID(IN PUDF_FILE_INFO FileInfo,
+                       IN ULONGLONG UniqueId);
 // get UniqueID field in (Ext)FileEntry
 int64 UDFGetFileUID(IN PUDF_FILE_INFO FileInfo);
 // change counters in LVID
