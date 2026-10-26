@@ -622,12 +622,12 @@ UDFUpdateLogicalVolInt(
 
     // Update LVID Header Descriptor
     LVID_hd = (struct LogicalVolHeaderDesc*)&(lvid->logicalVolContentsUse);
-    /* OPEN checkpoints must never retreat below an ID already reserved on
-     * disk: a created-then-deleted file is absent from the recovery graph.
-     * The CLOSED checkpoint follows the fully drained namespace and may
-     * record the actual next ID, returning unused reservations. */
+    /* Every journal checkpoint, including CLOSED, must retain the durable
+     * exclusive ID bound. A torn final CLOSED sector may still contain the
+     * preceding OPEN body; retreating the ID bound would make that transition
+     * indistinguishable from an invalid rollback to recovery. */
     CheckpointUniqueId = Vcb->NextUniqueId;
-    if (!Close && Vcb->LvidJournalState == 1 &&
+    if (Vcb->LvidJournalState == 1 &&
         CheckpointUniqueId < Vcb->UniqueIdReservedEnd)
         CheckpointUniqueId = Vcb->UniqueIdReservedEnd;
     equal = equal && (LVID_hd->uniqueID == CheckpointUniqueId);
