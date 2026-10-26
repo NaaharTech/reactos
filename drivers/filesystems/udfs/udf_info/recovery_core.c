@@ -275,6 +275,46 @@ ValidLvidRecordingTime(const uint8_t *time)
            time[10] <= 99 && time[11] <= 99;
 }
 
+/* The active OPEN target and its journal were already compared byte for
+ * byte. Only the reserved alternate slot can be replaced. A short write
+ * may have left a new tag header over its old generation's intact body.
+ * Rebuild that old tag for validation; then require every observed header
+ * byte to come from a single prefix of the prepared new header followed
+ * by the reconstructed old header. The first seven time bytes must still
+ * match the current checkpoint; a conflicting inactive body is not
+ * silently discarded. The caller provides scratch to avoid more stack. */
+static int
+TornInactiveJournalReplaceable(
+    const uint8_t before[UDFS_RECOVERY_SECTOR_SIZE],
+    const uint8_t after[UDFS_RECOVERY_SECTOR_SIZE],
+    const uint8_t active[UDFS_RECOVERY_SECTOR_SIZE],
+    uint32_t slotLba, uint32_t finalLba,
+    const uint8_t precedingClosed[UDFS_RECOVERY_SECTOR_SIZE],
+    uint8_t scratch[UDFS_RECOVERY_SECTOR_SIZE])
+{
+    uint32_t split;
+    uint64_t oldGeneration;
+
+    if (RecoveryDifference(before, after, 24) == 0) return 1;
+    if (RecoveryDifference(before + 16, after + 16, 7)) return 0;
+    memcpy(scratch, before, UDFS_RECOVERY_SECTOR_SIZE);
+    RetagLvid(scratch, slotLba);
+    oldGeneration = Read64(scratch + 150);
+    if (!JournalOpenValid(scratch, slotLba, finalLba,
+                          precedingClosed) ||
+        !ValidLvidRecordingTime(scratch + 16) ||
+        oldGeneration == UINT64_MAX ||
+        oldGeneration + 1 != Read64(active + 150) ||
+        !JournalStableBodyMatches(scratch, active))
+        return 0;
+    for (split = 0; split <= 16; ++split)
+        if (!RecoveryDifference(before, after, split) &&
+            !RecoveryDifference(before + split, scratch + split,
+                                16 - split))
+            return 1;
+    return 0;
+}
+
 static int
 JournalHeaderMatches(const uint8_t *raw, const uint8_t *journal,
                      uint32_t finalLba)
@@ -3510,7 +3550,10 @@ UdfsRecoveryPrepareRepair(const UDFS_RECOVERY_READER *reader,
         if (!JournalOpenValid(journal->After, journal->Lba,
                               edit->Lba, plan->PrecedingClosedLvid) ||
             (plan->JournalOtherDamaged &&
-             RecoveryDifference(journal->Before, journal->After, 24)))
+             !TornInactiveJournalReplaceable(
+                 journal->Before, journal->After,
+                 plan->JournalOpenLvid, journal->Lba, edit->Lba,
+                 plan->PrecedingClosedLvid, normalizedLvid)))
             status = UdfsRecoveryProbeCorrupt;
     }
     if (status == UdfsRecoveryProbeValidLayout &&
@@ -3686,7 +3729,11 @@ UdfsRecoveryApplyRepair(const UDFS_RECOVERY_READER *reader,
               Read64(journal->Before + 150) + 1 !=
                   Read64(plan->JournalOpenLvid + 150))) ||
             (plan->JournalOtherDamaged &&
-             RecoveryDifference(journal->Before, journal->After, 24)))
+             !TornInactiveJournalReplaceable(
+                 journal->Before, journal->After,
+                 plan->JournalOpenLvid, journal->Lba,
+                 plan->LvidEdit.Lba, plan->PrecedingClosedLvid,
+                 sector)))
             return UdfsRecoveryProbeInvalidInput;
         status = ReadSector(reader, after,
                             plan->JournalOpenLvidLba, sector);
