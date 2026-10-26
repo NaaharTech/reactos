@@ -731,6 +731,12 @@ struct VCB {
     uint32          IntegrityType;
     uint32          origIntegrityType;
     extent_ad       LVid_loc;
+    // Optional two-slot journal in unused sectors of the LVID extent.
+    uint32          LvidJournalSlot[2];
+    uint32          LvidJournalTarget;
+    uint64          LvidJournalGeneration;
+    uint8           LvidJournalLatestSlot;
+    uint8           LvidJournalState; // 0 unchecked, 1 enabled, 2 unavailable
     ULONG           SerialNumber;
     // on-disk structure version control
     uint16          UdfRevision;

@@ -415,6 +415,122 @@ UDFUpdateUSpaceDesc(
 /*
    update Logical volume integrity descriptor
  */
+#define UDF_LVID_JOURNAL_IMP_LENGTH 70
+#define UDF_LVID_JOURNAL_TOTAL_LENGTH 166
+#define UDF_LVID_JOURNAL_CRC_LENGTH 150
+
+static const uint8 UdfLvidJournalMagic[8] = {
+    'R', 'O', 'S', 'L', 'V', 'I', 'D', '1'
+};
+
+static BOOLEAN
+UDFJournalSlotValid(
+    IN uint8* Sector,
+    IN uint32 SlotLba,
+    IN uint32 TargetLba,
+    OUT PULONGLONG Generation
+    )
+{
+    tag* Tag = (tag*)Sector;
+    struct LogicalVolIntegrityDesc* Lvid =
+        (struct LogicalVolIntegrityDesc*)Sector;
+    uint32 Checksum = 0, i, RecordedTarget, Flags;
+
+    if (Tag->tagIdent != TID_LOGICAL_VOL_INTEGRITY_DESC ||
+        Tag->tagLocation != SlotLba ||
+        Tag->descCRCLength != UDF_LVID_JOURNAL_CRC_LENGTH ||
+        Lvid->integrityType != INTEGRITY_TYPE_OPEN ||
+        Lvid->nextIntegrityExt.extLength ||
+        Lvid->nextIntegrityExt.extLocation ||
+        Lvid->numOfPartitions != 2 ||
+        Lvid->lengthOfImpUse != UDF_LVID_JOURNAL_IMP_LENGTH ||
+        RtlCompareMemory(Sector + 142, UdfLvidJournalMagic, 8) != 8 ||
+        Tag->descCRC != UDFCrc(Sector + sizeof(tag),
+                                Tag->descCRCLength, 0))
+        return FALSE;
+    for (i = 0; i < sizeof(tag); ++i)
+        if (i != 4) Checksum += Sector[i];
+    if (Tag->tagChecksum != (uint8)Checksum) return FALSE;
+    RtlCopyMemory(Generation, Sector + 150, sizeof(*Generation));
+    RtlCopyMemory(&RecordedTarget, Sector + 158,
+                  sizeof(RecordedTarget));
+    RtlCopyMemory(&Flags, Sector + 162, sizeof(Flags));
+    return *Generation != 0 && RecordedTarget == TargetLba && Flags <= 1;
+}
+
+static NTSTATUS
+UDFDiscoverLvidJournal(
+    IN PIRP_CONTEXT IrpContext,
+    IN PVCB Vcb
+    )
+{
+    uint8 Sector[512];
+    uint32 i, j, Slot, PhysicalRoot;
+    ULONGLONG Generation, Latest = 0;
+    BOOLEAN Valid[2] = {FALSE, FALSE};
+    BOOLEAN Empty[2] = {FALSE, FALSE};
+    NTSTATUS Status;
+
+    if (Vcb->LvidJournalState) return STATUS_SUCCESS;
+    Vcb->LvidJournalState = 2; /* unavailable unless all bounds validate */
+    if (SectorSize(Vcb) != 512 ||
+        Vcb->TargetDeviceObject->DeviceType != FILE_DEVICE_DISK ||
+        Vcb->PartitionMaps != 2 || !Vcb->Partitions ||
+        Vcb->MetadataRef >= Vcb->PartitionMaps ||
+        Vcb->MetadataPhysRef >= Vcb->PartitionMaps ||
+        Vcb->Partitions[Vcb->MetadataRef].PartitionType !=
+            UDF_METADATA_MAP25 ||
+        Vcb->Partitions[Vcb->MetadataPhysRef].PartitionType !=
+            UDF_TYPE1_MAP15 ||
+        Vcb->LVid_loc.extLength != 512 ||
+        Vcb->LvidJournalTarget != Vcb->LVid_loc.extLocation ||
+        !Vcb->LvidJournalSlot[0] ||
+        Vcb->LvidJournalSlot[0] + 1 != Vcb->LvidJournalSlot[1] ||
+        Vcb->LvidJournalSlot[1] == Vcb->LvidJournalTarget ||
+        Vcb->LvidJournalSlot[0] == Vcb->LvidJournalTarget)
+        return STATUS_SUCCESS;
+
+    PhysicalRoot = Vcb->Partitions[Vcb->MetadataPhysRef].PartitionRoot;
+    if (!PhysicalRoot || Vcb->LvidJournalSlot[1] >= PhysicalRoot)
+        return STATUS_SUCCESS;
+    for (i = 0; i < 2; ++i) {
+        Slot = Vcb->LvidJournalSlot[i];
+        for (j = 0; j < sizeof(Vcb->Anchor) /
+                        sizeof(Vcb->Anchor[0]); ++j)
+            if (Slot == Vcb->Anchor[j]) return STATUS_SUCCESS;
+        if ((Vcb->VDS1_Len && Slot >= Vcb->VDS1 &&
+             (ULONGLONG)Slot <
+                 (ULONGLONG)Vcb->VDS1 + Vcb->VDS1_Len) ||
+            (Vcb->VDS2_Len && Slot >= Vcb->VDS2 &&
+             (ULONGLONG)Slot <
+                 (ULONGLONG)Vcb->VDS2 + Vcb->VDS2_Len))
+            return STATUS_SUCCESS;
+        Status = UDFReadSectors(IrpContext, Vcb, FALSE, Slot,
+                                1, FALSE, (int8*)Sector);
+        if (!NT_SUCCESS(Status)) return Status;
+        Empty[i] = TRUE;
+        for (j = 0; j < sizeof(Sector); ++j)
+            if (Sector[j]) { Empty[i] = FALSE; break; }
+        Valid[i] = UDFJournalSlotValid(Sector, Slot,
+                        Vcb->LvidJournalTarget, &Generation);
+        if (Valid[i]) {
+            if (Generation == Latest) return STATUS_SUCCESS;
+            if (Generation > Latest) {
+                Latest = Generation;
+                Vcb->LvidJournalLatestSlot = (uint8)i;
+            }
+        }
+    }
+    if (!Valid[0] && !Valid[1] && (!Empty[0] || !Empty[1]))
+        return STATUS_SUCCESS;
+    Vcb->LvidJournalGeneration = Latest;
+    if (!Latest) Vcb->LvidJournalLatestSlot = 1; /* first write uses slot 0 */
+    Vcb->LvidJournalState = 1;
+    UDFPrint(("UDF: LVID journal slots %x/%x generation %I64u\n",
+              Vcb->LvidJournalSlot[0], Vcb->LvidJournalSlot[1], Latest));
+    return STATUS_SUCCESS;
+}
+
 NTSTATUS
 UDFUpdateLogicalVolInt(
     PIRP_CONTEXT IrpContext,
@@ -425,6 +541,12 @@ UDFUpdateLogicalVolInt(
     NTSTATUS    RC = STATUS_SUCCESS;
     uint32      i, len;
     SIZE_T      WrittenBytes;
+    SIZE_T      BackupWrittenBytes = 0;
+    int8        JournalSector[512];
+    int8        JournalCheck[512];
+    ULONGLONG   JournalGeneration = 0;
+    uint32      JournalSlot = 0, JournalTarget = 0, JournalFlags = 0;
+    uint8       JournalIndex = 0;
 //    uint32      lvid_count = 0;
     uint32      pSize;
     tag*        PTag;
@@ -507,27 +629,92 @@ UDFUpdateLogicalVolInt(
         return STATUS_SUCCESS;
     }
 
+    RC = UDFDiscoverLvidJournal(IrpContext, Vcb);
+    if (!NT_SUCCESS(RC)) {
+        Vcb->VcbState |= VCB_STATE_VOLUME_READ_ONLY;
+        return RC;
+    }
+
     KeQuerySystemTime((PLARGE_INTEGER)&NtTime);
     UDFTimeToUDF(NtTime, &(lvid->recordingDateAndTime));
 
     PTag = &(lvid->descTag);
-    lvid->lengthOfImpUse =
-        sizeof(struct LogicalVolIntegrityDescImpUse);
-    UDFSetUpTag(Vcb, PTag,
-        (uint16)(sizeof(struct LogicalVolIntegrityDesc) +
-        sizeof(uint32)*2*lvid->numOfPartitions +
-        sizeof(struct LogicalVolIntegrityDescImpUse)),
-        PTag->tagLocation, 0);
+    if (Vcb->LvidJournalState == 1) {
+        if (sizeof(struct LogicalVolIntegrityDesc) +
+            sizeof(uint32) * 2 * lvid->numOfPartitions +
+            sizeof(struct LogicalVolIntegrityDescImpUse) != 142 ||
+            len != 512 ||
+            Vcb->LvidJournalGeneration == (ULONGLONG)-1) {
+            Vcb->VcbState |= VCB_STATE_VOLUME_READ_ONLY;
+            return STATUS_FILE_CORRUPT_ERROR;
+        }
+        JournalGeneration = Vcb->LvidJournalGeneration + 1;
+        JournalIndex = (uint8)(1 - Vcb->LvidJournalLatestSlot);
+        JournalSlot = Vcb->LvidJournalSlot[JournalIndex];
+        JournalTarget = Vcb->LvidJournalTarget;
+        lvid->lengthOfImpUse = UDF_LVID_JOURNAL_IMP_LENGTH;
+        RtlCopyMemory((uint8*)lvid + 142, UdfLvidJournalMagic, 8);
+        RtlCopyMemory((uint8*)lvid + 150, &JournalGeneration,
+                      sizeof(JournalGeneration));
+        RtlCopyMemory((uint8*)lvid + 158, &JournalTarget,
+                      sizeof(JournalTarget));
+        RtlCopyMemory((uint8*)lvid + 162, &JournalFlags,
+                      sizeof(JournalFlags));
+        UDFSetUpTag(Vcb, PTag, UDF_LVID_JOURNAL_TOTAL_LENGTH,
+                    PTag->tagLocation, 0);
+        RtlCopyMemory(JournalSector, lvid, sizeof(JournalSector));
+        ((struct LogicalVolIntegrityDesc*)JournalSector)->integrityType =
+            INTEGRITY_TYPE_OPEN;
+        UDFSetUpTag(Vcb, (tag*)JournalSector,
+                    UDF_LVID_JOURNAL_TOTAL_LENGTH, JournalSlot, 0);
+    } else {
+        lvid->lengthOfImpUse =
+            sizeof(struct LogicalVolIntegrityDescImpUse);
+        UDFSetUpTag(Vcb, PTag,
+            (uint16)(sizeof(struct LogicalVolIntegrityDesc) +
+            sizeof(uint32)*2*lvid->numOfPartitions +
+            sizeof(struct LogicalVolIntegrityDescImpUse)),
+            PTag->tagLocation, 0);
+    }
 
     OldIntegrityType = Vcb->IntegrityType;
     Vcb->IntegrityType = INTEGRITY_TYPE_OPEN; // make happy auto-dirty
+    if (Vcb->LvidJournalState == 1) {
+        /* A durable OPEN slot always precedes the potentially torn final
+         * sector write. Rotate slots so a failed slot update cannot erase
+         * the preceding valid checkpoint. */
+        RC = UDFWriteSectors(IrpContext, Vcb, TRUE, JournalSlot, 1,
+                             FALSE, JournalSector, &BackupWrittenBytes);
+        if (NT_SUCCESS(RC) && BackupWrittenBytes != sizeof(JournalSector))
+            RC = STATUS_IO_DEVICE_ERROR;
+        if (NT_SUCCESS(RC))
+            RC = UDFBarrierFlushDevice(Vcb->TargetDeviceObject);
+        if (NT_SUCCESS(RC)) {
+            RC = UDFReadSectors(IrpContext, Vcb, FALSE, JournalSlot,
+                                1, FALSE, JournalCheck);
+            if (NT_SUCCESS(RC) &&
+                RtlCompareMemory(JournalCheck, JournalSector,
+                                 sizeof(JournalSector)) !=
+                    sizeof(JournalSector))
+                RC = STATUS_IO_DEVICE_ERROR;
+        }
+        if (!NT_SUCCESS(RC)) {
+            Vcb->IntegrityType = OldIntegrityType;
+            Vcb->VcbState |= VCB_STATE_VOLUME_READ_ONLY;
+            return RC;
+        }
+        Vcb->LvidJournalGeneration = JournalGeneration;
+        Vcb->LvidJournalLatestSlot = JournalIndex;
+    }
     RC = UDFWriteSectors(IrpContext, Vcb, TRUE, PTag->tagLocation, len >> Vcb->SectorShift, FALSE, (int8*)(lvid), &WrittenBytes);
     // update it here to prevent recursion
     Vcb->IntegrityType = NT_SUCCESS(RC) && WrittenBytes == len ?
                          lvid->integrityType : OldIntegrityType;
 
     if (NT_SUCCESS(RC) && WrittenBytes != len)
-        return STATUS_IO_DEVICE_ERROR;
+        RC = STATUS_IO_DEVICE_ERROR;
+    if (!NT_SUCCESS(RC) && Vcb->LvidJournalState == 1)
+        Vcb->VcbState |= VCB_STATE_VOLUME_READ_ONLY;
 
     return RC;
 } // end UDFUpdateLogicalVolInt()
@@ -1538,6 +1725,7 @@ UDFLoadLogicalVolInt(
 
             if (lvid->nextIntegrityExt.extLength != 0) {
                 uint32 NextLen = lvid->nextIntegrityExt.extLength;
+                uint32 NextLba = lvid->nextIntegrityExt.extLocation;
 
                 //
                 // Decrement max iterations to prevent infinite loops
@@ -1553,6 +1741,23 @@ UDFLoadLogicalVolInt(
                 //
                 if ((NextLen & (SectorSize(Vcb) - 1)) != 0) {
                     try_return(RC = STATUS_DISK_CORRUPT_ERROR);
+                }
+
+                /* Remember two unused sectors at the end of this allocated
+                 * integrity extent. The writer validates their contents and
+                 * physical ownership after the partition maps are loaded. */
+                if (lvid->integrityType == INTEGRITY_TYPE_CLOSE &&
+                    SectorSize(Vcb) == 512 &&
+                    Vcb->TargetDeviceObject->DeviceType == FILE_DEVICE_DISK &&
+                    Len >= 5 * SectorSize(Vcb)) {
+                    ULONGLONG End = (ULONGLONG)Lbn +
+                                    Len / SectorSize(Vcb);
+                    if (End <= MAXULONG && End >= (ULONGLONG)Lbn + 5 &&
+                        NextLba != End - 2 && NextLba != End - 1) {
+                        Vcb->LvidJournalSlot[0] = (uint32)(End - 2);
+                        Vcb->LvidJournalSlot[1] = (uint32)(End - 1);
+                        Vcb->LvidJournalTarget = NextLba;
+                    }
                 }
 
 
@@ -1604,6 +1809,11 @@ UDFLoadLogicalVolInt(
             Vcb->IntegrityType = Vcb->LVid->integrityType;
         Vcb->LVid_loc.extLength = SectorSize(Vcb);
         Vcb->LVid_loc.extLocation = Lbn - 1;  // Last read sector
+        if (Vcb->LvidJournalTarget != Vcb->LVid_loc.extLocation) {
+            Vcb->LvidJournalSlot[0] = 0;
+            Vcb->LvidJournalSlot[1] = 0;
+            Vcb->LvidJournalTarget = 0;
+        }
 
         LVID_iUse = UDFGetLVIDiUse(Vcb);
 
