@@ -2235,6 +2235,7 @@ ReadPrevailingIntegrity(const UDFS_RECOVERY_READER *reader,
     uint64_t journalGeneration = 0;
     uint64_t olderGeneration = 0;
     int linkedFromClosed = 0;
+    int unlinkedLegacyCandidate = 0;
     int journalSlotBad = 0;
     int found = 0;
 
@@ -2334,7 +2335,8 @@ ReadPrevailingIntegrity(const UDFS_RECOVERY_READER *reader,
                          linkedFromClosed ? previousClosed : NULL,
                          &repaired);
             if (status == UdfsRecoveryProbeValidLayout &&
-                linkedFromClosed && count == 1 && i == 0 &&
+                ((linkedFromClosed && count == 1 && i == 0) ||
+                 (unlinkedLegacyCandidate && lba == journalTargetLba)) &&
                 Read32(sector + 28) == 0) {
                 uint64_t targetGeneration = 0;
                 int targetJournaled =
@@ -2376,9 +2378,10 @@ ReadPrevailingIntegrity(const UDFS_RECOVERY_READER *reader,
                     }
                 }
             }
-            if (status == UdfsRecoveryProbeCorrupt && linkedFromClosed &&
+            if (status == UdfsRecoveryProbeCorrupt &&
                 journalOpenLba && journalTargetLba == lba &&
-                count == 1 && i == 0) {
+                ((linkedFromClosed && count == 1 && i == 0) ||
+                 unlinkedLegacyCandidate)) {
                 status = NormalizeLvidFromJournal(
                     sector, lba, journalOpen, journalOpenLba,
                     olderGeneration &&
@@ -2407,7 +2410,76 @@ ReadPrevailingIntegrity(const UDFS_RECOVERY_READER *reader,
             if (prevailingLba) *prevailingLba = lba;
             found = 1;
             nextBytes = Read32(sector + 32);
-            if (!nextBytes) continue;
+            if (!nextBytes) {
+                /* Legacy fixed disks may contain two contiguous LVIDs and
+                 * no linked CLOSED predecessor. A journaled successor is
+                 * considered only when the second sector is immediately
+                 * followed by a valid terminator and both sidecar sectors
+                 * lie at the end of this same integrity extent. Without a
+                 * valid sidecar the old fail-closed behavior is unchanged. */
+                if (i == 0 && count >= 5 && i + 2 < count - 2) {
+                    uint8_t terminator[UDFS_RECOVERY_SECTOR_SIZE];
+                    uint8_t candidate[UDFS_RECOVERY_SECTOR_SIZE];
+                    uint32_t slot, target = lba + 1;
+                    int conflict = 0;
+                    status = ReadSector(reader, result, lba + 2,
+                                        terminator);
+                    if (status != UdfsRecoveryProbeValidLayout)
+                        return status;
+                    if (ValidateTag(terminator, 8, lba + 2) ==
+                            UdfsRecoveryProbeValidLayout) {
+                        unlinkedLegacyCandidate = 1;
+                        previousClosedLba = lba;
+                        journalTargetLba = target;
+                        memcpy(previousClosed, sector,
+                               UDFS_RECOVERY_SECTOR_SIZE);
+                        for (slot = 0; slot < 2; ++slot) {
+                            uint32_t slotLba =
+                                extentLba + count - 2 + slot;
+                            uint64_t generation;
+                            uint32_t k;
+                            status = ReadSector(reader, result, slotLba,
+                                                candidate);
+                            if (status != UdfsRecoveryProbeValidLayout)
+                                return status;
+                            if (!JournalOpenValid(candidate, slotLba,
+                                                  target, sector)) {
+                                for (k = 0; k < sizeof(candidate); ++k)
+                                    if (candidate[k]) {
+                                        journalSlotBad = 1;
+                                        break;
+                                    }
+                                continue;
+                            }
+                            generation = Read64(candidate + 150);
+                            if (generation == journalGeneration) {
+                                conflict = 1;
+                            } else if (generation > journalGeneration) {
+                                if (journalGeneration) {
+                                    olderGeneration = journalGeneration;
+                                    memcpy(olderJournal, journalOpen,
+                                           UDFS_RECOVERY_SECTOR_SIZE);
+                                }
+                                journalOpenLba = slotLba;
+                                journalOtherLba = extentLba + count - 1 - slot;
+                                journalGeneration = generation;
+                                journalTargetLba = target;
+                                memcpy(journalOpen, candidate,
+                                       UDFS_RECOVERY_SECTOR_SIZE);
+                            } else {
+                                olderGeneration = generation;
+                                memcpy(olderJournal, candidate,
+                                       UDFS_RECOVERY_SECTOR_SIZE);
+                            }
+                        }
+                        if (conflict) {
+                            journalOpenLba = 0;
+                            journalGeneration = 0;
+                        }
+                    }
+                }
+                continue;
+            }
             nextLba = Read32(sector + 36);
             if (nextLba == lba) return UdfsRecoveryProbeCorrupt;
             journalOpenLba = 0;
@@ -2416,6 +2488,7 @@ ReadPrevailingIntegrity(const UDFS_RECOVERY_READER *reader,
             olderGeneration = 0;
             journalTargetLba = 0;
             journalSlotBad = 0;
+            unlinkedLegacyCandidate = 0;
             if (lastType == 1 && count >= 5 &&
                 extentLba + count - 2 > lba + 1 &&
                 nextLba != extentLba + count - 2 &&

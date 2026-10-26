@@ -488,14 +488,15 @@ UDFDiscoverLvidJournal(
     NTSTATUS Status;
 
     if (Vcb->LvidJournalState) return STATUS_SUCCESS;
-    Required = Vcb->LVid &&
-               Vcb->LVid_loc.extLength == 512 &&
-               Vcb->LVid->descTag.descCRCLength ==
-                   UDF_LVID_JOURNAL_CRC_LENGTH &&
-               Vcb->LVid->lengthOfImpUse ==
-                   UDF_LVID_JOURNAL_IMP_LENGTH &&
-               RtlCompareMemory((uint8*)Vcb->LVid + 142,
-                                UdfLvidJournalMagic, 8) == 8;
+    Required = Vcb->LvidJournalTarget != 0 ||
+               (Vcb->LVid &&
+                Vcb->LVid_loc.extLength == 512 &&
+                Vcb->LVid->descTag.descCRCLength ==
+                    UDF_LVID_JOURNAL_CRC_LENGTH &&
+                Vcb->LVid->lengthOfImpUse ==
+                    UDF_LVID_JOURNAL_IMP_LENGTH &&
+                RtlCompareMemory((uint8*)Vcb->LVid + 142,
+                                 UdfLvidJournalMagic, 8) == 8);
     Vcb->LvidJournalState = 2; /* unavailable unless all bounds validate */
     if (SectorSize(Vcb) != 512 ||
         Vcb->TargetDeviceObject->DeviceType != FILE_DEVICE_DISK ||
@@ -1670,6 +1671,9 @@ UDFLoadLogicalVolInt(
     struct LogicalVolIntegrityDescImpUse* LVID_iUse;
     struct LogicalVolHeaderDesc* LVID_hd;
     uint32      MaxIterations = UDF_MAX_LVID_CHAIN_LENGTH;
+    uint32      LvidCount = 0;
+    BOOLEAN     HasContinuation = FALSE;
+    BOOLEAN     EndsWithTerminator = FALSE;
 
     ASSERT(!Vcb->LVid);
 
@@ -1721,6 +1725,7 @@ UDFLoadLogicalVolInt(
 
             if (ident == TID_TERMINATING_DESC) {
                 // Terminating descriptor - done with this extent
+                EndsWithTerminator = TRUE;
                 break;
             }
 
@@ -1731,6 +1736,7 @@ UDFLoadLogicalVolInt(
             // Valid LVID found - check integrity type
 
             struct LogicalVolIntegrityDesc* lvid = (struct LogicalVolIntegrityDesc*)Buf;
+            LvidCount++;
 
             /* A fixed writable disk must not treat a CRC-less or
              * under-covered LVID as a clean checkpoint. UDFReadTagged
@@ -1761,6 +1767,7 @@ UDFLoadLogicalVolInt(
             if (lvid->nextIntegrityExt.extLength != 0) {
                 uint32 NextLen = lvid->nextIntegrityExt.extLength;
                 uint32 NextLba = lvid->nextIntegrityExt.extLocation;
+                HasContinuation = TRUE;
 
                 //
                 // Decrement max iterations to prevent infinite loops
@@ -1848,6 +1855,29 @@ UDFLoadLogicalVolInt(
             Vcb->LvidJournalSlot[0] = 0;
             Vcb->LvidJournalSlot[1] = 0;
             Vcb->LvidJournalTarget = 0;
+        }
+        /* The older contiguous LVID layout has no linked CLOSED
+         * predecessor. Its first two descriptors and terminator still lie
+         * in an allocated integrity extent with two spare tail sectors.
+         * Journal those future writes only for this exact bounded layout;
+         * discovery below verifies the spare sectors and physical bounds. */
+        if (!Vcb->LvidJournalTarget && !HasContinuation &&
+            EndsWithTerminator && LvidCount == 2 &&
+            SectorSize(Vcb) == 512 &&
+            Vcb->TargetDeviceObject->DeviceType == FILE_DEVICE_DISK &&
+            loc.extLength >= 5 * SectorSize(Vcb) &&
+            loc.extLength <= 256 * SectorSize(Vcb) &&
+            Vcb->LVid_loc.extLocation == loc.extLocation + 1 &&
+            Lbn == loc.extLocation + 2 &&
+            (ULONGLONG)loc.extLocation +
+                loc.extLength / SectorSize(Vcb) <= MAXULONG) {
+            uint32 End = loc.extLocation +
+                         loc.extLength / SectorSize(Vcb);
+            if (End - 2 > Vcb->LVid_loc.extLocation) {
+                Vcb->LvidJournalSlot[0] = End - 2;
+                Vcb->LvidJournalSlot[1] = End - 1;
+                Vcb->LvidJournalTarget = Vcb->LVid_loc.extLocation;
+            }
         }
 
         LVID_iUse = UDFGetLVIDiUse(Vcb);
