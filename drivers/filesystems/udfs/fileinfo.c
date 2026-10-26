@@ -1201,6 +1201,13 @@ UDFMarkStreamsForDeletion(
             SDirAcq = TRUE;
         }
 
+        /* Refuse the delete before setting any stream, SDir or base delete
+         * state.  A later refusal in UDFUnlinkFile__ would be reported by
+         * cleanup as a pretend delete and could leave allocated streams
+         * without a durable namespace owner. */
+        if (ForDel && UDFStreamDirectoryHasLiveHandles(SDirInfo))
+            try_return(RC = STATUS_CANNOT_DELETE);
+
         if (!ForDel || ((lc = UDFGetFileNameLinkCount(Fcb->FileInfo)) < 2)) {
 
             UDF_DIR_SCAN_CONTEXT ScanContext;
@@ -1626,17 +1633,20 @@ UDFSetAllocationInfo(
 
             // Update the FCB Header with the new allocation size.
             if (TruncatedFile) {
+                if (Fcb->Header.FileSize.QuadPart > Buffer->AllocationSize.QuadPart) {
+                    /* A shrink can be rejected before touching the on-disk
+                     * file, including by the ordered-truncate layout guard.
+                     * Keep the live FCB and Cache Manager sizes unchanged
+                     * until the file-system resize has actually succeeded. */
+                    RC = UDFResizeFile__(IrpContext, Vcb, Fcb->FileInfo, Buffer->AllocationSize.QuadPart);
+                    if (!NT_SUCCESS(RC))
+                        try_return(RC);
+                    Fcb->Header.FileSize = Buffer->AllocationSize;
+//                    UDFSetFileSizeInDirNdx(Vcb, Fcb->FileInfo, NULL);
+                }
                 if (Fcb->Header.ValidDataLength.QuadPart > Buffer->AllocationSize.QuadPart) {
                     // Decrease the valid data length value.
-                    Fcb->Header.ValidDataLength =
-                        Buffer->AllocationSize;
-                }
-                if (Fcb->Header.FileSize.QuadPart > Buffer->AllocationSize.QuadPart) {
-                    // Decrease the file size value.
-                    Fcb->Header.FileSize =
-                        Buffer->AllocationSize;
-                    RC = UDFResizeFile__(IrpContext, Vcb, Fcb->FileInfo, Buffer->AllocationSize.QuadPart);
-//                    UDFSetFileSizeInDirNdx(Vcb, Fcb->FileInfo, NULL);
+                    Fcb->Header.ValidDataLength = Buffer->AllocationSize;
                 }
             } else {
                 Fcb->Header.AllocationSize = Buffer->AllocationSize;
@@ -1708,6 +1718,7 @@ UDFSetEndOfFileInfo(
     )
 {
     NTSTATUS        RC = STATUS_SUCCESS;
+    NTSTATUS        CloseStatus = STATUS_SUCCESS;
     BOOLEAN         TruncatedFile = FALSE;
     BOOLEAN         ModifiedAllocSize = FALSE;
     ULONG           Attr;
@@ -1803,7 +1814,7 @@ UDFSetEndOfFileInfo(
             // perform resize operation
             RC = UDFResizeFile__(IrpContext, Vcb, Fcb->FileInfo, PtrBuffer->EndOfFile.QuadPart);
             // dereference file
-            UDFCloseFile__(IrpContext, Vcb, Fcb->FileInfo);
+            CloseStatus = UDFCloseFile__(IrpContext, Vcb, Fcb->FileInfo);
             InterlockedDecrement((PLONG)&Fcb->FcbReference);
             if (!NT_SUCCESS(RC)) {
                 try_return(RC);
@@ -1836,7 +1847,7 @@ UDFSetEndOfFileInfo(
             // perform resize operation
             RC = UDFResizeFile__(IrpContext, Vcb, Fcb->FileInfo, PtrBuffer->EndOfFile.QuadPart);
             // dereference file
-            UDFCloseFile__(IrpContext, Vcb, Fcb->FileInfo);
+            CloseStatus = UDFCloseFile__(IrpContext, Vcb, Fcb->FileInfo);
             InterlockedDecrement((PLONG)&Fcb->FcbReference);
 
             ModifiedAllocSize = TRUE;
@@ -1924,7 +1935,12 @@ notify_size_changes:
             }
         }
 
-try_exit: NOTHING;
+try_exit:
+        /* Resize may already have committed a new FE when the final close
+         * reports a metadata writeback error.  Keep FCB/Cc sizes in sync
+         * with that resize, then return the close error to the caller. */
+        if (NT_SUCCESS(RC) && !NT_SUCCESS(CloseStatus))
+            RC = CloseStatus;
 
     } _SEH2_FINALLY {
 

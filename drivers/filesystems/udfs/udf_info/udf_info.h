@@ -744,6 +744,13 @@ UDFUnlinkFile__(
     IN BOOLEAN FreeSpace
     );
 
+// A named stream with an uncleaned FILE_OBJECT still owns its stream FCB.
+// The caller must hold the VCB against concurrent namespace changes.
+BOOLEAN
+UDFStreamDirectoryHasLiveHandles(
+    IN PUDF_FILE_INFO SDirInfo
+    );
+
 // drop the stream directory (all named streams) of a file that itself survives
 // (overwrite/supersede). Requires exclusive Vcb access.
 NTSTATUS
@@ -919,6 +926,7 @@ NTSTATUS
 UDFPrepareXSpaceBitmap(
     IN PIRP_CONTEXT IrpContext,
     IN PVCB Vcb,
+    IN uint32 RefPartNum,
     IN OUT PSHORT_AD XSpaceBitmap,
     IN OUT PEXTENT_INFO XSBMExtInfo,
     IN OUT int8** XSBM,
@@ -962,7 +970,8 @@ UDFUpdateVDS(
 NTSTATUS
 UDFUmount__(
     IN PIRP_CONTEXT IrpContext,
-    IN PVCB Vcb
+    IN PVCB Vcb,
+    OUT PBOOLEAN CloseDeferred
     );
 
 // move file from DirInfo1 to DirInfo2 & renames it to fn
@@ -1025,6 +1034,14 @@ UDFFlushMetadataBitmap(
     IN PIRP_CONTEXT IrpContext,
     IN PVCB Vcb
 );
+
+NTSTATUS UDFOverlayDeletePrefreePhysical(IN PVCB Vcb,
+    IN OUT int8* Unallocated, IN OUT int8* Freed, IN uint32 BitCount);
+NTSTATUS UDFOverlayDeletePrefreeMetadata(IN PVCB Vcb,
+    IN OUT int8* Bitmap, IN uint32 BitCount);
+VOID UDFReleaseDeletePrefreeRecords(IN PVCB Vcb);
+VOID UDFAbandonDeletePrefreeDloc(IN PVCB Vcb,
+    IN PUDF_DATALOC_INFO Dloc);
 
 NTSTATUS
 UDFOpenMetadataFile(

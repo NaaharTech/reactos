@@ -366,9 +366,11 @@ UDFTeardownStructures(
         // Loop until we find an Fcb we can't remove.
         //
         do {
-            BOOLEAN FinalFlushPending = !Delete &&
-                CurrentFcb->FileInfo &&
-                !(CurrentFcb->FcbState & UDF_FCB_DELETED);
+            /* A deferred parent delete still needs its FE on disk before
+             * the last prefix and FCB-table owner are detached. */
+            BOOLEAN FinalFlushPending = CurrentFcb->FileInfo &&
+                (Delete ? !CurrentFcb->FcbCleanup :
+                          !(CurrentFcb->FcbState & UDF_FCB_DELETED));
 
             //
             // If the reference count is non-zero then break.
@@ -543,7 +545,6 @@ UDFTeardownStructures(
                 // no more references... current file/dir MUST DIE!!!
                 if (Delete) {
                     UDFReferenceFile__(CurrentFcb->FileInfo);
-                    UDFFlushFile__(IrpContext, Vcb, CurrentFcb->FileInfo, 0);
                     UDFUnlinkFile__(IrpContext, Vcb, CurrentFcb->FileInfo, TRUE);
                     UDFCloseFile__(IrpContext, Vcb, CurrentFcb->FileInfo);
                     CurrentFcb->FcbState |= UDF_FCB_DELETED;
@@ -859,7 +860,8 @@ Return Value:
             NewFcb->Vcb = IrpContext->Vcb;
             NewFcb->FileId = FileId;
 
-            // Failed mount cleanup can run before UDFInitializeFCB.
+            // A failed root-directory open can delete this FCB before
+            // UDFInitializeFCB.  Its teardown requires valid empty queues.
             InitializeListHead(&NewFcb->ParentLcbQueue);
             InitializeListHead(&NewFcb->ChildLcbQueue);
 
@@ -1701,6 +1703,12 @@ UDFCreateBitmapStream(
                          TRUE,                           // PinAccess
                          &UdfData.CacheMgrCallBacks,
                          Fcb);
+
+    /* Physical allocation bits can describe FE/FID owners that are still
+     * waiting for the volume checkpoint. Keep dirty bitmap BCBs out of the
+     * lazy writer; UDFUpdatePartDesc explicitly flushes them after
+     * UDFUmount__ has made the namespace durable. */
+    CcSetAdditionalCacheAttributes(FileObject, FALSE, TRUE);
 
     // Store in VCB
 

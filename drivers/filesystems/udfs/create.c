@@ -208,6 +208,18 @@ UDFOpenExistingFcb(
         return STATUS_CANNOT_DELETE;
     }
 
+    /* Report a held named stream before accepting FILE_DELETE_ON_CLOSE.
+     * Otherwise cleanup can refuse the delete after this CREATE has already
+     * reported success to its caller.  VCB is held shared here, while stream
+     * namespace changes require it exclusive.  A live stream holds the
+     * shared Dloc's SDirInfo; the cleanup preflight remains the final guard. */
+    if (DeleteOnClose &&
+        UDFHasAStreamDir((*PtrNewFcb)->FileInfo) &&
+        UDFStreamDirectoryHasLiveHandles(
+            (*PtrNewFcb)->FileInfo->Dloc->SDirInfo)) {
+        return STATUS_CANNOT_DELETE;
+    }
+
     // Determine type of open based on FCB type
     if (UDFIsADirectory((*PtrNewFcb)->FileInfo)) {
         TypeOfOpen = UserDirectoryOpen;

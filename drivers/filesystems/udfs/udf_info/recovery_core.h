@@ -9,7 +9,10 @@
 
 #define UDFS_RECOVERY_SECTOR_SIZE 512U
 #define UDFS_RECOVERY_MAX_EXTENTS 128U
+/* First missing LBAs retained for diagnostics, not a repair limit. */
 #define UDFS_RECOVERY_MAX_REPAIR_BLOCKS 4U
+/* Bound nonpaged plan memory by bitmap sectors, not file count. */
+#define UDFS_RECOVERY_MAX_BITMAP_EDITS 128U
 
 typedef int (*UdfsRecoveryReadSector)(void *context, uint32_t lba,
                                       uint8_t sector[UDFS_RECOVERY_SECTOR_SIZE]);
@@ -45,6 +48,10 @@ typedef struct _UDFS_RECOVERY_PROBE {
     uint32_t FailureLba;
     uint32_t AnchorLba;
     uint32_t VdsStartLba;
+    uint32_t MainVdsStartLba;
+    uint32_t MainVdsBytes;
+    uint32_t ReserveVdsStartLba;
+    uint32_t ReserveVdsBytes;
     uint32_t PartitionStart;
     uint32_t PartitionBlocks;
     uint32_t PhysicalBitmapLbn;
@@ -86,10 +93,32 @@ typedef struct _UDFS_RECOVERY_PROBE {
     uint64_t MaxUniqueId;
     uint32_t FailureObjectLbn;
     uint16_t FailureObjectRef;
+    /* One bounded empty-directory pre-FID deletion transaction. */
+    uint32_t DirectoryLinkFixParentLbn;
+    uint32_t DirectoryLinkFixChildLbn;
+    uint16_t DirectoryLinkFixParentRef;
+    uint16_t DirectoryLinkFixStored;
+    uint16_t DirectoryLinkFixExpected;
+    uint8_t DirectoryLinkFixCount;
+    uint8_t DirectoryLinkFixChildVerified;
+    uint32_t MirrorDirectoryLbn;
+    uint16_t MirrorDirectoryMainLinks;
+    uint16_t MirrorDirectoryMirrorLinks;
+    uint8_t MirrorDirectorySplitCount;
+    uint32_t FidSplitLbn;
+    uint32_t FidSplitMainLba;
+    uint32_t FidSplitMirrorLba;
+    uint32_t FidSplitChildLbn;
+    uint32_t FidSplitRecordOffset;
+    uint32_t FidSplitParentLbn;
+    uint8_t FidSplitCount;
+    uint8_t FidSplitLiveOnMirror;
+    uint8_t FidSplitSeen;
     uint8_t MetadataDuplicated;
     uint8_t BitmapContentsScanned;
     uint8_t LvidIntegrityType;
     uint8_t LvidCountersMatch;
+    uint8_t OwnershipGraphScanned;
     uint8_t CompleteOwnershipGraph;
     uint8_t WritableMountAuthorized;
 } UDFS_RECOVERY_PROBE;
@@ -104,7 +133,13 @@ typedef struct _UDFS_RECOVERY_SECTOR_EDIT {
  * caller establishes exclusive access, durable ordering and retry semantics. */
 typedef struct _UDFS_RECOVERY_REPAIR_PLAN {
     uint32_t BitmapEditCount;
-    UDFS_RECOVERY_SECTOR_EDIT BitmapEdits[UDFS_RECOVERY_MAX_REPAIR_BLOCKS];
+    UDFS_RECOVERY_SECTOR_EDIT BitmapEdits[UDFS_RECOVERY_MAX_BITMAP_EDITS];
+    uint32_t FeEditCount;
+    UDFS_RECOVERY_SECTOR_EDIT FeEdits[2];
+    uint32_t FidEditCount;
+    uint32_t FidEditLogicalLbn;
+    uint32_t FidLiveLba;
+    UDFS_RECOVERY_SECTOR_EDIT FidEdit;
     UDFS_RECOVERY_SECTOR_EDIT LvidEdit;
     uint8_t Ready;
 } UDFS_RECOVERY_REPAIR_PLAN;

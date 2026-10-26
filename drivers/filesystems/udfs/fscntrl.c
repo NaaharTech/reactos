@@ -770,6 +770,7 @@ UDFCleanupVCB(
 {
     _SEH2_TRY {
         UDFReleaseFileIdCache(Vcb);
+        UDFReleaseDeletePrefreeRecords(Vcb);
         UDFReleaseDlocList(Vcb);
     } _SEH2_EXCEPT(EXCEPTION_EXECUTE_HANDLER) {
         BrutePoint();

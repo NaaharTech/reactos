@@ -236,6 +236,23 @@ typedef struct _DIR_INDEX_ITEM {
 
 */
 struct FCB;
+struct _UDF_DATALOC_INFO;
+
+/* On-disk FREE bits prepared before a final-link FID tombstone.  RAM keeps
+ * these blocks allocated until the last FCB/Dloc reference disappears. */
+typedef struct _UDF_DELETE_PREFREE_RANGE {
+    uint32 FirstBit;
+    uint32 BitCount;
+    uint8 Metadata;
+} UDF_DELETE_PREFREE_RANGE, *PUDF_DELETE_PREFREE_RANGE;
+
+typedef struct _UDF_DELETE_PREFREE {
+    struct _UDF_DELETE_PREFREE* Next;
+    struct _UDF_DATALOC_INFO* Dloc;
+    uint32 RangeCount;
+    UDF_DELETE_PREFREE_RANGE Ranges[1];
+} UDF_DELETE_PREFREE, *PUDF_DELETE_PREFREE;
+
 typedef struct _UDF_DATALOC_INFO {
 
 /**
@@ -287,6 +304,7 @@ typedef struct _UDF_DATALOC_INFO {
         Presence of this bit means that given FileEntry represents a Stream Dir.
 */
     uint32      FE_Flags;              // FileEntry flags
+    PUDF_DELETE_PREFREE DeletePrefree; // held until deferred allocation release
 /**
     Counter of currently opened directory tree instances  (files)
     pointing to given data. It is introduced because UDF supports

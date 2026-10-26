@@ -560,6 +560,7 @@ UDFFlushVolume(
     ULONG ret_val = 0;
     IO_STATUS_BLOCK IoStatus;
     NTSTATUS Status;
+    BOOLEAN CloseDeferred = FALSE;
 
     UDFPrint(("UDFFlushVolume: \n"));
 
@@ -610,12 +611,14 @@ UDFFlushVolume(
             UDFPrint(("  Lite flush, keep Modified=%d.\n", Vcb->Modified));
         } else {
             // umount (this is internal operation, NT will "dismount" volume later)
-            Status = UDFUmount__(IrpContext, Vcb);
+            Status = UDFUmount__(IrpContext, Vcb, &CloseDeferred);
             if (!NT_SUCCESS(Status))
                 return Status;
 
-            UDFPreClrModified(Vcb);
-            UDFClrModified(Vcb);
+            if (!CloseDeferred) {
+                UDFPreClrModified(Vcb);
+                UDFClrModified(Vcb);
+            }
         }
 
     } _SEH2_FINALLY {

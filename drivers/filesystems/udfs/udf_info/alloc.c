@@ -534,6 +534,7 @@ UDFGrowMetadataFile(
     uint32 mainMapBytes, mirrorMapBytes;
     BOOLEAN duplicate;
     PCHAR newBitmap = NULL;
+    PCHAR newPendingAlloc = NULL;
     int8* zeroBuffer = NULL;
     PEXTENT_MAP mainMap = NULL, mirrorMap = NULL;
     PEXTENT_MAP oldMainMap, oldMirrorMap;
@@ -545,7 +546,7 @@ UDFGrowMetadataFile(
     BOOLEAN profileStarted = FALSE, commitStarted = FALSE;
 
     if (!Vcb->MetadataFileInfo || !Vcb->MetadataMirrorFileInfo ||
-        !Vcb->MetadataBitmapFileInfo)
+        !Vcb->MetadataBitmapFileInfo || !Vcb->MetadataPendingAlloc)
         return STATUS_NOT_SUPPORTED;
 
     duplicate = (Vcb->MetadataFlags & UDF_METADATA_DUPLICATED) != 0;
@@ -600,16 +601,18 @@ UDFGrowMetadataFile(
     newBitmapBytes = max(newBitmapBytes, Vcb->MetadataBitmapByteCount);
 
     newBitmap = (PCHAR)DbgAllocatePool(NonPagedPool, newBitmapBytes);
+    newPendingAlloc = (PCHAR)DbgAllocatePool(NonPagedPool, newBitmapBytes);
     zeroBuffer = (int8*)DbgAllocatePool(NonPagedPool, Vcb->SectorSize * 8);
     mainMap = (PEXTENT_MAP)MyAllocatePoolTag__(NonPagedPool,
                 mainMapBytes + sizeof(EXTENT_MAP), MEM_EXTMAP_TAG);
     mirrorMap = (PEXTENT_MAP)MyAllocatePoolTag__(NonPagedPool,
                 mirrorMapBytes + sizeof(EXTENT_MAP), MEM_EXTMAP_TAG);
-    if (!newBitmap || !zeroBuffer || !mainMap || !mirrorMap) {
+    if (!newBitmap || !newPendingAlloc || !zeroBuffer || !mainMap || !mirrorMap) {
         status = STATUS_INSUFFICIENT_RESOURCES;
         goto cleanup;
     }
     RtlFillMemory(newBitmap, newBitmapBytes, 0xff);
+    RtlZeroMemory(newPendingAlloc, newBitmapBytes);
     RtlCopyMemory(newBitmap, Vcb->MetadataBitmap, Vcb->MetadataBitmapByteCount);
     for (i = oldBlocks; i < newBlocks; i++)
         newBitmap[i >> 3] |= (uint8)(1 << (i & 7));
@@ -763,6 +766,25 @@ reduce_growth:
                              sizeof(SPACE_BITMAP_DESC) + newBitmapBytes);
     if (!NT_SUCCESS(status)) goto failed_after_commit;
 
+    /* Preserve allocations made while the new metadata extents were zeroed
+     * and committed. Both the active and pending bitmaps share this lock. */
+    UDFAcquireResourceExclusive(&(Vcb->BitMapResource1), TRUE);
+    if (Vcb->MetadataBitCount != oldBlocks ||
+        !Vcb->MetadataBitmap || !Vcb->MetadataPendingAlloc ||
+        Vcb->MetadataBitmapByteCount > newBitmapBytes) {
+        UDFReleaseResource(&(Vcb->BitMapResource1));
+        status = STATUS_FILE_CORRUPT_ERROR;
+        goto failed_after_commit;
+    }
+    RtlCopyMemory(newBitmap, Vcb->MetadataBitmap,
+                  Vcb->MetadataBitmapByteCount);
+    if (oldBlocks & 7)
+        newBitmap[oldBlocks >> 3] |= (uint8)(0xffU << (oldBlocks & 7));
+    RtlCopyMemory(newPendingAlloc, Vcb->MetadataPendingAlloc,
+                  Vcb->MetadataBitmapByteCount);
+    DbgFreePool(Vcb->MetadataPendingAlloc);
+    Vcb->MetadataPendingAlloc = newPendingAlloc;
+    newPendingAlloc = NULL;
     DbgFreePool(Vcb->MetadataBitmap);
     Vcb->MetadataBitmap = newBitmap;
     newBitmap = NULL;
@@ -773,6 +795,7 @@ reduce_growth:
     Vcb->Partitions[Vcb->MetadataRef].PartitionLen = newBlocks;
     Vcb->MetadataBitmapModified = TRUE;
     UDFSetModified(Vcb);
+    UDFReleaseResource(&(Vcb->BitMapResource1));
     status = UDFFlushMetadataBitmap(IrpContext, Vcb);
     if (!NT_SUCCESS(status)) goto failed_after_commit;
     goto cleanup;
@@ -807,6 +830,7 @@ cleanup:
                   frequency.QuadPart));
     }
     if (newBitmap) DbgFreePool(newBitmap);
+    if (newPendingAlloc) DbgFreePool(newPendingAlloc);
     if (zeroBuffer) DbgFreePool(zeroBuffer);
     if (mainMap) MyFreePool__(mainMap);
     if (mirrorMap) MyFreePool__(mirrorMap);
@@ -829,7 +853,8 @@ UDFAllocMetadataExtent(
     ExtInfo->Offset = 0;
     ExtInfo->Length = 0;
 
-    if (!Vcb->MetadataFileInfo || !Vcb->MetadataBitmap)
+    if (!Vcb->MetadataFileInfo || !Vcb->MetadataBitmap ||
+        !Vcb->MetadataPendingAlloc)
         return STATUS_NOT_SUPPORTED;
     if (Length <= 0 || Length > UDF_EXTENT_LENGTH_MASK)
         return STATUS_INVALID_PARAMETER;
@@ -862,9 +887,12 @@ retry_after_growth:
             UDFReleaseResource(&(Vcb->BitMapResource1));
             return STATUS_INSUFFICIENT_RESOURCES;
         }
-        for (i = 0; i < blocks; i++)
+        for (i = 0; i < blocks; i++) {
             Vcb->MetadataBitmap[(bit + i) >> 3] &=
                 ~(1 << ((bit + i) & 7));
+            Vcb->MetadataPendingAlloc[(bit + i) >> 3] |=
+                (uint8)(1 << ((bit + i) & 7));
+        }
         Vcb->MetadataFreeCount -= blocks;
         Vcb->MetadataHint = bit + blocks;
         if (Vcb->MetadataHint >= Vcb->MetadataBitCount)
@@ -1509,6 +1537,10 @@ UDFMarkSpaceAsXXXNoProtect_(
         // blocks to ordinary file data.
         if (Vcb->MetadataBitmap && !metadataFileMap &&
             !(asXXX & AS_BAD)) {
+            if (!Vcb->MetadataPendingAlloc) {
+                Vcb->VcbState |= VCB_STATE_VOLUME_READ_ONLY;
+                return;
+            }
             uint32 metadataLbn = UDFPhysLbaToMetadata(Vcb, lba);
             if (metadataLbn != LBA_OUT_OF_EXTENT &&
                 metadataLbn < Vcb->MetadataBitCount &&
@@ -1518,12 +1550,25 @@ UDFMarkSpaceAsXXXNoProtect_(
                         break;
                 }
                 if (j == len) {
+                    if ((asXXX & AS_DISCARDED) &&
+                        Vcb->TruncateTxnOwner == PsGetCurrentThread()) {
+                        /* This transaction only prepared physical bits.
+                         * Leave unexpected metadata bits reserved and make
+                         * the outer resize fail closed. */
+                        Vcb->TruncateTxnError = STATUS_NOT_SUPPORTED;
+                        Map[i].extLength = (len << BSh) |
+                            (EXTENT_NOT_RECORDED_NOT_ALLOCATED << 30);
+                        Map[i].extLocation = 0;
+                        i++;
+                        continue;
+                    }
                     for (j = 0; j < len; j++) {
                         uint32 bit = metadataLbn + j;
                         uint8 mask = (uint8)(1 << (bit & 7));
                         BOOLEAN wasFree = (Vcb->MetadataBitmap[bit >> 3] & mask) != 0;
                         if (asUsed && wasFree) {
                             Vcb->MetadataBitmap[bit >> 3] &= ~mask;
+                            Vcb->MetadataPendingAlloc[bit >> 3] |= mask;
                             Vcb->MetadataFreeCount--;
                         } else if (!asUsed && !wasFree) {
                             Vcb->MetadataBitmap[bit >> 3] |= mask;
@@ -1531,6 +1576,8 @@ UDFMarkSpaceAsXXXNoProtect_(
                             if (bit < Vcb->MetadataHint)
                                 Vcb->MetadataHint = bit;
                         }
+                        if (!asUsed)
+                            Vcb->MetadataPendingAlloc[bit >> 3] &= ~mask;
                     }
                     Vcb->MetadataBitmapModified = TRUE;
                     UDFSetModified(Vcb);
@@ -1545,11 +1592,6 @@ UDFMarkSpaceAsXXXNoProtect_(
             }
         }
 
-        if (!physicalMarked) {
-            Vcb->BitmapModified = TRUE;
-            UDFSetModified(Vcb);
-            physicalMarked = TRUE;
-        }
         if (lba < partRoot) {
             ASSERT(FALSE);
             i++;
@@ -1566,6 +1608,34 @@ UDFMarkSpaceAsXXXNoProtect_(
         }
         if (len > Vcb->FSBM_BitCount - lbn)
             len = Vcb->FSBM_BitCount - lbn;
+
+        if ((asXXX & AS_DISCARDED) && Vcb->TruncateTxnOwner ==
+                PsGetCurrentThread()) {
+            /* The shortened FE has not passed its device barrier yet.
+             * Neither the RAM bitmap nor the lower TRIM may expose these
+             * sectors, including to an allocation made by this thread
+             * while serializing the new FE. */
+            if (Vcb->TruncateTxnReleased && len &&
+                Vcb->TruncateTxnCount < Vcb->TruncateTxnCapacity) {
+                PEXTENT_MAP entry = &Vcb->TruncateTxnReleased[
+                    Vcb->TruncateTxnCount++];
+                entry->extLocation = lba;
+                entry->extLength = len << BSh;
+            } else {
+                Vcb->TruncateTxnError = STATUS_INSUFFICIENT_RESOURCES;
+            }
+            Map[i].extLength = (len << BSh) |
+                (EXTENT_NOT_RECORDED_NOT_ALLOCATED << 30);
+            Map[i].extLocation = 0;
+            i++;
+            continue;
+        }
+
+        if (!physicalMarked) {
+            Vcb->BitmapModified = TRUE;
+            UDFSetModified(Vcb);
+            physicalMarked = TRUE;
+        }
 
         if (asUsed) {
             Vcb->SectorHint = lbn + len;

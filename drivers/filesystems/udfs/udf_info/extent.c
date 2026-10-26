@@ -2308,36 +2308,11 @@ UDFResizeExtent(
                         l = Length;
                         UDFMarkSpaceAsXXXNoProtect(Vcb, 0, &(ExtInfo->Mapping[i]), AS_USED); // mark as used
                     } else {
-                        // we get here if simple increasing of last frag failed
-                        // it worth truncating last frag and try to allocate
-                        // all required data as a single frag
-
-/*                        if (Sequential && s>=PS) {
-                            s &= ~(PS-1);
-                            AdPrint(("Resize grow last Not-Rec (4/2)\n"));
-                            ExtInfo->Mapping[i].extLength = (s << BSh) | (EXTENT_NOT_RECORDED_ALLOCATED << 30);
-                            l += (s << BSh);
-                            UDFMarkSpaceAsXXXNoProtect(Vcb, 0, &(ExtInfo->Mapping[i]), AS_USED); // mark as used
-                        }*/
-                        AdPrint(("Resize reloc last Not-Rec (5)\n"));
-                        RtlZeroMemory(&TmpExtInf, sizeof(EXTENT_INFO));
-                        TmpExtInf.Mapping = (PEXTENT_MAP)MyAllocatePoolTag__(NonPagedPool , (i+1)*sizeof(EXTENT_MAP),
-                                                                           MEM_EXTMAP_TAG);
-                        if (!TmpExtInf.Mapping) {
-                            UDFPrint(("UDFResizeExtent: !TmpExtInf.Mapping\n"));
-                            UDFReleaseResource(&(Vcb->BitMapResource1));
-                            return STATUS_INSUFFICIENT_RESOURCES;
-                        }
-                        RtlCopyMemory(TmpExtInf.Mapping, ExtInfo->Mapping, i*sizeof(EXTENT_MAP));
-                        TmpExtInf.Mapping[i].extLength =
-                        TmpExtInf.Mapping[i].extLocation = 0;
-                        TmpExtInf.Offset = ExtInfo->Offset;
-                        l -= (ExtInfo->Mapping[i].extLength & UDF_EXTENT_LENGTH_MASK);
-                        TmpExtInf.Length = l;
-                        ASSERT(i || !ExtInfo->Offset);
-                        UDFMarkSpaceAsXXXNoProtect(Vcb, 0, &(ExtInfo->Mapping[i]), AS_DISCARDED); // mark as free
-                        MyFreePool__(ExtInfo->Mapping);
-                        (*ExtInfo) = TmpExtInf;
+                        /* The old FE can still point at this allocated,
+                         * unrecorded extent.  Do not make its blocks
+                         * reusable before the replacement FE is durable.
+                         * Append the missing space below instead. */
+                        AdPrint(("Resize keep last Not-Rec (5)\n"));
                     }
                     UDFCheckSpaceAllocation(Vcb, 0, ExtInfo->Mapping, AS_USED); // check if used
                     UDFReleaseResource(&(Vcb->BitMapResource1));

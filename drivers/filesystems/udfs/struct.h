@@ -758,11 +758,14 @@ struct VCB {
     PUDF_FILE_INFO  MetadataMirrorFileInfo;
     PUDF_FILE_INFO  MetadataBitmapFileInfo;
     PCHAR           MetadataBitmap;         
+    PCHAR           MetadataPendingAlloc;  // bits allocated since last successful bitmap flush
     uint32          MetadataBitmapByteCount;
     uint32          MetadataBitCount;
     uint32          MetadataFreeCount;
     uint32          MetadataHint;
     BOOLEAN         MetadataBitmapModified;
+    PUDF_DELETE_PREFREE DeletePrefreeList;
+    ULONG           DeletePrefreeCount;
     // sparing table
     ULONG           SparingCountFree;
     ULONG           SparingCount;
@@ -785,6 +788,14 @@ struct VCB {
 #endif //UDF_TRACK_ONDISK_ALLOCATION_OWNERS
 
     PCHAR           FSBM_OldBitmap;  // 0 - free, 1 - used
+    /* A physical shrink owns BitMapResource1 until its old FE is durable.
+     * The original release calls collect ranges here without making them
+     * allocatable or issuing TRIM.  Only that thread may append entries. */
+    PETHREAD        TruncateTxnOwner;
+    PEXTENT_MAP     TruncateTxnReleased;
+    ULONG           TruncateTxnCount;
+    ULONG           TruncateTxnCapacity;
+    NTSTATUS        TruncateTxnError;
     ULONG           BitmapModified;
     LONG            DirectoryAppendBytes; // bounded pending-directory buffers
     LONG            DirectoryFECheckpointBytes; // bounded successful-FE proofs

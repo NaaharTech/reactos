@@ -14,6 +14,9 @@ typedef struct _RECOVERY_EXTENT_LIST {
     uint32_t Count;
     uint32_t TotalBlocks;
     uint64_t FileBytes;
+    uint32_t InlineFeLbn;
+    uint32_t InlineOffset;
+    uint8_t Inline;
 } RECOVERY_EXTENT_LIST;
 
 typedef struct _RECOVERY_SECTOR_CACHE {
@@ -51,6 +54,13 @@ RecoveryDifference(const void *left, const void *right, size_t length)
     for (i = 0; i < length; ++i)
         difference |= a[i] ^ b[i];
     return difference;
+}
+
+static void
+Write16(uint8_t *p, uint16_t value)
+{
+    p[0] = (uint8_t)value;
+    p[1] = (uint8_t)(value >> 8);
 }
 
 static void
@@ -118,13 +128,121 @@ ValidateTag(const uint8_t sector[UDFS_RECOVERY_SECTOR_SIZE],
     return UdfsRecoveryProbeValidLayout;
 }
 
+/* A split mirror is recoverable only when both complete, CRC-valid directory
+ * FEs differ solely in the link count and its tag CRC/checksum.  The
+ * namespace walk later decides which count is correct; no copy wins merely
+ * because it is primary or newer-looking. */
+static int
+DirectoryFePairDiffersOnlyInLinkCount(
+    const uint8_t main[UDFS_RECOVERY_SECTOR_SIZE],
+    const uint8_t mirror[UDFS_RECOVERY_SECTOR_SIZE], uint32_t lbn)
+{
+    uint16_t kind = Read16(main), a = Read16(main + 48);
+    uint16_t b = Read16(mirror + 48);
+    uint32_t i;
+    if ((kind != 261 && kind != 266) || Read16(mirror) != kind ||
+        main[27] != 4 || mirror[27] != 4 ||
+        Read16(main + 10) < 50 - 16 ||
+        Read16(mirror + 10) < 50 - 16 ||
+        ValidateTag(main, kind, lbn) != UdfsRecoveryProbeValidLayout ||
+        ValidateTag(mirror, kind, lbn) != UdfsRecoveryProbeValidLayout ||
+        (a + 1 != b && b + 1 != a))
+        return 0;
+    for (i = 0; i < UDFS_RECOVERY_SECTOR_SIZE; ++i)
+        if (i != 4 && i != 8 && i != 9 && i != 48 && i != 49 &&
+            main[i] != mirror[i])
+            return 0;
+    return 1;
+}
+
+static int
+ValidFidRecordInSector(const uint8_t *fid, uint32_t available,
+                       uint32_t lbn, uint32_t *recordLength)
+{
+    uint32_t raw, length, crcLength, checksum = 0, i;
+    if (available < 40 || Read16(fid) != 257 ||
+        (Read16(fid + 2) != 2 && Read16(fid + 2) != 3) ||
+        Read16(fid + 16) != 1 || Read32(fid + 12) != lbn ||
+        (fid[18] & ~0x1fU))
+        return 0;
+    raw = 38 + Read16(fid + 36) + fid[19];
+    length = (raw + 3) & ~3U;
+    crcLength = Read16(fid + 10);
+    if (length < 40 || length > available ||
+        crcLength < raw - 16 || crcLength > length - 16)
+        return 0;
+    for (i = 0; i < 16; ++i)
+        if (i != 4) checksum += fid[i];
+    if ((uint8_t)checksum != fid[4] ||
+        TagCrc(fid + 16, crcLength) != Read16(fid + 8))
+        return 0;
+    *recordLength = length;
+    return 1;
+}
+
+/* One complete directory FID changes from live to deleted.  A torn sector,
+ * changed name or neighboring record is not an eligible recovery hint. */
+static int
+DirectoryFidPairLiveDeleted(
+    const uint8_t main[UDFS_RECOVERY_SECTOR_SIZE],
+    const uint8_t mirror[UDFS_RECOVERY_SECTOR_SIZE],
+    uint32_t lbn, int *liveOnMirror, uint32_t *childLbn,
+    uint32_t *recordOffset)
+{
+    uint32_t offset, matches = 0;
+    for (offset = 0; offset <= UDFS_RECOVERY_SECTOR_SIZE - 40;
+         offset += 4) {
+        const uint8_t *a = main + offset, *b = mirror + offset;
+        const uint8_t *live, *deleted;
+        uint32_t aLength, bLength, j;
+        int liveMirror;
+        if (!ValidFidRecordInSector(a,
+                 UDFS_RECOVERY_SECTOR_SIZE - offset, lbn, &aLength) ||
+            !ValidFidRecordInSector(b,
+                 UDFS_RECOVERY_SECTOR_SIZE - offset, lbn, &bLength) ||
+            aLength != bLength)
+            continue;
+        if (!(a[18] & 4) && (b[18] & 4)) {
+            live = a; deleted = b; liveMirror = 0;
+        } else if ((a[18] & 4) && !(b[18] & 4)) {
+            live = b; deleted = a; liveMirror = 1;
+        } else continue;
+        if (!(live[18] & 2) || (live[18] & 8) ||
+            deleted[18] != (uint8_t)(live[18] | 4) ||
+            (Read32(live + 20) >> 30) ||
+            (Read32(live + 20) & 0x3fffffff) !=
+                UDFS_RECOVERY_SECTOR_SIZE ||
+            Read16(live + 28) != 1 ||
+            !Read32(live + 24))
+            continue;
+        for (j = 20; j < 36; ++j)
+            if (deleted[j]) break;
+        if (j != 36) continue;
+        for (j = 0; j < UDFS_RECOVERY_SECTOR_SIZE; ++j) {
+            if (j >= offset && j < offset + aLength) {
+                uint32_t local = j - offset;
+                if (local == 4 || local == 8 || local == 9 ||
+                    local == 18 || (local >= 20 && local < 36))
+                    continue;
+            }
+            if (main[j] != mirror[j]) break;
+        }
+        if (j != UDFS_RECOVERY_SECTOR_SIZE || ++matches != 1)
+            return 0;
+        *liveOnMirror = liveMirror;
+        *childLbn = Read32(live + 24);
+        *recordOffset = offset;
+    }
+    return matches == 1;
+}
+
 static UDFS_RECOVERY_PROBE_STATUS
 ReadFileExtents(const UDFS_RECOVERY_READER *reader,
                 UDFS_RECOVERY_PROBE *result, uint32_t feLbn,
                 uint8_t expectedType, RECOVERY_EXTENT_LIST *extents)
 {
     uint8_t sector[UDFS_RECOVERY_SECTOR_SIZE];
-    uint32_t lba, attrLength, adLength, start, offset;
+    uint32_t lba, attrLength, adLength, start, offset, mode;
     UDFS_RECOVERY_PROBE_STATUS status;
 
     if (feLbn >= result->PartitionBlocks)
@@ -134,7 +252,9 @@ ReadFileExtents(const UDFS_RECOVERY_READER *reader,
     if (status != UdfsRecoveryProbeValidLayout) return status;
     status = ValidateTag(sector, 266, feLbn);
     if (status != UdfsRecoveryProbeValidLayout) return status;
-    if (sector[27] != expectedType || (Read16(sector + 34) & 7) != 0)
+    mode = Read16(sector + 34) & 7;
+    if (sector[27] != expectedType ||
+        (mode != 0 && !(expectedType == 252 && mode == 3)))
         return UdfsRecoveryProbeUnsupported;
 
     memset(extents, 0, sizeof(*extents));
@@ -143,11 +263,24 @@ ReadFileExtents(const UDFS_RECOVERY_READER *reader,
     adLength = Read32(sector + 212);
     if (attrLength > UDFS_RECOVERY_SECTOR_SIZE - 216 ||
         adLength > UDFS_RECOVERY_SECTOR_SIZE - 216 - attrLength ||
-        (adLength & 7))
+        (mode == 0 && (adLength & 7)))
         return UdfsRecoveryProbeCorrupt;
     start = 216 + attrLength;
     if (Read16(sector + 10) < start + adLength - 16)
         return UdfsRecoveryProbeCorrupt;
+
+    /* An initially small metadata bitmap is an SBD embedded in its own EFE.
+     * Keep the FE sector as the sole physical owner and map bitmap bytes to
+     * its in-ICB payload. The EFE CRC must cover every payload byte. */
+    if (mode == 3) {
+        if (extents->FileBytes < 24 || extents->FileBytes != adLength ||
+            start + extents->FileBytes > UDFS_RECOVERY_SECTOR_SIZE)
+            return UdfsRecoveryProbeCorrupt;
+        extents->Inline = 1;
+        extents->InlineFeLbn = feLbn;
+        extents->InlineOffset = start;
+        return UdfsRecoveryProbeValidLayout;
+    }
 
     for (offset = 0; offset < adLength; offset += 8) {
         uint32_t encoded = Read32(sector + start + offset);
@@ -197,6 +330,15 @@ MapExtentByte(const UDFS_RECOVERY_PROBE *result,
 {
     uint32_t i;
     if (offset >= extents->FileBytes) return UdfsRecoveryProbeCorrupt;
+    if (extents->Inline) {
+        if (extents->InlineFeLbn >= result->PartitionBlocks ||
+            extents->InlineOffset >= UDFS_RECOVERY_SECTOR_SIZE ||
+            offset >= UDFS_RECOVERY_SECTOR_SIZE - extents->InlineOffset)
+            return UdfsRecoveryProbeCorrupt;
+        *lba = result->PartitionStart + extents->InlineFeLbn;
+        *sectorOffset = extents->InlineOffset + (uint32_t)offset;
+        return UdfsRecoveryProbeValidLayout;
+    }
     for (i = 0; i < extents->Count; ++i) {
         if (offset < extents->Items[i].Bytes) {
             *lba = result->PartitionStart + extents->Items[i].Lbn +
@@ -248,9 +390,12 @@ typedef struct _RECOVERY_GRAPH_ENTRY {
     uint32_t Lbn;
     uint32_t Bytes;
     uint32_t ParentLbn;
+    uint64_t StreamOwnerUniqueId;
     uint16_t Ref;
     uint16_t ParentRef;
     uint8_t Directory;
+    /* 0: ordinary namespace, 1: EFE stream directory, 2: named stream. */
+    uint8_t StreamRole;
 } RECOVERY_GRAPH_ENTRY;
 
 typedef struct _RECOVERY_NAME_SLOT {
@@ -299,6 +444,25 @@ typedef struct _RECOVERY_GRAPH {
     RECOVERY_SECTOR_CACHE PhysicalBitmapCache;
     RECOVERY_SECTOR_CACHE MetadataBitmapCache;
 } RECOVERY_GRAPH;
+
+static UDFS_RECOVERY_PROBE_STATUS
+GraphMetadataBitIsFree(RECOVERY_GRAPH *graph, uint32_t lbn, int *freeBit)
+{
+    uint32_t lba, offset;
+    uint8_t value;
+    UDFS_RECOVERY_PROBE_STATUS status;
+    if (lbn >= graph->Result->MetadataBlocks)
+        return UdfsRecoveryProbeCorrupt;
+    status = MapExtentByte(graph->Result, graph->BitmapFile,
+                          24ULL + (lbn >> 3), &lba, &offset);
+    if (status != UdfsRecoveryProbeValidLayout) return status;
+    status = ReadCachedByte(graph->Reader, graph->Result,
+                            &graph->MetadataBitmapCache,
+                            lba, offset, &value);
+    if (status == UdfsRecoveryProbeValidLayout)
+        *freeBit = (value >> (lbn & 7)) & 1;
+    return status;
+}
 
 static UDFS_RECOVERY_PROBE_STATUS
 GraphRecordUniqueId(RECOVERY_GRAPH *graph, uint64_t id, int root)
@@ -569,6 +733,13 @@ GraphReadLogical(RECOVERY_GRAPH *graph, uint16_t ref,
         status = MapMetadataBlock(graph->Result, graph->Metadata,
                                   lbn, &physical);
         if (status != UdfsRecoveryProbeValidLayout) return status;
+        if (graph->Result->FidSplitCount &&
+            lbn == graph->Result->FidSplitLbn) {
+            if (physical != graph->Result->FidSplitMainLba)
+                return UdfsRecoveryProbeCorrupt;
+            if (graph->Result->FidSplitLiveOnMirror)
+                physical = graph->Result->FidSplitMirrorLba;
+        }
     } else {
         return UdfsRecoveryProbeUnsupported;
     }
@@ -578,7 +749,8 @@ GraphReadLogical(RECOVERY_GRAPH *graph, uint16_t ref,
 static UDFS_RECOVERY_PROBE_STATUS
 GraphPush(RECOVERY_GRAPH *graph, uint16_t ref, uint32_t lbn,
           uint32_t bytes, int directory, uint16_t parentRef,
-          uint32_t parentLbn)
+          uint32_t parentLbn, uint8_t streamRole,
+          uint64_t streamOwnerUniqueId)
 {
     RECOVERY_GRAPH_ENTRY *replacement;
     uint32_t capacity;
@@ -603,6 +775,9 @@ GraphPush(RECOVERY_GRAPH *graph, uint16_t ref, uint32_t lbn,
     graph->Queue[graph->QueueCount].ParentRef = parentRef;
     graph->Queue[graph->QueueCount].ParentLbn = parentLbn;
     graph->Queue[graph->QueueCount].Directory = directory ? 1 : 0;
+    graph->Queue[graph->QueueCount].StreamRole = streamRole;
+    graph->Queue[graph->QueueCount].StreamOwnerUniqueId =
+        streamOwnerUniqueId;
     graph->QueueCount++;
     return UdfsRecoveryProbeValidLayout;
 }
@@ -627,6 +802,8 @@ GraphVisit(RECOVERY_GRAPH *graph, const RECOVERY_GRAPH_ENTRY *entry,
         BitmapBitIsSet(&graph->PhysicalVisited, entry->Lbn) :
         BitIsSet(visited, entry->Lbn);
     if (*alreadyVisited) {
+        if (entry->StreamRole)
+            return UdfsRecoveryProbeCorrupt;
         int isDirectory = entry->Ref == 0 ?
             BitmapBitIsSet(&graph->PhysicalDirs, entry->Lbn) :
             BitIsSet(directories, entry->Lbn);
@@ -650,7 +827,10 @@ GraphVisit(RECOVERY_GRAPH *graph, const RECOVERY_GRAPH_ENTRY *entry,
     }
     if (entry->Directory) {
         graph->Result->DirectoriesVisited++;
-    } else {
+    } else if (!entry->StreamRole) {
+        /* UDFS counts namespace files in LVID, but neither its stream
+         * directory nor named stream FEs.  Both are still visited and owned
+         * by the graph above. */
         graph->Result->FilesVisited++;
     }
     return UdfsRecoveryProbeValidLayout;
@@ -724,9 +904,15 @@ GraphParseFileAds(RECOVERY_GRAPH *graph, const RECOVERY_GRAPH_ENTRY *file,
                 nextRef = ref;
                 nextBytes = bytes;
                 haveNext = 1;
-            } else if (kind == 0) {
+            } else if (kind == 0 || kind == 1) {
                 RECOVERY_EXTENT *extent;
                 if (haveNext || dataExtents->Count == UDFS_RECOVERY_MAX_EXTENTS)
+                    return UdfsRecoveryProbeUnsupported;
+                /* An allocated but unrecorded AD owns its blocks.  It is
+                 * valid in an ordinary file, but cannot supply FID bytes. */
+                if (kind == 1 &&
+                    (file->Directory || file->StreamRole == 1 ||
+                     (bytes & (UDFS_RECOVERY_SECTOR_SIZE - 1))))
                     return UdfsRecoveryProbeUnsupported;
                 status = GraphOwn(graph, ref, lbn, bytes);
                 if (status != UdfsRecoveryProbeValidLayout) return status;
@@ -817,6 +1003,7 @@ GraphScanFids(RECOVERY_GRAPH *graph,
     while (offset < length) {
         const uint8_t *fid = directory + offset;
         uint32_t rawLength, recordLength, crcLength, expectedLbn;
+        uint32_t recordSectorOffset = UINT32_MAX;
         uint32_t checksum = 0, i;
         uint8_t attributes;
         UDFS_RECOVERY_PROBE_STATUS status;
@@ -848,12 +1035,30 @@ GraphScanFids(RECOVERY_GRAPH *graph,
             if (i == extents->Count) return UdfsRecoveryProbeCorrupt;
             expectedLbn = extents->Items[i].Lbn +
                           remaining / UDFS_RECOVERY_SECTOR_SIZE;
+            recordSectorOffset =
+                remaining % UDFS_RECOVERY_SECTOR_SIZE;
         }
         if (Read32(fid + 12) != expectedLbn)
             return UdfsRecoveryProbeCorrupt;
+        if (graph->Result->FidSplitCount &&
+            expectedLbn == graph->Result->FidSplitLbn &&
+            recordSectorOffset ==
+                graph->Result->FidSplitRecordOffset) {
+            if (graph->Result->FidSplitSeen ||
+                !(attributes & 2) || (attributes & (4 | 8)) ||
+                Read16(fid + 28) != 1 ||
+                Read32(fid + 24) !=
+                    graph->Result->FidSplitChildLbn)
+                return UdfsRecoveryProbeCorrupt;
+            graph->Result->FidSplitSeen = 1;
+            graph->Result->FidSplitParentLbn =
+                directoryFile->Lbn;
+        }
         graph->Result->FidsChecked++;
         if (!(attributes & 4) && (attributes & 8)) {
-            if (++parents != 1 || fid[19] || !(attributes & 2) ||
+            if (++parents != 1 || fid[19] ||
+                ((attributes & 2) != 0) ==
+                    (directoryFile->StreamRole == 1) ||
                 Read32(fid + 20) != UDFS_RECOVERY_SECTOR_SIZE ||
                 Read32(fid + 24) != directoryFile->ParentLbn ||
                 Read16(fid + 28) != directoryFile->ParentRef)
@@ -886,19 +1091,88 @@ GraphScanFids(RECOVERY_GRAPH *graph,
             }
             names[slot].Hash = hash;
             names[slot].OffsetPlusOne = offset + 1;
+            if (directoryFile->StreamRole == 1 && (attributes & 2))
+                return UdfsRecoveryProbeUnsupported;
             if (attributes & 2) subdirectories++;
-            else graph->FileReferences++;
+            else if (directoryFile->StreamRole != 1)
+                graph->FileReferences++;
             status = GraphPush(graph, Read16(fid + 28),
                                 Read32(fid + 24), icbBytes,
                                 (attributes & 2) != 0,
-                                directoryFile->Ref, directoryFile->Lbn);
+                                directoryFile->Ref, directoryFile->Lbn,
+                                directoryFile->StreamRole == 1 ? 2 : 0,
+                                directoryFile->StreamOwnerUniqueId);
             if (status != UdfsRecoveryProbeValidLayout) return status;
         }
         offset += recordLength;
     }
-    return offset == length && parents == 1 &&
-           subdirectories + 1 == links ? UdfsRecoveryProbeValidLayout :
-           UdfsRecoveryProbeCorrupt;
+    if (offset != length || parents != 1)
+        return UdfsRecoveryProbeCorrupt;
+    /* Stream objects are owned by the graph but omitted from UDFS's LVID
+     * file count.  The stream directory's parent points to the base FE. */
+    if (directoryFile->StreamRole == 1)
+        return subdirectories || links ? UdfsRecoveryProbeCorrupt :
+               UdfsRecoveryProbeValidLayout;
+    if (graph->Result->MirrorDirectorySplitCount &&
+        directoryFile->Ref == 1 &&
+        directoryFile->Lbn ==
+            graph->Result->MirrorDirectoryLbn) {
+        uint32_t expected = subdirectories + 1;
+        if (graph->Result->DirectoryLinkFixCount ||
+            graph->Result->MirrorDirectoryMainLinks != links ||
+            (expected != links &&
+             expected !=
+                graph->Result->MirrorDirectoryMirrorLinks))
+            return UdfsRecoveryProbeCorrupt;
+        graph->Result->DirectoryLinkFixCount = 1;
+        graph->Result->DirectoryLinkFixParentRef = directoryFile->Ref;
+        graph->Result->DirectoryLinkFixParentLbn = directoryFile->Lbn;
+        graph->Result->DirectoryLinkFixChildLbn = UINT32_MAX;
+        graph->Result->DirectoryLinkFixStored = links;
+        graph->Result->DirectoryLinkFixExpected = (uint16_t)expected;
+        return UdfsRecoveryProbeValidLayout;
+    }
+    if (subdirectories + 1 == links)
+        return UdfsRecoveryProbeValidLayout;
+    /* Only the pre-FID side of one empty-directory deletion can have a
+     * parent count one low.  Its still-reachable child FE must already be
+     * pre-freed on disk.  All other count mismatches remain corruption. */
+    if (subdirectories + 1 != (uint32_t)links + 1 ||
+        graph->Result->DirectoryLinkFixCount ||
+        directoryFile->Ref != 1)
+        return UdfsRecoveryProbeCorrupt;
+    {
+        uint32_t child = UINT32_MAX, count = 0, cursor = 0;
+        while (cursor < length) {
+            const uint8_t *fid = directory + cursor;
+            uint32_t size = (38 + Read16(fid + 36) + fid[19] + 3) & ~3U;
+            if (!(fid[18] & (4 | 8)) && (fid[18] & 2)) {
+                int freeBit = 0;
+                UDFS_RECOVERY_PROBE_STATUS status;
+                if (Read16(fid + 28) != 1)
+                    return UdfsRecoveryProbeUnsupported;
+                status = GraphMetadataBitIsFree(graph, Read32(fid + 24),
+                                                &freeBit);
+                if (status != UdfsRecoveryProbeValidLayout)
+                    return status;
+                if (freeBit) {
+                    if (++count > 1)
+                        return UdfsRecoveryProbeCorrupt;
+                    child = Read32(fid + 24);
+                }
+            }
+            cursor += size;
+        }
+        if (count != 1)
+            return UdfsRecoveryProbeCorrupt;
+        graph->Result->DirectoryLinkFixCount = 1;
+        graph->Result->DirectoryLinkFixParentRef = directoryFile->Ref;
+        graph->Result->DirectoryLinkFixParentLbn = directoryFile->Lbn;
+        graph->Result->DirectoryLinkFixChildLbn = child;
+        graph->Result->DirectoryLinkFixStored = links;
+        graph->Result->DirectoryLinkFixExpected = (uint16_t)(subdirectories + 1);
+    }
+    return UdfsRecoveryProbeValidLayout;
 }
 
 static UDFS_RECOVERY_PROBE_STATUS
@@ -909,6 +1183,9 @@ GraphProcessFile(RECOVERY_GRAPH *graph, const RECOVERY_GRAPH_ENTRY *file)
     UDFS_RECOVERY_PROBE_STATUS status;
     uint32_t inlineStart = 0, inlineLength = 0, mode = 0, dirLength = 0;
     uint16_t kind;
+    uint16_t links, flags;
+    uint32_t streamIcbBytes = 0;
+    uint64_t uniqueId;
     uint8_t *directory = NULL;
     RECOVERY_NAME_SLOT *names = NULL;
     int alreadyVisited;
@@ -923,29 +1200,71 @@ GraphProcessFile(RECOVERY_GRAPH *graph, const RECOVERY_GRAPH_ENTRY *file)
         return UdfsRecoveryProbeCorrupt;
     status = ValidateTag(fe, kind, file->Lbn);
     if (status != UdfsRecoveryProbeValidLayout) return status;
-    if (fe[27] != (file->Directory ? 4 : 5))
+    if (fe[27] != (file->StreamRole == 1 ? 13 :
+                   (file->Directory ? 4 : 5)))
         return UdfsRecoveryProbeCorrupt;
-    if (!Read16(fe + 48)) return UdfsRecoveryProbeCorrupt;
-    /* Without per-link ownership accounting, hard links must fail closed. */
-    if (!file->Directory && Read16(fe + 48) != 1)
-        return UdfsRecoveryProbeUnsupported;
-    {
-        uint64_t uniqueId = Read64(fe + (kind == 266 ? 200 : 160));
+    flags = Read16(fe + 34);
+    links = Read16(fe + 48);
+    if (kind == 266) streamIcbBytes = Read32(fe + 152);
+    if (file->StreamRole == 1) {
+        if (links || streamIcbBytes || (flags & 0x2000))
+            return UdfsRecoveryProbeCorrupt;
+    } else if (file->StreamRole == 2) {
+        if (links != 1 || streamIcbBytes || !(flags & 0x2000))
+            return UdfsRecoveryProbeCorrupt;
+    } else {
+        if (!links || (flags & 0x2000))
+            return UdfsRecoveryProbeCorrupt;
+        if (streamIcbBytes) {
+            if (file->Directory || kind != 266 ||
+                streamIcbBytes != UDFS_RECOVERY_SECTOR_SIZE || links != 2)
+                return UdfsRecoveryProbeUnsupported;
+        } else if (!file->Directory && links != 1) {
+            /* Ordinary hard links still require per-link accounting. */
+            return UdfsRecoveryProbeUnsupported;
+        }
+    }
+    uniqueId = Read64(fe + (kind == 266 ? 200 : 160));
+    if (file->StreamRole) {
+        /* UDFS stores the base FE's ID in its stream directory and all its
+         * named streams.  Reject unbound or mismatched references. */
+        if (!file->StreamOwnerUniqueId ||
+            uniqueId != file->StreamOwnerUniqueId)
+            return UdfsRecoveryProbeCorrupt;
+    } else {
         status = GraphRecordUniqueId(graph, uniqueId, file->Directory &&
             file->Ref == file->ParentRef && file->Lbn == file->ParentLbn);
         if (status != UdfsRecoveryProbeValidLayout) return status;
-        if (uniqueId > graph->Result->MaxUniqueId)
-            graph->Result->MaxUniqueId = uniqueId;
     }
+    if (uniqueId > graph->Result->MaxUniqueId)
+        graph->Result->MaxUniqueId = uniqueId;
     status = GraphOwn(graph, file->Ref, file->Lbn, file->Bytes);
     if (status != UdfsRecoveryProbeValidLayout) return status;
     status = GraphParseFileAds(graph, file, fe, dataExtents,
                                &inlineStart, &inlineLength, &mode);
     if (status != UdfsRecoveryProbeValidLayout)
         return status;
+    if (streamIcbBytes) {
+        status = GraphPush(graph, Read16(fe + 160), Read32(fe + 156),
+                           streamIcbBytes, 0, file->Ref, file->Lbn,
+                           1, uniqueId);
+        if (status != UdfsRecoveryProbeValidLayout) return status;
+    }
+    if (file->Directory && graph->Result->DirectoryLinkFixCount &&
+        file->Ref == 1 &&
+        file->Lbn == graph->Result->DirectoryLinkFixChildLbn) {
+        if (file->ParentRef !=
+                graph->Result->DirectoryLinkFixParentRef ||
+            file->ParentLbn !=
+                graph->Result->DirectoryLinkFixParentLbn ||
+            mode != 3 || dataExtents->FileBytes != 40 ||
+            Read16(fe + 48) != 1)
+            return UdfsRecoveryProbeCorrupt;
+        graph->Result->DirectoryLinkFixChildVerified = 1;
+    }
     if (!file->Directory && file->Ref == 1 && mode == 3)
         SetBit(graph->MetadataInlineFileFes, file->Lbn);
-    if (!file->Directory)
+    if (!file->Directory && file->StreamRole != 1)
         return status;
     status = GraphReadDirectory(graph, file, fe, dataExtents,
                                 inlineStart, mode, &directory, &dirLength);
@@ -969,13 +1288,281 @@ GraphProcessFile(RECOVERY_GRAPH *graph, const RECOVERY_GRAPH_ENTRY *file)
     return status;
 }
 
+/* Collect only free-to-owned bitmap transitions justified by the complete
+ * namespace walk. The heap-allocated plan bounds distinct sectors, so a batch
+ * of creates need not fit a guessed one-file crash pattern. */
+static UDFS_RECOVERY_PROBE_STATUS
+PlanOwnedMetadataBlock(const UDFS_RECOVERY_READER *reader,
+                       UDFS_RECOVERY_PROBE *result,
+                       const RECOVERY_EXTENT_LIST *bitmapFile,
+                       UDFS_RECOVERY_REPAIR_PLAN *plan, uint32_t lbn)
+{
+    uint32_t lba, offset, i;
+    uint8_t mask = (uint8_t)(1U << (lbn & 7));
+    UDFS_RECOVERY_SECTOR_EDIT *edit;
+    UDFS_RECOVERY_PROBE_STATUS status;
+
+    status = MapExtentByte(result, bitmapFile, 24ULL + (lbn >> 3),
+                            &lba, &offset);
+    if (status != UdfsRecoveryProbeValidLayout) return status;
+    for (i = 0; i < plan->BitmapEditCount; ++i)
+        if (plan->BitmapEdits[i].Lba == lba) break;
+    if (i == plan->BitmapEditCount) {
+        if (i == UDFS_RECOVERY_MAX_BITMAP_EDITS)
+            return UdfsRecoveryProbeUnsupported;
+        edit = &plan->BitmapEdits[i];
+        edit->Lba = lba;
+        status = ReadSector(reader, result, lba, edit->Before);
+        if (status != UdfsRecoveryProbeValidLayout) return status;
+        memcpy(edit->After, edit->Before, UDFS_RECOVERY_SECTOR_SIZE);
+        plan->BitmapEditCount++;
+    }
+    edit = &plan->BitmapEdits[i];
+    if (!(edit->After[offset] & mask)) return UdfsRecoveryProbeCorrupt;
+    edit->After[offset] &= (uint8_t)~mask;
+    /* Some valid small SBDs cover bitmap bytes in their descriptor CRC.
+     * Preserve that coverage instead of assuming the usual eight-byte CRC. */
+    {
+        uint32_t headerLba, headerOffset;
+        status = MapExtentByte(result, bitmapFile, 0, &headerLba, &headerOffset);
+        if (status != UdfsRecoveryProbeValidLayout) return status;
+        if (lba == headerLba) {
+            uint8_t *tag = edit->After + headerOffset;
+            uint32_t length = Read16(tag + 10), sum = 0, j;
+            uint16_t crc;
+            if ((!bitmapFile->Inline && headerOffset) ||
+                headerOffset > UDFS_RECOVERY_SECTOR_SIZE - 24 ||
+                (bitmapFile->Inline && bitmapFile->FileBytes >
+                    UDFS_RECOVERY_SECTOR_SIZE - headerOffset) ||
+                length > (bitmapFile->Inline ?
+                    bitmapFile->FileBytes - 16 :
+                    UDFS_RECOVERY_SECTOR_SIZE - 16))
+                return UdfsRecoveryProbeCorrupt;
+            crc = TagCrc(tag + 16, length);
+            tag[8] = (uint8_t)crc;
+            tag[9] = (uint8_t)(crc >> 8);
+            for (j = 0; j < 16; ++j)
+                if (j != 4) sum += tag[j];
+            tag[4] = (uint8_t)sum;
+            if (bitmapFile->Inline) {
+                /* The embedded SBD lives inside an EFE. Its metadata bits
+                 * are covered by the enclosing EFE descriptor CRC even when
+                 * the SBD itself covers only its eight-byte size header. */
+                length = Read16(edit->After + 10);
+                if (length > UDFS_RECOVERY_SECTOR_SIZE - 16 ||
+                    length < headerOffset + bitmapFile->FileBytes - 16)
+                    return UdfsRecoveryProbeCorrupt;
+                crc = TagCrc(edit->After + 16, length);
+                edit->After[8] = (uint8_t)crc;
+                edit->After[9] = (uint8_t)(crc >> 8);
+                sum = 0;
+                for (j = 0; j < 16; ++j)
+                    if (j != 4) sum += edit->After[j];
+                edit->After[4] = (uint8_t)sum;
+                status = ValidateTag(edit->After, 266,
+                                     bitmapFile->InlineFeLbn);
+                if (status != UdfsRecoveryProbeValidLayout)
+                    return status;
+            }
+        }
+    }
+    return UdfsRecoveryProbeValidLayout;
+}
+
+/* The namespace walk proves ownership of this physical block. Keep the same
+ * sector-bounded plan as metadata repairs; an allocated but unreferenced
+ * block is never accepted here. */
+static UDFS_RECOVERY_PROBE_STATUS
+PlanOwnedPhysicalBlock(const UDFS_RECOVERY_READER *reader,
+                       UDFS_RECOVERY_PROBE *result,
+                       UDFS_RECOVERY_REPAIR_PLAN *plan, uint32_t lbn)
+{
+    uint64_t byteOffset = 24ULL + (lbn >> 3);
+    uint64_t address = (uint64_t)result->PartitionStart +
+                       result->PhysicalBitmapLbn +
+                       byteOffset / UDFS_RECOVERY_SECTOR_SIZE;
+    uint32_t lba, offset, i;
+    uint8_t mask = (uint8_t)(1U << (lbn & 7));
+    UDFS_RECOVERY_SECTOR_EDIT *edit;
+    UDFS_RECOVERY_PROBE_STATUS status;
+
+    if (address >= reader->SectorCount) return UdfsRecoveryProbeCorrupt;
+    lba = (uint32_t)address;
+    offset = (uint32_t)(byteOffset % UDFS_RECOVERY_SECTOR_SIZE);
+    for (i = 0; i < plan->BitmapEditCount; ++i)
+        if (plan->BitmapEdits[i].Lba == lba) break;
+    if (i == plan->BitmapEditCount) {
+        if (i == UDFS_RECOVERY_MAX_BITMAP_EDITS)
+            return UdfsRecoveryProbeUnsupported;
+        edit = &plan->BitmapEdits[i];
+        edit->Lba = lba;
+        status = ReadSector(reader, result, lba, edit->Before);
+        if (status != UdfsRecoveryProbeValidLayout) return status;
+        memcpy(edit->After, edit->Before, UDFS_RECOVERY_SECTOR_SIZE);
+        plan->BitmapEditCount++;
+    }
+    edit = &plan->BitmapEdits[i];
+    if (!(edit->After[offset] & mask)) return UdfsRecoveryProbeCorrupt;
+    edit->After[offset] &= (uint8_t)~mask;
+    if (lba == result->PartitionStart + result->PhysicalBitmapLbn) {
+        uint32_t length = Read16(edit->After + 10), sum = 0, j;
+        uint16_t crc;
+        if (length > UDFS_RECOVERY_SECTOR_SIZE - 16)
+            return UdfsRecoveryProbeCorrupt;
+        crc = TagCrc(edit->After + 16, length);
+        edit->After[8] = (uint8_t)crc;
+        edit->After[9] = (uint8_t)(crc >> 8);
+        for (j = 0; j < 16; ++j)
+            if (j != 4) sum += edit->After[j];
+        edit->After[4] = (uint8_t)sum;
+    }
+    return UdfsRecoveryProbeValidLayout;
+}
+
+static UDFS_RECOVERY_PROBE_STATUS
+PlanParentLinkCount(const UDFS_RECOVERY_READER *reader,
+                    UDFS_RECOVERY_PROBE *result,
+                    const RECOVERY_EXTENT_LIST *mainFile,
+                    const RECOVERY_EXTENT_LIST *mirrorFile,
+                    UDFS_RECOVERY_REPAIR_PLAN *plan)
+{
+    uint32_t lba[2], i;
+    UDFS_RECOVERY_PROBE_STATUS status;
+    if (!result->MetadataDuplicated ||
+        result->DirectoryLinkFixParentRef != 1 ||
+        result->DirectoryLinkFixCount != 1 ||
+        plan->FeEditCount)
+        return UdfsRecoveryProbeCorrupt;
+    status = MapMetadataBlock(result, mainFile,
+                 result->DirectoryLinkFixParentLbn, &lba[0]);
+    if (status != UdfsRecoveryProbeValidLayout) return status;
+    status = MapMetadataBlock(result, mirrorFile,
+                 result->DirectoryLinkFixParentLbn, &lba[1]);
+    if (status != UdfsRecoveryProbeValidLayout) return status;
+    if (lba[0] == lba[1]) return UdfsRecoveryProbeCorrupt;
+    for (i = 0; i < 2; ++i) {
+        UDFS_RECOVERY_SECTOR_EDIT *edit = &plan->FeEdits[i];
+        uint16_t kind, crcLength, crc;
+        uint32_t checksum = 0, j;
+        edit->Lba = lba[i];
+        status = ReadSector(reader, result, edit->Lba, edit->Before);
+        if (status != UdfsRecoveryProbeValidLayout) return status;
+        kind = Read16(edit->Before);
+        if ((kind != 261 && kind != 266) ||
+            edit->Before[27] != 4 ||
+            (i == 0 && Read16(edit->Before + 48) !=
+                result->DirectoryLinkFixStored) ||
+            (result->MirrorDirectorySplitCount &&
+             Read16(edit->Before + 48) !=
+                (i == 0 ? result->MirrorDirectoryMainLinks :
+                          result->MirrorDirectoryMirrorLinks)))
+            return UdfsRecoveryProbeCorrupt;
+        status = ValidateTag(edit->Before, kind,
+                             result->DirectoryLinkFixParentLbn);
+        if (status != UdfsRecoveryProbeValidLayout) return status;
+        crcLength = Read16(edit->Before + 10);
+        if (crcLength < 50 - 16 ||
+            crcLength > UDFS_RECOVERY_SECTOR_SIZE - 16)
+            return UdfsRecoveryProbeCorrupt;
+        memcpy(edit->After, edit->Before, UDFS_RECOVERY_SECTOR_SIZE);
+        Write16(edit->After + 48,
+                result->DirectoryLinkFixExpected);
+        crc = TagCrc(edit->After + 16, crcLength);
+        Write16(edit->After + 8, crc);
+        edit->After[4] = 0;
+        for (j = 0; j < 16; ++j)
+            if (j != 4) checksum += edit->After[j];
+        edit->After[4] = (uint8_t)checksum;
+        status = ValidateTag(edit->After, kind,
+                             result->DirectoryLinkFixParentLbn);
+        if (status != UdfsRecoveryProbeValidLayout) return status;
+    }
+    if (result->MirrorDirectorySplitCount) {
+        if (result->MirrorDirectoryLbn !=
+                result->DirectoryLinkFixParentLbn ||
+            !DirectoryFePairDiffersOnlyInLinkCount(
+                plan->FeEdits[0].Before,
+                plan->FeEdits[1].Before,
+                result->DirectoryLinkFixParentLbn))
+            return UdfsRecoveryProbeCorrupt;
+    } else if (RecoveryDifference(plan->FeEdits[0].Before,
+                                  plan->FeEdits[1].Before,
+                                  UDFS_RECOVERY_SECTOR_SIZE) != 0)
+        return UdfsRecoveryProbeCorrupt;
+    if (Read16(plan->FeEdits[0].Before + 48) !=
+            result->DirectoryLinkFixExpected &&
+        Read16(plan->FeEdits[1].Before + 48) !=
+            result->DirectoryLinkFixExpected &&
+        result->MirrorDirectorySplitCount)
+        return UdfsRecoveryProbeCorrupt;
+    if (RecoveryDifference(plan->FeEdits[0].Before,
+                           plan->FeEdits[0].After,
+                           UDFS_RECOVERY_SECTOR_SIZE) != 0) {
+        plan->FeEditCount = 1;
+    }
+    if (RecoveryDifference(plan->FeEdits[1].Before,
+                           plan->FeEdits[1].After,
+                           UDFS_RECOVERY_SECTOR_SIZE) != 0) {
+        if (plan->FeEditCount)
+            plan->FeEditCount = 2;
+        else {
+            plan->FeEdits[0] = plan->FeEdits[1];
+            plan->FeEditCount = 1;
+        }
+    }
+    if (!plan->FeEditCount)
+        return UdfsRecoveryProbeCorrupt;
+    return UdfsRecoveryProbeValidLayout;
+}
+
+static UDFS_RECOVERY_PROBE_STATUS
+PlanLiveFidCopy(const UDFS_RECOVERY_READER *reader,
+                UDFS_RECOVERY_PROBE *result,
+                UDFS_RECOVERY_REPAIR_PLAN *plan)
+{
+    uint8_t main[UDFS_RECOVERY_SECTOR_SIZE];
+    uint8_t mirror[UDFS_RECOVERY_SECTOR_SIZE];
+    const uint8_t *live, *deleted;
+    int liveOnMirror;
+    uint32_t child, offset;
+    UDFS_RECOVERY_PROBE_STATUS status;
+    if (result->FidSplitCount != 1 ||
+        result->MirrorDirectorySplitCount ||
+        !result->FidSplitSeen || plan->FidEditCount)
+        return UdfsRecoveryProbeCorrupt;
+    status = ReadSector(reader, result, result->FidSplitMainLba, main);
+    if (status != UdfsRecoveryProbeValidLayout) return status;
+    status = ReadSector(reader, result, result->FidSplitMirrorLba,
+                        mirror);
+    if (status != UdfsRecoveryProbeValidLayout) return status;
+    if (!DirectoryFidPairLiveDeleted(main, mirror,
+            result->FidSplitLbn, &liveOnMirror, &child, &offset) ||
+        (uint8_t)liveOnMirror != result->FidSplitLiveOnMirror ||
+        child != result->FidSplitChildLbn ||
+        offset != result->FidSplitRecordOffset)
+        return UdfsRecoveryProbeCorrupt;
+    live = liveOnMirror ? mirror : main;
+    deleted = liveOnMirror ? main : mirror;
+    plan->FidEdit.Lba = liveOnMirror ?
+        result->FidSplitMainLba : result->FidSplitMirrorLba;
+    plan->FidLiveLba = liveOnMirror ?
+        result->FidSplitMirrorLba : result->FidSplitMainLba;
+    plan->FidEditLogicalLbn = result->FidSplitLbn;
+    memcpy(plan->FidEdit.Before, deleted,
+           UDFS_RECOVERY_SECTOR_SIZE);
+    memcpy(plan->FidEdit.After, live,
+           UDFS_RECOVERY_SECTOR_SIZE);
+    plan->FidEditCount = 1;
+    return UdfsRecoveryProbeValidLayout;
+}
+
 static UDFS_RECOVERY_PROBE_STATUS
 GraphRun(const UDFS_RECOVERY_READER *reader, UDFS_RECOVERY_PROBE *result,
          const RECOVERY_EXTENT_LIST *mainFile,
          const RECOVERY_EXTENT_LIST *mirrorFile,
          const RECOVERY_EXTENT_LIST *bitmapFile,
          const uint8_t lvd[UDFS_RECOVERY_SECTOR_SIZE],
-         uint32_t bitmapExtentBytes,
+         uint32_t bitmapExtentBytes, UDFS_RECOVERY_REPAIR_PLAN *plan,
          uint8_t fsd[UDFS_RECOVERY_SECTOR_SIZE])
 {
     RECOVERY_GRAPH *graph;
@@ -984,8 +1571,8 @@ GraphRun(const UDFS_RECOVERY_READER *reader, UDFS_RECOVERY_PROBE *result,
     uint32_t fsdEncoded, rootEncoded;
     uint16_t fsdRef;
 
-    /* Lower-device I/O runs while this graph is live. Keep the graph
-     * and its sector caches off the mount thread's kernel stack. */
+    /* The mount thread has a 12 KiB kernel stack and will issue lower-device
+     * I/O while this graph is live.  Keep its sector caches off that stack. */
     graph = (RECOVERY_GRAPH *)reader->Allocate(reader->Context,
                                                sizeof(*graph));
     if (!graph) return UdfsRecoveryProbeNoMemory;
@@ -1080,7 +1667,7 @@ GraphRun(const UDFS_RECOVERY_READER *reader, UDFS_RECOVERY_PROBE *result,
     }
     status = GraphPush(graph, Read16(fsd + 408),
                        Read32(fsd + 404), rootEncoded & 0x3fffffff, 1,
-                       Read16(fsd + 408), Read32(fsd + 404));
+                       Read16(fsd + 408), Read32(fsd + 404), 0, 0);
     if (status != UdfsRecoveryProbeValidLayout) goto done;
 
     while (graph->QueueCount) {
@@ -1112,6 +1699,16 @@ GraphRun(const UDFS_RECOVERY_READER *reader, UDFS_RECOVERY_PROBE *result,
         referencedFree = value & owned & mask;
         unowned = (uint8_t)~(value | owned) & mask;
         if (referencedFree) {
+            if (plan) {
+                uint8_t remainingBits = referencedFree;
+                while (remainingBits) {
+                    uint32_t bit = FirstByteBit(remainingBits);
+                    status = PlanOwnedPhysicalBlock(reader, result, plan,
+                                                    first + bit);
+                    if (status != UdfsRecoveryProbeValidLayout) goto done;
+                    remainingBits &= (uint8_t)(remainingBits - 1);
+                }
+            }
             if (!result->ReferencedFreePhysicalBlocks)
                 result->FirstReferencedFreePhysicalLbn = first + FirstByteBit(referencedFree);
             result->ReferencedFreePhysicalBlocks += CountByteBits(referencedFree);
@@ -1161,6 +1758,11 @@ GraphRun(const UDFS_RECOVERY_READER *reader, UDFS_RECOVERY_PROBE *result,
                     result->ReferencedFreeMetadataLbn[
                         result->ReferencedFreeMetadataBlocks] = i;
                 result->ReferencedFreeMetadataBlocks++;
+                if (plan) {
+                    status = PlanOwnedMetadataBlock(reader, result, bitmapFile,
+                                                     plan, i);
+                    if (status != UdfsRecoveryProbeValidLayout) goto done;
+                }
             }
         } else if (!BitIsSet(graph->MetadataOwned, i)) {
             if (!result->UnownedMetadataBlocks)
@@ -1168,6 +1770,50 @@ GraphRun(const UDFS_RECOVERY_READER *reader, UDFS_RECOVERY_PROBE *result,
             result->UnownedMetadataBlocks++;
         }
     }
+    if (result->FidSplitCount) {
+        if (result->MirrorDirectorySplitCount ||
+            !result->FidSplitSeen ||
+            result->DirectoryLinkFixCount != 1 ||
+            result->FidSplitParentLbn !=
+                result->DirectoryLinkFixParentLbn ||
+            result->FidSplitChildLbn !=
+                result->DirectoryLinkFixChildLbn) {
+            status = UdfsRecoveryProbeCorrupt;
+            goto done;
+        }
+        if (plan) {
+            status = PlanLiveFidCopy(reader, result, plan);
+            if (status != UdfsRecoveryProbeValidLayout)
+                goto done;
+        }
+    }
+    if (result->MirrorDirectorySplitCount &&
+        (!result->DirectoryLinkFixCount ||
+         result->DirectoryLinkFixParentLbn !=
+            result->MirrorDirectoryLbn)) {
+        status = UdfsRecoveryProbeCorrupt;
+        goto done;
+    }
+    if (result->DirectoryLinkFixCount) {
+        if (result->UnownedPhysicalBlocks ||
+            result->UnownedMetadataBlocks || result->OverlapBlocks ||
+            (!result->MirrorDirectorySplitCount &&
+             (!result->DirectoryLinkFixChildVerified ||
+              result->ReferencedFreeMetadataBlocks != 1 ||
+              result->FirstReferencedFreeMetadataLbn !=
+                  result->DirectoryLinkFixChildLbn ||
+              result->ReferencedFreePhysicalBlocks))) {
+            status = UdfsRecoveryProbeCorrupt;
+            goto done;
+        }
+        if (plan) {
+            status = PlanParentLinkCount(reader, result, mainFile,
+                                         mirrorFile, plan);
+            if (status != UdfsRecoveryProbeValidLayout)
+                goto done;
+        }
+    }
+    result->OwnershipGraphScanned = 1;
     if (result->OverlapBlocks || result->ReferencedFreePhysicalBlocks ||
         result->ReferencedFreeMetadataBlocks || result->UnownedPhysicalBlocks ||
         result->UnownedMetadataBlocks)
@@ -1201,6 +1847,20 @@ typedef struct _RECOVERY_LAYOUT_WORK {
     RECOVERY_SECTOR_CACHE MetadataCache;
     RECOVERY_EXTENT_LIST Lists[3];
 } RECOVERY_LAYOUT_WORK;
+
+static void
+RecoveryAnchorCandidates(uint32_t sectorCount, uint32_t anchors[8])
+{
+    uint32_t last = sectorCount - 1;
+    anchors[0] = 256;
+    anchors[1] = 512;
+    anchors[2] = last - 256;
+    anchors[3] = last - 255;
+    anchors[4] = last - 258;
+    anchors[5] = last - 2;
+    anchors[6] = last;
+    anchors[7] = last - 512;
+}
 
 /* Only the single-session disk class is supported. Keep the ordinary mount's
  * anchor order (duplicate session/track candidates omitted), and never select
@@ -1274,20 +1934,12 @@ SelectRecoveryDescriptors(const UDFS_RECOVERY_READER *reader,
                           uint8_t *pd, uint8_t *lvd)
 {
     UDFS_RECOVERY_PROBE_STATUS status = UdfsRecoveryProbeCorrupt;
-    uint32_t last = reader->SectorCount - 1;
     uint32_t anchors[8];
     uint32_t i, mainStart, mainBytes, reserveStart, reserveBytes;
 
-    anchors[0] = 256;
-    anchors[1] = 512;
-    anchors[2] = last - 256;
-    anchors[3] = last - 255;
-    anchors[4] = last - 258;
-    anchors[5] = last - 2;
-    anchors[6] = last;
-    anchors[7] = last - 512;
+    RecoveryAnchorCandidates(reader->SectorCount, anchors);
     for (i = 0; i < 8; ++i) {
-        if (!anchors[i] || anchors[i] > last) continue;
+        if (!anchors[i] || anchors[i] >= reader->SectorCount) continue;
         result->FailureLba = anchors[i];
         status = ReadSector(reader, result, anchors[i], sector);
         if (status == UdfsRecoveryProbeValidLayout)
@@ -1303,6 +1955,10 @@ SelectRecoveryDescriptors(const UDFS_RECOVERY_READER *reader,
         mainStart = Read32(sector + 20);
         reserveBytes = Read32(sector + 24);
         reserveStart = Read32(sector + 28);
+        result->MainVdsStartLba = mainStart;
+        result->MainVdsBytes = mainBytes;
+        result->ReserveVdsStartLba = reserveStart;
+        result->ReserveVdsBytes = reserveBytes;
         status = ReadRecoveryDescriptors(reader, result, mainStart, mainBytes,
                                           sector, pd, lvd);
         if (status != UdfsRecoveryProbeCorrupt &&
@@ -1326,11 +1982,13 @@ ReadPrevailingIntegrity(const UDFS_RECOVERY_READER *reader,
                         uint8_t *integrityType)
 {
     uint32_t visited = 0;
+    uint32_t anchors[8];
     uint8_t lastType = 0xff;
     int found = 0;
 
     *integrityType = 0xff;
     if (prevailingLba) *prevailingLba = 0;
+    RecoveryAnchorCandidates(reader->SectorCount, anchors);
     for (;;) {
         uint32_t i, count;
 
@@ -1342,6 +2000,57 @@ ReadPrevailingIntegrity(const UDFS_RECOVERY_READER *reader,
         if (extentLba >= reader->SectorCount ||
             count > reader->SectorCount - extentLba)
             return UdfsRecoveryProbeCorrupt;
+        /* Recovery can rewrite the prevailing LVID. Do not treat a valid
+         * descriptor tag inside the physical partition as proof that its
+         * sector is reserved for the integrity sequence: it may be owned by
+         * a file, metadata extent or bitmap. Refuse this layout before any
+         * repair instead of writing through that other owner's sector. */
+        if ((uint64_t)extentLba <
+                (uint64_t)result->PartitionStart + result->PartitionBlocks &&
+            (uint64_t)result->PartitionStart <
+                (uint64_t)extentLba + count) {
+            result->FailureLba = extentLba > result->PartitionStart ?
+                extentLba : result->PartitionStart;
+            return UdfsRecoveryProbeCorrupt;
+        }
+        /* The volume descriptor sequences are allocated extents, including
+         * their sectors after the terminating descriptor. A valid LVID tag
+         * there or at an anchor candidate is not proof of LVID ownership.
+         * An accepted checkpoint may be rewritten during repair. */
+        {
+            uint32_t starts[2], bytes[2], j;
+            starts[0] = result->MainVdsStartLba;
+            starts[1] = result->ReserveVdsStartLba;
+            bytes[0] = result->MainVdsBytes;
+            bytes[1] = result->ReserveVdsBytes;
+            for (j = 0; j < 2; ++j) {
+                uint32_t blocks;
+                if (!bytes[j]) {
+                    if (j == 0) return UdfsRecoveryProbeCorrupt;
+                    continue;
+                }
+                if (bytes[j] & (UDFS_RECOVERY_SECTOR_SIZE - 1))
+                    return UdfsRecoveryProbeCorrupt;
+                blocks = bytes[j] / UDFS_RECOVERY_SECTOR_SIZE;
+                if (starts[j] >= reader->SectorCount ||
+                    blocks > reader->SectorCount - starts[j])
+                    return UdfsRecoveryProbeCorrupt;
+                if ((uint64_t)extentLba < (uint64_t)starts[j] + blocks &&
+                    (uint64_t)starts[j] < (uint64_t)extentLba + count) {
+                    result->FailureLba = extentLba > starts[j] ?
+                        extentLba : starts[j];
+                    return UdfsRecoveryProbeCorrupt;
+                }
+            }
+            for (j = 0; j < 8; ++j) {
+                if (anchors[j] < reader->SectorCount &&
+                    anchors[j] >= extentLba &&
+                    anchors[j] - extentLba < count) {
+                    result->FailureLba = anchors[j];
+                    return UdfsRecoveryProbeCorrupt;
+                }
+            }
+        }
         for (i = 0; i < count; ++i) {
             uint32_t lba = extentLba + i;
             uint32_t nextBytes, nextLba;
@@ -1419,6 +2128,13 @@ UdfsRecoveryPeekIntegrity(const UDFS_RECOVERY_READER *reader,
                            "*UDF Metadata Partition", 23) != 0 ||
         lvd[504] != 1)
         return UdfsRecoveryProbeUnsupported;
+    scratch.PartitionStart = Read32(pd + 188);
+    scratch.PartitionBlocks = Read32(pd + 192);
+    if (!scratch.PartitionBlocks ||
+        scratch.PartitionStart >= reader->SectorCount ||
+        scratch.PartitionBlocks >
+            reader->SectorCount - scratch.PartitionStart)
+        return UdfsRecoveryProbeCorrupt;
 
     extentBytes = Read32(lvd + 432) & 0x3fffffff;
     extentLba = Read32(lvd + 436);
@@ -1426,9 +2142,9 @@ UdfsRecoveryPeekIntegrity(const UDFS_RECOVERY_READER *reader,
                                    sector, NULL, NULL, integrityType);
 }
 
-UDFS_RECOVERY_PROBE_STATUS
-UdfsRecoveryProbeLayout(const UDFS_RECOVERY_READER *reader,
-                        UDFS_RECOVERY_PROBE *result)
+static UDFS_RECOVERY_PROBE_STATUS
+ProbeLayout(const UDFS_RECOVERY_READER *reader,
+             UDFS_RECOVERY_PROBE *result, UDFS_RECOVERY_REPAIR_PLAN *plan)
 {
     RECOVERY_LAYOUT_WORK *work;
     uint8_t *sector, *pd, *lvd;
@@ -1540,19 +2256,48 @@ UdfsRecoveryProbeLayout(const UDFS_RECOVERY_READER *reader,
     status = ReadFileExtents(reader, result, result->MetadataBitmapFeLbn,
                              252, bitmapFile);
     if (status != UdfsRecoveryProbeValidLayout) goto done;
-    status = ReadSector(reader, result,
-                        result->PartitionStart + bitmapFile->Items[0].Lbn,
-                        sector);
-    if (status != UdfsRecoveryProbeValidLayout) goto done;
-    status = ValidateTag(sector, 0x108, bitmapFile->Items[0].Lbn);
-    if (status != UdfsRecoveryProbeValidLayout) goto done;
-    result->MetadataBitmapBits = Read32(sector + 16);
-    bitmapBytes = Read32(sector + 20);
-    if (result->MetadataBitmapBits < result->MetadataBlocks ||
-        bitmapBytes < (result->MetadataBitmapBits + 7U) / 8U ||
-        bitmapFile->FileBytes < 24ULL + bitmapBytes) {
-        status = UdfsRecoveryProbeCorrupt;
-        goto done;
+    {
+        /* The first bitmap descriptor is no longer needed when mirror
+         * comparisons start, so reuse the existing heap sector. */
+        uint8_t *descriptor = mainSector;
+        uint32_t bitmapLba, bitmapOffset, tagLbn;
+        status = MapExtentByte(result, bitmapFile, 0,
+                               &bitmapLba, &bitmapOffset);
+        if (status != UdfsRecoveryProbeValidLayout) goto done;
+        status = ReadSector(reader, result, bitmapLba, sector);
+        if (status != UdfsRecoveryProbeValidLayout) goto done;
+        if (bitmapFile->Inline) {
+            if (bitmapFile->FileBytes >
+                UDFS_RECOVERY_SECTOR_SIZE - bitmapOffset) {
+                status = UdfsRecoveryProbeCorrupt;
+                goto done;
+            }
+            memset(descriptor, 0, UDFS_RECOVERY_SECTOR_SIZE);
+            memcpy(descriptor, sector + bitmapOffset,
+                   (size_t)bitmapFile->FileBytes);
+            if (Read16(descriptor + 10) > bitmapFile->FileBytes - 16) {
+                status = UdfsRecoveryProbeCorrupt;
+                goto done;
+            }
+            tagLbn = bitmapFile->InlineFeLbn;
+        } else {
+            if (bitmapOffset || !bitmapFile->Count) {
+                status = UdfsRecoveryProbeCorrupt;
+                goto done;
+            }
+            memcpy(descriptor, sector, UDFS_RECOVERY_SECTOR_SIZE);
+            tagLbn = bitmapFile->Items[0].Lbn;
+        }
+        status = ValidateTag(descriptor, 0x108, tagLbn);
+        if (status != UdfsRecoveryProbeValidLayout) goto done;
+        result->MetadataBitmapBits = Read32(descriptor + 16);
+        bitmapBytes = Read32(descriptor + 20);
+        if (result->MetadataBitmapBits < result->MetadataBlocks ||
+            bitmapBytes < (result->MetadataBitmapBits + 7U) / 8U ||
+            bitmapFile->FileBytes < 24ULL + bitmapBytes) {
+            status = UdfsRecoveryProbeCorrupt;
+            goto done;
+        }
     }
 
     bitmapExtentBytes = Read32(pd + 64) & 0x3fffffff;
@@ -1612,9 +2357,39 @@ UdfsRecoveryProbeLayout(const UDFS_RECOVERY_READER *reader,
             if (status != UdfsRecoveryProbeValidLayout) goto done;
             if (RecoveryDifference(mainSector, mirrorSector,
                        UDFS_RECOVERY_SECTOR_SIZE) != 0) {
-                result->FailureLba = mainLba;
-                status = UdfsRecoveryProbeCorrupt;
-                goto done;
+                int liveOnMirror;
+                uint32_t childLbn, recordOffset;
+                if (result->MirrorDirectorySplitCount ||
+                    result->FidSplitCount) {
+                    result->FailureLba = mainLba;
+                    status = UdfsRecoveryProbeCorrupt;
+                    goto done;
+                }
+                if (DirectoryFePairDiffersOnlyInLinkCount(
+                        mainSector, mirrorSector, i)) {
+                    result->MirrorDirectorySplitCount = 1;
+                    result->MirrorDirectoryLbn = i;
+                    result->MirrorDirectoryMainLinks =
+                        Read16(mainSector + 48);
+                    result->MirrorDirectoryMirrorLinks =
+                        Read16(mirrorSector + 48);
+                } else if (DirectoryFidPairLiveDeleted(
+                               mainSector, mirrorSector, i,
+                               &liveOnMirror, &childLbn,
+                               &recordOffset)) {
+                    result->FidSplitCount = 1;
+                    result->FidSplitLbn = i;
+                    result->FidSplitMainLba = mainLba;
+                    result->FidSplitMirrorLba = mirrorLba;
+                    result->FidSplitChildLbn = childLbn;
+                    result->FidSplitRecordOffset = recordOffset;
+                    result->FidSplitLiveOnMirror =
+                        (uint8_t)liveOnMirror;
+                } else {
+                    result->FailureLba = mainLba;
+                    status = UdfsRecoveryProbeCorrupt;
+                    goto done;
+                }
             }
             result->AllocatedMirrorBlocksCompared++;
         }
@@ -1649,7 +2424,12 @@ UdfsRecoveryProbeLayout(const UDFS_RECOVERY_READER *reader,
         result->LvidPhysicalSizeBlocks == result->PartitionBlocks &&
         result->LvidMetadataSizeBlocks == result->MetadataBlocks;
     status = GraphRun(reader, result, mainFile, mirrorFile,
-                      bitmapFile, lvd, bitmapExtentBytes, pd);
+                      bitmapFile, lvd, bitmapExtentBytes, plan, sector);
+    if (result->OwnershipGraphScanned)
+        result->LvidCountersMatch = result->LvidCountersMatch &&
+            result->LvidFileCount == result->FilesVisited &&
+            result->LvidDirectoryCount == result->DirectoriesVisited &&
+            result->LvidNextUniqueId > result->MaxUniqueId;
     if (status == UdfsRecoveryProbeValidLayout &&
         !result->LvidCountersMatch)
         status = UdfsRecoveryProbeLvidMismatch;
@@ -1662,123 +2442,87 @@ done:
 }
 
 UDFS_RECOVERY_PROBE_STATUS
+UdfsRecoveryProbeLayout(const UDFS_RECOVERY_READER *reader,
+                        UDFS_RECOVERY_PROBE *result)
+{
+    return ProbeLayout(reader, result, NULL);
+}
+
+/* A fully walked, duplicate-free namespace with an exact physical owner graph
+ * may account for metadata still marked free. Never free orphan allocations,
+ * repair overlap, choose between conflicting mirrors, or infer file data. */
+static int
+GraphCanRecover(const UDFS_RECOVERY_PROBE *probe)
+{
+    return probe->LvidIntegrityType == 0 && probe->MetadataDuplicated &&
+        probe->BitmapContentsScanned && probe->OwnershipGraphScanned &&
+        (!probe->FidSplitCount ||
+         (probe->FidSplitCount == 1 &&
+          !probe->MirrorDirectorySplitCount &&
+          probe->FidSplitSeen &&
+          probe->DirectoryLinkFixCount == 1 &&
+          probe->FidSplitParentLbn ==
+              probe->DirectoryLinkFixParentLbn &&
+          probe->FidSplitChildLbn ==
+              probe->DirectoryLinkFixChildLbn)) &&
+        (!probe->MirrorDirectorySplitCount ||
+         (probe->MirrorDirectorySplitCount == 1 &&
+          probe->DirectoryLinkFixCount == 1 &&
+          probe->DirectoryLinkFixParentLbn ==
+              probe->MirrorDirectoryLbn)) &&
+        (!probe->DirectoryLinkFixCount ||
+         (probe->DirectoryLinkFixCount == 1 &&
+          (probe->MirrorDirectorySplitCount ||
+           (probe->DirectoryLinkFixChildVerified &&
+            probe->ReferencedFreePhysicalBlocks == 0 &&
+            probe->ReferencedFreeMetadataBlocks == 1 &&
+            probe->FirstReferencedFreeMetadataLbn ==
+                probe->DirectoryLinkFixChildLbn)))) &&
+        !probe->UnownedPhysicalBlocks &&
+        !probe->UnownedMetadataBlocks && !probe->OverlapBlocks &&
+        probe->ReferencedFreeMirrorBlocksCompared ==
+            probe->ReferencedFreeMetadataBlocks &&
+        probe->LvidPhysicalFreeBlocks <= probe->PartitionBlocks &&
+        probe->LvidPhysicalSizeBlocks == probe->PartitionBlocks &&
+        probe->PhysicalFreeBlocks >= probe->ReferencedFreePhysicalBlocks &&
+        probe->MetadataFreeBlocks >= probe->ReferencedFreeMetadataBlocks &&
+        probe->MaxUniqueId != UINT64_MAX &&
+        (probe->Status == UdfsRecoveryProbeValidLayout ||
+         probe->Status == UdfsRecoveryProbeGraphMismatch ||
+         probe->Status == UdfsRecoveryProbeLvidMismatch);
+}
+
+UDFS_RECOVERY_PROBE_STATUS
 UdfsRecoveryPrepareRepair(const UDFS_RECOVERY_READER *reader,
                           const UDFS_RECOVERY_PROBE *probe,
                           const uint8_t recordingTime[12],
                           UDFS_RECOVERY_REPAIR_PLAN *plan)
 {
-    RECOVERY_EXTENT_LIST *bitmapFile = NULL;
     UDFS_RECOVERY_PROBE check;
     UDFS_RECOVERY_PROBE_STATUS status;
     UDFS_RECOVERY_SECTOR_EDIT *edit;
-    uint32_t i, newMetadataFree, crcLength, checksum;
-    uint32_t missing, staleFree, staleFiles;
+    uint32_t i, newPhysicalFree, newMetadataFree, crcLength, checksum;
     uint16_t crc;
     uint64_t nextUniqueId;
-    int coherentCheckpoint;
 
     if (!reader || !reader->ReadSector || !reader->Allocate ||
         !reader->Free || !probe || !recordingTime || !plan)
         return UdfsRecoveryProbeInvalidInput;
     memset(plan, 0, sizeof(*plan));
-    if (probe->LvidIntegrityType != 0 || !probe->MetadataDuplicated ||
-        !probe->BitmapContentsScanned ||
-        probe->ReferencedFreePhysicalBlocks ||
-        probe->UnownedPhysicalBlocks || probe->UnownedMetadataBlocks ||
-        probe->OverlapBlocks ||
-        probe->ReferencedFreeMetadataBlocks >
-            UDFS_RECOVERY_MAX_REPAIR_BLOCKS ||
-        probe->ReferencedFreeMirrorBlocksCompared !=
-            probe->ReferencedFreeMetadataBlocks ||
-        probe->LvidPhysicalFreeBlocks != probe->PhysicalFreeBlocks ||
-        probe->LvidPhysicalSizeBlocks != probe->PartitionBlocks ||
-        probe->LvidMetadataSizeBlocks != probe->MetadataBlocks ||
-        probe->LvidMetadataFreeBlocks < probe->MetadataFreeBlocks ||
-        probe->MetadataFreeBlocks <
-            probe->ReferencedFreeMetadataBlocks ||
-        (uint64_t)probe->LvidMetadataFreeBlocks -
-            probe->MetadataFreeBlocks +
-            probe->ReferencedFreeMetadataBlocks >
-            UDFS_RECOVERY_MAX_REPAIR_BLOCKS ||
-        probe->LvidFileCount > probe->FilesVisited ||
-        probe->LvidDirectoryCount != probe->DirectoriesVisited ||
-        probe->MaxUniqueId == UINT64_MAX ||
-        (probe->Status != UdfsRecoveryProbeValidLayout &&
-         probe->Status != UdfsRecoveryProbeGraphMismatch &&
-         probe->Status != UdfsRecoveryProbeLvidMismatch) ||
-        (!probe->CompleteOwnershipGraph &&
-         probe->ReferencedFreeMetadataBlocks == 0))
-        return UdfsRecoveryProbeUnsupported;
+    if (!GraphCanRecover(probe)) return UdfsRecoveryProbeUnsupported;
 
-    missing = probe->ReferencedFreeMetadataBlocks;
-    staleFree = probe->LvidMetadataFreeBlocks - probe->MetadataFreeBlocks;
-    staleFiles = probe->FilesVisited - probe->LvidFileCount;
-    /* A coherent OPEN checkpoint needs no namespace or allocation repair.
-     * Deleted files can leave gaps below NextUniqueId: it is a high-water
-     * mark, not the largest surviving ID plus one. Preserve it. Require all
-     * ownership, mirror and LVID checks before closing this checkpoint;
-     * the barriers in ApplyRepair must complete before a writable mount.
-     * This does not recover application data that was never flushed. */
-    coherentCheckpoint =
-        probe->Status == UdfsRecoveryProbeValidLayout &&
-        probe->CompleteOwnershipGraph && probe->LvidCountersMatch &&
-        missing == 0 && staleFree == 0 && staleFiles == 0 &&
-        probe->LvidNextUniqueId > probe->MaxUniqueId;
-    /* Keep the existing bounded create repair and interrupted-retry classes
-     * separate from the already coherent checkpoint. */
-    if (!(coherentCheckpoint ||
-          (missing == 2 && staleFree == 0 && staleFiles == 1 &&
-           probe->LvidNextUniqueId == probe->MaxUniqueId) ||
-          (missing == 1 && staleFree == 0 && staleFiles == 1 &&
-           probe->ReferencedFreeInlineFileFeBlocks == 1 &&
-           probe->LvidNextUniqueId == probe->MaxUniqueId) ||
-          (missing == 1 && staleFree == 0 && staleFiles == 0 &&
-           probe->LvidNextUniqueId == probe->MaxUniqueId + 1) ||
-          (missing == 0 && staleFree == 2 && staleFiles == 1 &&
-           probe->LvidNextUniqueId == probe->MaxUniqueId) ||
-          (missing == 0 && staleFree == 1 && staleFiles == 0 &&
-           probe->LvidNextUniqueId == probe->MaxUniqueId + 1)))
-        return UdfsRecoveryProbeUnsupported;
-
-    check = *probe;
-    bitmapFile = (RECOVERY_EXTENT_LIST *)reader->Allocate(reader->Context,
-                                                          sizeof(*bitmapFile));
-    if (!bitmapFile) return UdfsRecoveryProbeNoMemory;
-    status = ReadFileExtents(reader, &check, probe->MetadataBitmapFeLbn,
-                             252, bitmapFile);
-    if (status != UdfsRecoveryProbeValidLayout) goto done;
-
-    for (i = 0; i < probe->ReferencedFreeMetadataBlocks; ++i) {
-        uint32_t lbn = probe->ReferencedFreeMetadataLbn[i];
-        uint32_t lba, byteOffset, j;
-        uint8_t mask;
-        status = MapExtentByte(probe, bitmapFile, 24ULL + (lbn >> 3),
-                               &lba, &byteOffset);
-        if (status != UdfsRecoveryProbeValidLayout) goto done;
-        for (j = 0; j < plan->BitmapEditCount; ++j)
-            if (plan->BitmapEdits[j].Lba == lba) break;
-        if (j == plan->BitmapEditCount) {
-            if (j == UDFS_RECOVERY_MAX_REPAIR_BLOCKS) {
-                status = UdfsRecoveryProbeUnsupported;
-                goto done;
-            }
-            edit = &plan->BitmapEdits[j];
-            edit->Lba = lba;
-            status = ReadSector(reader, &check, lba, edit->Before);
-            if (status != UdfsRecoveryProbeValidLayout) goto done;
-            memcpy(edit->After, edit->Before,
-                   UDFS_RECOVERY_SECTOR_SIZE);
-            plan->BitmapEditCount++;
-        }
-        edit = &plan->BitmapEdits[j];
-        mask = (uint8_t)(1U << (lbn & 7));
-        if (!(edit->After[byteOffset] & mask)) {
+    /* Rebuild from the current complete graph while collecting edits. A plan
+     * never depends on a caller's truncated list of missing blocks. Exclusive
+     * mount access must span probe, plan and apply. */
+    status = ProbeLayout(reader, &check, plan);
+    if (!GraphCanRecover(&check) ||
+        RecoveryDifference(&check, probe, sizeof(check)) != 0) {
+        if (status == UdfsRecoveryProbeValidLayout ||
+            status == UdfsRecoveryProbeGraphMismatch ||
+            status == UdfsRecoveryProbeLvidMismatch)
             status = UdfsRecoveryProbeCorrupt;
-            goto done;
-        }
-        edit->After[byteOffset] &= (uint8_t)~mask;
+        goto done;
     }
-
     edit = &plan->LvidEdit;
     edit->Lba = probe->PrevailingLvidLba;
     status = ReadSector(reader, &check, edit->Lba, edit->Before);
@@ -1797,6 +2541,8 @@ UdfsRecoveryPrepareRepair(const UDFS_RECOVERY_READER *reader,
         goto done;
     }
 
+    newPhysicalFree = probe->PhysicalFreeBlocks -
+                      probe->ReferencedFreePhysicalBlocks;
     newMetadataFree = probe->MetadataFreeBlocks -
                       probe->ReferencedFreeMetadataBlocks;
     nextUniqueId = probe->MaxUniqueId + 1;
@@ -1806,7 +2552,9 @@ UdfsRecoveryPrepareRepair(const UDFS_RECOVERY_READER *reader,
     memcpy(edit->After + 16, recordingTime, 12);
     Write32(edit->After + 28, 1);
     Write64(edit->After + 40, nextUniqueId);
+    Write32(edit->After + 80, newPhysicalFree);
     Write32(edit->After + 84, newMetadataFree);
+    Write32(edit->After + 92, probe->MetadataBlocks);
     Write32(edit->After + 128, probe->FilesVisited);
     Write32(edit->After + 132, probe->DirectoriesVisited);
     crcLength = Read16(edit->After + 10);
@@ -1826,7 +2574,6 @@ UdfsRecoveryPrepareRepair(const UDFS_RECOVERY_READER *reader,
     if (status == UdfsRecoveryProbeValidLayout)
         plan->Ready = 1;
 done:
-    reader->Free(reader->Context, bitmapFile);
     if (status != UdfsRecoveryProbeValidLayout)
         memset(plan, 0, sizeof(*plan));
     return status;
@@ -1844,7 +2591,9 @@ UdfsRecoveryApplyRepair(const UDFS_RECOVERY_READER *reader,
     if (!reader || !reader->ReadSector || !reader->WriteSector ||
         !reader->Flush || !reader->Allocate || !reader->Free ||
         !plan || !after || !plan->Ready ||
-        plan->BitmapEditCount > UDFS_RECOVERY_MAX_REPAIR_BLOCKS ||
+        plan->BitmapEditCount > UDFS_RECOVERY_MAX_BITMAP_EDITS ||
+        plan->FeEditCount > 2 ||
+        plan->FidEditCount > 1 ||
         plan->LvidEdit.Lba >= reader->SectorCount ||
         ValidateTag(plan->LvidEdit.Before, 9,
                     plan->LvidEdit.Lba) != UdfsRecoveryProbeValidLayout ||
@@ -1873,12 +2622,109 @@ UdfsRecoveryApplyRepair(const UDFS_RECOVERY_READER *reader,
                    UDFS_RECOVERY_SECTOR_SIZE) != 0)
             return UdfsRecoveryProbeCorrupt;
     }
+    for (i = 0; i < plan->FeEditCount; ++i) {
+        const UDFS_RECOVERY_SECTOR_EDIT *edit = &plan->FeEdits[i];
+        uint16_t kind = Read16(edit->Before);
+        if (edit->Lba >= reader->SectorCount ||
+            edit->Lba == plan->LvidEdit.Lba ||
+            (kind != 261 && kind != 266) ||
+            ValidateTag(edit->Before, kind,
+                Read32(edit->Before + 12)) !=
+                    UdfsRecoveryProbeValidLayout ||
+            ValidateTag(edit->After, kind,
+                Read32(edit->Before + 12)) !=
+                    UdfsRecoveryProbeValidLayout ||
+            !DirectoryFePairDiffersOnlyInLinkCount(
+                edit->Before, edit->After,
+                Read32(edit->Before + 12)))
+            return UdfsRecoveryProbeInvalidInput;
+        for (j = 0; j < plan->BitmapEditCount; ++j)
+            if (edit->Lba == plan->BitmapEdits[j].Lba)
+                return UdfsRecoveryProbeInvalidInput;
+        for (j = 0; j < i; ++j)
+            if (edit->Lba == plan->FeEdits[j].Lba)
+                return UdfsRecoveryProbeInvalidInput;
+        status = ReadSector(reader, after, edit->Lba, sector);
+        if (status != UdfsRecoveryProbeValidLayout) return status;
+        if (RecoveryDifference(sector, edit->Before,
+                   UDFS_RECOVERY_SECTOR_SIZE) != 0)
+            return UdfsRecoveryProbeCorrupt;
+    }
+    if (plan->FidEditCount) {
+        const UDFS_RECOVERY_SECTOR_EDIT *edit = &plan->FidEdit;
+        int liveOnMirror;
+        uint32_t child, recordOffset;
+        if (edit->Lba >= reader->SectorCount ||
+            plan->FidLiveLba >= reader->SectorCount ||
+            edit->Lba == plan->FidLiveLba ||
+            edit->Lba == plan->LvidEdit.Lba ||
+            !DirectoryFidPairLiveDeleted(
+                edit->Before, edit->After,
+                plan->FidEditLogicalLbn,
+                &liveOnMirror, &child, &recordOffset) ||
+            liveOnMirror != 1)
+            return UdfsRecoveryProbeInvalidInput;
+        for (j = 0; j < plan->BitmapEditCount; ++j)
+            if (edit->Lba == plan->BitmapEdits[j].Lba ||
+                plan->FidLiveLba ==
+                    plan->BitmapEdits[j].Lba)
+                return UdfsRecoveryProbeInvalidInput;
+        for (j = 0; j < plan->FeEditCount; ++j)
+            if (edit->Lba == plan->FeEdits[j].Lba ||
+                plan->FidLiveLba == plan->FeEdits[j].Lba)
+                return UdfsRecoveryProbeInvalidInput;
+        status = ReadSector(reader, after, edit->Lba, sector);
+        if (status != UdfsRecoveryProbeValidLayout) return status;
+        if (RecoveryDifference(sector, edit->Before,
+                   UDFS_RECOVERY_SECTOR_SIZE) != 0)
+            return UdfsRecoveryProbeCorrupt;
+        status = ReadSector(reader, after, plan->FidLiveLba,
+                            sector);
+        if (status != UdfsRecoveryProbeValidLayout) return status;
+        if (RecoveryDifference(sector, edit->After,
+                   UDFS_RECOVERY_SECTOR_SIZE) != 0)
+            return UdfsRecoveryProbeCorrupt;
+    }
     status = ReadSector(reader, after, plan->LvidEdit.Lba, sector);
     if (status != UdfsRecoveryProbeValidLayout) return status;
     if (RecoveryDifference(sector, plan->LvidEdit.Before,
                UDFS_RECOVERY_SECTOR_SIZE) != 0)
         return UdfsRecoveryProbeCorrupt;
 
+    /* A split tombstone never commits the delete: restore the valid live
+     * FID first.  All later states then retain a reachable child whose
+     * pre-freed bit and parent count can be reconciled on retry. */
+    if (plan->FidEditCount) {
+        if (reader->WriteSector(reader->Context,
+                                plan->FidEdit.Lba,
+                                plan->FidEdit.After) != 0 ||
+            reader->Flush(reader->Context) != 0)
+            return UdfsRecoveryProbeIoError;
+        status = ReadSector(reader, after,
+                            plan->FidEdit.Lba, sector);
+        if (status != UdfsRecoveryProbeValidLayout) return status;
+        if (RecoveryDifference(sector, plan->FidEdit.After,
+                   UDFS_RECOVERY_SECTOR_SIZE) != 0)
+            return UdfsRecoveryProbeIoError;
+    }
+    /* Repair the parent's link count while the child's pre-free bit is still
+     * present. That bit is the evidence needed to retry an interrupted FE
+     * repair; clearing it first would leave an unexplained low link count.
+     * An OPEN LVID blocks allocation throughout this recovery sequence. */
+    for (i = 0; i < plan->FeEditCount; ++i)
+        if (reader->WriteSector(reader->Context,
+                                plan->FeEdits[i].Lba,
+                                plan->FeEdits[i].After) != 0)
+            return UdfsRecoveryProbeIoError;
+    if (plan->FeEditCount && reader->Flush(reader->Context) != 0)
+        return UdfsRecoveryProbeIoError;
+    for (i = 0; i < plan->FeEditCount; ++i) {
+        status = ReadSector(reader, after, plan->FeEdits[i].Lba, sector);
+        if (status != UdfsRecoveryProbeValidLayout) return status;
+        if (RecoveryDifference(sector, plan->FeEdits[i].After,
+                   UDFS_RECOVERY_SECTOR_SIZE) != 0)
+            return UdfsRecoveryProbeIoError;
+    }
     for (i = 0; i < plan->BitmapEditCount; ++i)
         if (reader->WriteSector(reader->Context,
                                 plan->BitmapEdits[i].Lba,
@@ -1896,6 +2742,26 @@ UdfsRecoveryApplyRepair(const UDFS_RECOVERY_READER *reader,
                    UDFS_RECOVERY_SECTOR_SIZE) != 0)
             return UdfsRecoveryProbeIoError;
     }
+
+    /* Bitmap writes must be durable AND the entire owner graph must close
+     * before publishing CLOSED. Check the planned aggregate values against a
+     * new OPEN probe, including file/directory counts and the ID high-water
+     * mark. Interrupted bitmap batches remain OPEN and can be replanned. */
+    status = UdfsRecoveryProbeLayout(reader, after);
+    if ((status != UdfsRecoveryProbeValidLayout &&
+         status != UdfsRecoveryProbeLvidMismatch) ||
+        !GraphCanRecover(after) || !after->CompleteOwnershipGraph ||
+        after->PrevailingLvidLba != plan->LvidEdit.Lba ||
+        after->PhysicalFreeBlocks != Read32(plan->LvidEdit.After + 80) ||
+        after->MetadataFreeBlocks != Read32(plan->LvidEdit.After + 84) ||
+        after->PartitionBlocks != Read32(plan->LvidEdit.After + 88) ||
+        after->MetadataBlocks != Read32(plan->LvidEdit.After + 92) ||
+        after->FilesVisited != Read32(plan->LvidEdit.After + 128) ||
+        after->DirectoriesVisited != Read32(plan->LvidEdit.After + 132) ||
+        after->MaxUniqueId >= Read64(plan->LvidEdit.After + 40))
+        return status == UdfsRecoveryProbeValidLayout ||
+               status == UdfsRecoveryProbeLvidMismatch ?
+               UdfsRecoveryProbeCorrupt : status;
 
     status = ReadSector(reader, after, plan->LvidEdit.Lba, sector);
     if (status != UdfsRecoveryProbeValidLayout) return status;

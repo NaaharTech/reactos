@@ -1691,10 +1691,694 @@ UDFWriteFile__(
     return STATUS_SUCCESS;
 } // end UDFWriteFile__()
 
+/* Keep the disk's prepared FREE generation visible across ordinary bitmap
+ * writeback while a deleted file's FCB still pins its RAM allocation.  The
+ * BitMapResource protects this list and every bitmap serialization below. */
+NTSTATUS
+UDFOverlayDeletePrefreePhysical(PVCB Vcb, int8* Unallocated,
+                                int8* Freed, uint32 BitCount)
+{
+    PUDF_DELETE_PREFREE record;
+    uint32 i, j;
+    for (record = Vcb->DeletePrefreeList; record; record = record->Next) {
+        for (i = 0; i < record->RangeCount; ++i) {
+            PUDF_DELETE_PREFREE_RANGE range = &record->Ranges[i];
+            if (range->Metadata) continue;
+            if (range->FirstBit >= BitCount ||
+                range->BitCount > BitCount - range->FirstBit)
+                return STATUS_FILE_CORRUPT_ERROR;
+            for (j = 0; j < range->BitCount; ++j) {
+                if (Unallocated)
+                    UDFSetFreeBit(Unallocated, range->FirstBit + j);
+                if (Freed)
+                    UDFSetFreeBit(Freed, range->FirstBit + j);
+            }
+        }
+    }
+    return STATUS_SUCCESS;
+}
+
+NTSTATUS
+UDFOverlayDeletePrefreeMetadata(PVCB Vcb, int8* Bitmap,
+                                uint32 BitCount)
+{
+    PUDF_DELETE_PREFREE record;
+    uint32 i, j;
+    for (record = Vcb->DeletePrefreeList; record; record = record->Next) {
+        for (i = 0; i < record->RangeCount; ++i) {
+            PUDF_DELETE_PREFREE_RANGE range = &record->Ranges[i];
+            if (!range->Metadata) continue;
+            if (range->FirstBit >= BitCount ||
+                range->BitCount > BitCount - range->FirstBit)
+                return STATUS_FILE_CORRUPT_ERROR;
+            for (j = 0; j < range->BitCount; ++j)
+                Bitmap[(range->FirstBit + j) >> 3] |=
+                    (int8)(1U << ((range->FirstBit + j) & 7));
+        }
+    }
+    return STATUS_SUCCESS;
+}
+
+static VOID
+UDFDetachDeletePrefree(PVCB Vcb, PUDF_DATALOC_INFO Dloc)
+{
+    PUDF_DELETE_PREFREE* cursor = &Vcb->DeletePrefreeList;
+    PUDF_DELETE_PREFREE record = Dloc->DeletePrefree;
+    if (!record) return;
+    while (*cursor && *cursor != record)
+        cursor = &(*cursor)->Next;
+    ASSERT(*cursor == record && Vcb->DeletePrefreeCount);
+    if (*cursor == record) {
+        *cursor = record->Next;
+        Vcb->DeletePrefreeCount--;
+    }
+    Dloc->DeletePrefree = NULL;
+    MyFreePool__(record);
+}
+
+VOID
+UDFAbandonDeletePrefreeDloc(PVCB Vcb, PUDF_DATALOC_INFO Dloc)
+{
+    if (!Dloc || !Dloc->DeletePrefree) return;
+    UDFAcquireResourceExclusive(&(Vcb->BitMapResource1), TRUE);
+    if (Dloc->DeletePrefree) {
+        /* An unexpected teardown must not leave a VCB list pointing at a
+         * freed Dloc or resume allocation from an uncommitted generation. */
+        Vcb->VcbState |= VCB_STATE_VOLUME_READ_ONLY;
+        UDFDetachDeletePrefree(Vcb, Dloc);
+    }
+    UDFReleaseResource(&(Vcb->BitMapResource1));
+}
+
+VOID
+UDFReleaseDeletePrefreeRecords(PVCB Vcb)
+{
+    PUDF_DELETE_PREFREE record, next;
+    /* Mount can call VCB cleanup before the bitmap resource exists.  A
+     * prefree record is created only after a successful writable mount. */
+    if (!Vcb->DeletePrefreeList) return;
+    UDFAcquireResourceExclusive(&(Vcb->BitMapResource1), TRUE);
+    record = Vcb->DeletePrefreeList;
+    Vcb->DeletePrefreeList = NULL;
+    Vcb->DeletePrefreeCount = 0;
+    while (record) {
+        next = record->Next;
+        if (record->Dloc && record->Dloc->DeletePrefree == record)
+            record->Dloc->DeletePrefree = NULL;
+        MyFreePool__(record);
+        record = next;
+    }
+    UDFReleaseResource(&(Vcb->BitMapResource1));
+}
+
+static BOOLEAN
+UDFDeleteRangeOverlapsMap(PEXTENT_MAP Map, uint32 Lba, uint32 Blocks)
+{
+    uint32 i;
+    uint64 first = Lba, end = first + Blocks;
+    for (i = 0; Map && i < 4096 &&
+                (Map[i].extLength & UDF_EXTENT_LENGTH_MASK); ++i) {
+        uint32 bytes = Map[i].extLength & UDF_EXTENT_LENGTH_MASK;
+        uint64 mapFirst = Map[i].extLocation;
+        uint64 mapEnd = mapFirst + ((uint64)bytes + 511) / 512;
+        if ((Map[i].extLength >> 30) !=
+                EXTENT_NOT_RECORDED_NOT_ALLOCATED &&
+            first < mapEnd && mapFirst < end)
+            return TRUE;
+    }
+    return i == 4096;
+}
+
+/* Only the exact dense, 512-byte, external-SBD case is prepared here. Other
+ * layouts retain the older delete path and still fail closed at recovery if
+ * a cut exposes an orphan; they are not claimed as crash-safe by this patch. */
+static NTSTATUS
+UDFBuildDeletePrefree(PVCB Vcb, PUDF_FILE_INFO FileInfo,
+                      PUDF_DELETE_PREFREE* Prepared,
+                      uint32* PhysicalBitmapLba,
+                      uint32* MetadataBitmapLba)
+{
+    PUDF_DATALOC_INFO dloc = FileInfo->Dloc;
+    PEXTENT_MAP map, alloc, feMap, bitmapMap;
+    PUDF_DELETE_PREFREE record;
+    uint32 i, count = 1, feLba, metadataLbn, partRoot, blocks;
+    SIZE_T bytes;
+    BOOLEAN embedded;
+
+    *Prepared = NULL;
+    if (Vcb->CDR_Mode || Vcb->BitmapFcb || Vcb->SectorSize != 512 ||
+        !Vcb->FSBM_Bitmap || !Vcb->FSBM_OldBitmap ||
+        !Vcb->MetadataBitmap || !Vcb->MetadataFileInfo ||
+        !Vcb->MetadataBitmapFileInfo ||
+        !dloc || dloc->DeletePrefree ||
+        !Vcb->PartitionMaps || !Vcb->FSBM_ByteCount ||
+        Vcb->MetadataPhysRef != 0 ||
+        Vcb->Partitions[0].PartitionType == UDF_METADATA_MAP25 ||
+        Vcb->Partitions[0].UspaceBitmap == 0xFFFFFFFF ||
+        Vcb->Partitions[0].UspaceBitmap >=
+            Vcb->Partitions[0].PartitionLen)
+        return STATUS_NOT_SUPPORTED;
+    partRoot = Vcb->Partitions[0].PartitionRoot;
+    feMap = dloc->FELoc.Mapping;
+    if (!feMap || feMap[0].extLength != 512 ||
+        (feMap[1].extLength & UDF_EXTENT_LENGTH_MASK))
+        return STATUS_NOT_SUPPORTED;
+    feLba = feMap[0].extLocation;
+    embedded = dloc->DataLoc.Offset != 0;
+    if (embedded) {
+        /* In-ICB data occupies the FE sector itself.  Only its metadata
+         * bitmap bit is released; it has no separate physical data blocks.
+         * Reject a transition or extra allocation extent that this bounded
+         * transaction cannot describe. */
+        map = dloc->DataLoc.Mapping;
+        if (!dloc->FileEntry || !map ||
+            dloc->DataLoc.Offset != dloc->FileEntryLen ||
+            dloc->DataLoc.Length < 0 ||
+            (uint64)dloc->DataLoc.Offset +
+                (uint64)dloc->DataLoc.Length > Vcb->SectorSize ||
+            (((PFILE_ENTRY)dloc->FileEntry)->icbTag.flags &
+                ICB_FLAG_ALLOC_MASK) != ICB_FLAG_AD_IN_ICB ||
+            dloc->AllocLoc.Mapping || dloc->AllocLoc.Length ||
+            map[0].extLocation != feLba || map[0].extLength != 512 ||
+            (map[1].extLength & UDF_EXTENT_LENGTH_MASK))
+            return STATUS_NOT_SUPPORTED;
+    }
+    metadataLbn = UDFPhysLbaToMetadata(Vcb, feLba);
+    if (metadataLbn == LBA_OUT_OF_EXTENT ||
+        metadataLbn >= Vcb->MetadataBitCount ||
+        UDFMetadataLbaToPhys(Vcb, metadataLbn, NULL) != feLba)
+        return STATUS_NOT_SUPPORTED;
+
+    bitmapMap = Vcb->MetadataBitmapFileInfo->Dloc->DataLoc.Mapping;
+    if (Vcb->MetadataBitmapFileInfo->Dloc->DataLoc.Offset ||
+        !bitmapMap || (bitmapMap[0].extLength >> 30) !=
+            EXTENT_RECORDED_ALLOCATED ||
+        (bitmapMap[0].extLength & UDF_EXTENT_LENGTH_MASK) <
+            sizeof(SPACE_BITMAP_DESC) + Vcb->MetadataBitmapByteCount ||
+        (bitmapMap[1].extLength & UDF_EXTENT_LENGTH_MASK))
+        return STATUS_NOT_SUPPORTED;
+    *PhysicalBitmapLba = partRoot + Vcb->Partitions[0].UspaceBitmap;
+    if (Vcb->FSBM_ByteCount > Vcb->Partitions[0].PartitionLen * 512ULL ||
+        (uint64)Vcb->Partitions[0].UspaceBitmap +
+            ((uint64)sizeof(SPACE_BITMAP_DESC) +
+             Vcb->FSBM_ByteCount + 511) / 512 >
+            Vcb->Partitions[0].PartitionLen)
+        return STATUS_NOT_SUPPORTED;
+    *MetadataBitmapLba = bitmapMap[0].extLocation;
+    if (UDFPhysLbaToMetadata(Vcb, *MetadataBitmapLba) != LBA_OUT_OF_EXTENT)
+        return STATUS_NOT_SUPPORTED;
+
+    alloc = dloc->AllocLoc.Mapping;
+    for (i = 0; alloc && i < 4096 &&
+                (alloc[i].extLength & UDF_EXTENT_LENGTH_MASK); ++i) {
+        if ((alloc[i].extLength >> 30) !=
+                EXTENT_NOT_RECORDED_NOT_ALLOCATED &&
+            (alloc[i].extLocation != feLba ||
+             (alloc[i].extLength & UDF_EXTENT_LENGTH_MASK) > 512))
+            return STATUS_NOT_SUPPORTED;
+    }
+    if (i == 4096) return STATUS_NOT_SUPPORTED;
+    map = embedded ? NULL : dloc->DataLoc.Mapping;
+    for (i = 0; map && i < 4096 &&
+                (map[i].extLength & UDF_EXTENT_LENGTH_MASK); ++i) {
+        uint32 length = map[i].extLength & UDF_EXTENT_LENGTH_MASK;
+        uint32 kind = map[i].extLength >> 30;
+        if (kind == EXTENT_NOT_RECORDED_NOT_ALLOCATED) continue;
+        if (kind != EXTENT_RECORDED_ALLOCATED &&
+            kind != EXTENT_NOT_RECORDED_ALLOCATED)
+            return STATUS_NOT_SUPPORTED;
+        blocks = (length + 511) / 512;
+        if (!blocks || !map[i].extLocation ||
+            map[i].extLocation < partRoot ||
+            map[i].extLocation - partRoot >= Vcb->FSBM_BitCount ||
+            blocks > Vcb->FSBM_BitCount -
+                     (map[i].extLocation - partRoot) ||
+            UDFDeleteRangeOverlapsMap(Vcb->MetadataFileInfo->Dloc->DataLoc.Mapping,
+                                      map[i].extLocation, blocks) ||
+            (Vcb->MetadataMirrorFileInfo &&
+             UDFDeleteRangeOverlapsMap(
+                 Vcb->MetadataMirrorFileInfo->Dloc->DataLoc.Mapping,
+                 map[i].extLocation, blocks)))
+            return STATUS_NOT_SUPPORTED;
+        count++;
+    }
+    if (i == 4096) return STATUS_NOT_SUPPORTED;
+    bytes = sizeof(UDF_DELETE_PREFREE) +
+            (SIZE_T)(count - 1) * sizeof(UDF_DELETE_PREFREE_RANGE);
+    record = (PUDF_DELETE_PREFREE)MyAllocatePool__(NonPagedPool, bytes);
+    if (!record) return STATUS_INSUFFICIENT_RESOURCES;
+    RtlZeroMemory(record, bytes);
+    record->Dloc = dloc;
+    record->Ranges[0].FirstBit = metadataLbn;
+    record->Ranges[0].BitCount = 1;
+    record->Ranges[0].Metadata = TRUE;
+    record->RangeCount = 1;
+    for (i = 0; map && (map[i].extLength & UDF_EXTENT_LENGTH_MASK); ++i) {
+        uint32 length = map[i].extLength & UDF_EXTENT_LENGTH_MASK;
+        if ((map[i].extLength >> 30) ==
+                EXTENT_NOT_RECORDED_NOT_ALLOCATED) continue;
+        record->Ranges[record->RangeCount].FirstBit =
+            map[i].extLocation - partRoot;
+        record->Ranges[record->RangeCount].BitCount =
+            (length + 511) / 512;
+        record->RangeCount++;
+    }
+    ASSERT(record->RangeCount == count);
+    *Prepared = record;
+    return STATUS_SUCCESS;
+}
+
+static NTSTATUS
+UDFValidateDeletePrefreeBitmaps(PIRP_CONTEXT IrpContext, PVCB Vcb,
+                                uint32 PhysicalLba, uint32 MetadataLba,
+                                int8* Sector)
+{
+    PSPACE_BITMAP_DESC desc;
+    uint16 ident;
+    NTSTATUS status;
+    status = UDFReadTagged(IrpContext, Vcb, Sector, PhysicalLba,
+                           Vcb->Partitions[0].UspaceBitmap, &ident);
+    if (!NT_SUCCESS(status)) return status;
+    desc = (PSPACE_BITMAP_DESC)Sector;
+    if (ident != TID_SPACE_BITMAP_DESC ||
+        desc->descTag.descCRCLength >
+            sizeof(SPACE_BITMAP_DESC) - sizeof(tag) ||
+        desc->numOfBits != Vcb->FSBM_BitCount ||
+        desc->numOfBytes < Vcb->FSBM_ByteCount)
+        return STATUS_NOT_SUPPORTED;
+    status = UDFReadTagged(IrpContext, Vcb, Sector, MetadataLba,
+                           UDFPhysLbaToPart(Vcb, Vcb->MetadataPhysRef,
+                                            MetadataLba), &ident);
+    if (!NT_SUCCESS(status)) return status;
+    desc = (PSPACE_BITMAP_DESC)Sector;
+    if (ident != TID_SPACE_BITMAP_DESC ||
+        desc->descTag.descCRCLength >
+            sizeof(SPACE_BITMAP_DESC) - sizeof(tag) ||
+        desc->numOfBits != Vcb->MetadataBitCount ||
+        desc->numOfBytes < Vcb->MetadataBitmapByteCount)
+        return STATUS_NOT_SUPPORTED;
+    return STATUS_SUCCESS;
+}
+
+static NTSTATUS
+UDFWriteDeletePrefreeBitmaps(PIRP_CONTEXT IrpContext, PVCB Vcb,
+                             PUDF_DELETE_PREFREE Record,
+                             uint32 PhysicalLba, uint32 MetadataLba,
+                             int8* Sector, PBOOLEAN PossiblyModified)
+{
+    uint32 i;
+    for (i = 0; i < Record->RangeCount; ++i) {
+        PUDF_DELETE_PREFREE_RANGE range = &Record->Ranges[i];
+        uint32 bit = range->FirstBit, left = range->BitCount;
+        uint32 base = range->Metadata ? MetadataLba : PhysicalLba;
+        while (left) {
+            uint32 byteOffset = sizeof(SPACE_BITMAP_DESC) + (bit >> 3);
+            uint32 sectorOffset = byteOffset % 512;
+            uint32 bits = min(left, (512 - sectorOffset) * 8 - (bit & 7));
+            uint32 j;
+            SIZE_T written = 0;
+            BOOLEAN changed = FALSE;
+            NTSTATUS status = UDFReadSectors(IrpContext, Vcb, FALSE,
+                                    base + byteOffset / 512, 1, FALSE, Sector);
+            if (!NT_SUCCESS(status)) return status;
+            for (j = 0; j < bits; ++j) {
+                uint32 current = bit + j;
+                uint8* byte = (uint8*)Sector +
+                    (sizeof(SPACE_BITMAP_DESC) + (current >> 3)) % 512;
+                uint8 mask = (uint8)(1U << (current & 7));
+                /* The RAM allocator must still reserve every target bit.
+                 * A freshly allocated block may have a durable FE before
+                 * its bitmap generation is published. Accept an on-disk
+                 * FREE bit only if this exact bit has an unflushed allocation
+                 * recorded under BitMapResource1; unrelated dirty bits do
+                 * not establish provenance. */
+                if (range->Metadata) {
+                    if (current >= Vcb->MetadataBitCount ||
+                        !Vcb->MetadataBitmap || !Vcb->MetadataPendingAlloc ||
+                        UDFGetFreeBit(Vcb->MetadataBitmap, current))
+                        return STATUS_FILE_CORRUPT_ERROR;
+                    if (*byte & mask) {
+                        if (!(Vcb->MetadataPendingAlloc[current >> 3] & mask))
+                            return STATUS_FILE_CORRUPT_ERROR;
+                        continue;
+                    }
+                } else {
+                    if (current >= Vcb->FSBM_BitCount ||
+                        !Vcb->FSBM_Bitmap || !Vcb->FSBM_OldBitmap ||
+                        UDFGetFreeBit(Vcb->FSBM_Bitmap, current))
+                        return STATUS_FILE_CORRUPT_ERROR;
+                    if (*byte & mask) {
+                        if (!UDFGetFreeBit(Vcb->FSBM_OldBitmap, current))
+                            return STATUS_FILE_CORRUPT_ERROR;
+                        continue;
+                    }
+                }
+                *byte |= mask;
+                changed = TRUE;
+            }
+            if (changed) {
+                *PossiblyModified = TRUE;
+                status = UDFWriteSectors(IrpContext, Vcb, FALSE,
+                                         base + byteOffset / 512, 1, FALSE,
+                                         Sector, &written);
+                if (!NT_SUCCESS(status)) return status;
+                if (written != 512) return STATUS_IO_DEVICE_ERROR;
+            }
+            bit += bits;
+            left -= bits;
+        }
+    }
+    return STATUS_SUCCESS;
+}
+
+static VOID
+UDFReleasePrefreedAllocation(PVCB Vcb, PUDF_FILE_INFO DirInfo,
+                             PUDF_FILE_INFO FileInfo)
+{
+    UDFAcquireResourceExclusive(&(Vcb->BitMapResource1), TRUE);
+    _SEH2_TRY {
+        UDFFreeFileAllocation(Vcb, DirInfo, FileInfo);
+        UDFDetachDeletePrefree(Vcb, FileInfo->Dloc);
+    } _SEH2_FINALLY {
+        if (_SEH2_AbnormalTermination())
+            Vcb->VcbState |= VCB_STATE_VOLUME_READ_ONLY;
+        UDFReleaseResource(&(Vcb->BitMapResource1));
+    } _SEH2_END;
+}
+
+/* The directory transaction is deliberately narrower than the ordinary-file
+ * one: its parent FE and child FID must be distinct, mirrored 512-byte
+ * sectors.  Recovery must be able to identify either copy after a cut. */
+static BOOLEAN
+UDFDeleteHasIndependentMetadataMirror(PVCB Vcb, uint32 MainLba)
+{
+    PEXTENT_MAP mirror;
+    uint32 lbn, mirrorLba, flags;
+    SIZE_T available;
+
+    if (!(Vcb->MetadataFlags & UDF_METADATA_DUPLICATED) ||
+        !Vcb->MetadataMirrorFileInfo ||
+        !Vcb->MetadataMirrorFileInfo->Dloc ||
+        !(mirror = Vcb->MetadataMirrorFileInfo->Dloc->DataLoc.Mapping))
+        return FALSE;
+    lbn = UDFPhysLbaToMetadata(Vcb, MainLba);
+    if (lbn == LBA_OUT_OF_EXTENT || lbn >= Vcb->MetadataBitCount ||
+        UDFMetadataLbaToPhys(Vcb, lbn, NULL) != MainLba)
+        return FALSE;
+    mirrorLba = UDFExtentOffsetToLba(Vcb, mirror, ((int64)lbn) << 9,
+                                    NULL, &available, &flags, NULL);
+    return mirrorLba != LBA_OUT_OF_EXTENT && mirrorLba != MainLba &&
+           flags == EXTENT_RECORDED_ALLOCATED && available >= 512;
+}
+
+static BOOLEAN
+UDFDeleteParentHasOtherDirtyFid(PDIR_INDEX_HDR Index, uint_di Target)
+{
+    PDIR_INDEX_ITEM item;
+    uint_di i;
+    for (i = 2; (item = UDFDirIndex(Index, i)); ++i)
+        if (i != Target && (item->FI_Flags & UDF_FI_FLAG_FI_MODIFIED))
+            return TRUE;
+    return FALSE;
+}
+
+/* A single empty, inline directory has only its FE metadata bit to release.
+ * Keep that bit free on disk but reserved in RAM until the parent FE and FID
+ * have both passed lower-device barriers.  On any uncertain write, retain
+ * OPEN LVID and make this mount read-only; the bounded recovery graph decides
+ * whether another mount can safely roll the transaction forward. */
+static NTSTATUS
+UDFTryPreparedEmptyDirectoryUnlink(PIRP_CONTEXT IrpContext, PVCB Vcb,
+                                   PUDF_FILE_INFO FileInfo,
+                                   PBOOLEAN Handled)
+{
+    PUDF_FILE_INFO parent;
+    PUDF_DATALOC_INFO dloc;
+    PDIR_INDEX_HDR parentIndex;
+    PDIR_INDEX_ITEM entry;
+    PUDF_DELETE_PREFREE record = NULL;
+    int8 *sector = NULL, *parentBefore = NULL, *fidBefore = NULL;
+    uint32 bitmapPhysical = 0, bitmapMetadata = 0;
+    uint32 childPart, parentPart, fidLba, childFeLba, parentFeLba;
+    uint32 parentFeFlags;
+    uint8 oldFlags, oldCharacteristics;
+    NTSTATUS status;
+    BOOLEAN bitmapHeld = FALSE, attached = FALSE;
+    BOOLEAN parentTouched = FALSE, fidTouched = FALSE;
+    BOOLEAN uncertain = FALSE, committed = FALSE;
+    FILE_ID removedId;
+
+    *Handled = FALSE;
+    if (!IrpContext || IrpContext->MajorFunction != IRP_MJ_CLEANUP ||
+        Vcb->CDR_Mode || Vcb->SectorSize != 512 ||
+        !Vcb->LVid ||
+        Vcb->origIntegrityType != INTEGRITY_TYPE_CLOSE ||
+        Vcb->VcbCondition != VcbMounted ||
+        Vcb->FsDeviceType != FILE_DEVICE_DISK_FILE_SYSTEM ||
+        (Vcb->VcbState & (VCB_STATE_VOLUME_READ_ONLY |
+                           VCB_STATE_REMOVABLE_MEDIA)) ||
+        !FileInfo || !FileInfo->Fcb ||
+        FileInfo->Fcb->FcbCleanup ||
+        !UDFIsADirectory(FileInfo) || UDFIsAStreamDir(FileInfo) ||
+        UDFHasAStreamDir(FileInfo) || !FileInfo->FileIdent ||
+        !(dloc = FileInfo->Dloc) ||
+        dloc->CommonFcb != FileInfo->Fcb ||
+        !dloc->DirIndex || !UDFIsDirEmpty(dloc->DirIndex) ||
+        UDFGetFileLinkCount(FileInfo) != 1 ||
+        !dloc->DataLoc.Offset || dloc->DataLoc.Length != 40 ||
+        !dloc->FELoc.Mapping ||
+        dloc->FELoc.Mapping[0].extLength != 512 ||
+        (dloc->FELoc.Mapping[1].extLength & UDF_EXTENT_LENGTH_MASK) ||
+        (dloc->FE_Flags & UDF_FE_FLAG_FE_MODIFIED) ||
+        dloc->DataLoc.Modified || dloc->AllocLoc.Modified ||
+        dloc->FELoc.Modified ||
+        !(parent = FileInfo->ParentFile) ||
+        !parent->Dloc || !parent->Dloc->FileEntry ||
+        !parent->Dloc->FELoc.Mapping ||
+        parent->Dloc->FELoc.Mapping[0].extLength != 512 ||
+        (parent->Dloc->FELoc.Mapping[1].extLength &
+            UDF_EXTENT_LENGTH_MASK) ||
+        parent->Dloc->DataLoc.Offset ||
+        !parent->Dloc->DataLoc.Mapping ||
+        !(parentIndex = parent->Dloc->DirIndex) ||
+        FileInfo->Index < 2 ||
+        !(entry = UDFDirIndex(parentIndex, FileInfo->Index)) ||
+        !(entry->FileCharacteristics & FILE_DIRECTORY) ||
+        (entry->FileCharacteristics & FILE_DELETED) ||
+        !(FileInfo->FileIdent->fileCharacteristics & FILE_DIRECTORY) ||
+        (FileInfo->FileIdent->fileCharacteristics & FILE_DELETED) ||
+        UDFDeleteParentHasOtherDirtyFid(parentIndex, FileInfo->Index) ||
+        entry->Length != FileInfo->FileIdentLen ||
+        !entry->Length || entry->Length > 512 ||
+        (entry->Offset & 511) > 512 - entry->Length ||
+        parent->Dloc->DataLoc.Length < 0 ||
+        (uint64)entry->Offset + entry->Length >
+            (uint64)parent->Dloc->DataLoc.Length ||
+        UDFGetFileLinkCount(parent) < 2 ||
+        UDFGetFileLinkCount(parent) == UDF_INVALID_LINK_COUNT)
+        return STATUS_NOT_SUPPORTED;
+
+    childFeLba = dloc->FELoc.Mapping[0].extLocation;
+    parentFeLba = parent->Dloc->FELoc.Mapping[0].extLocation;
+    childPart = UDFGetRefPartNumByPhysLba(Vcb, childFeLba);
+    parentPart = UDFGetRefPartNumByPhysLba(Vcb, parentFeLba);
+    fidLba = UDFExtentOffsetToLba(Vcb, parent->Dloc->DataLoc.Mapping,
+                                  entry->Offset, NULL, NULL, NULL, NULL);
+    if (childPart == (uint32)-1 || parentPart == (uint32)-1 ||
+        fidLba == LBA_OUT_OF_EXTENT ||
+        !UDFDeleteHasIndependentMetadataMirror(Vcb, childFeLba) ||
+        !UDFDeleteHasIndependentMetadataMirror(Vcb, parentFeLba) ||
+        !UDFDeleteHasIndependentMetadataMirror(Vcb, fidLba))
+        return STATUS_NOT_SUPPORTED;
+
+    status = UDFBuildDeletePrefree(Vcb, FileInfo, &record,
+                                   &bitmapPhysical, &bitmapMetadata);
+    if (status == STATUS_NOT_SUPPORTED)
+        return status;
+    *Handled = TRUE;
+    if (!NT_SUCCESS(status))
+        return status;
+    if (record->RangeCount != 1 || !record->Ranges[0].Metadata ||
+        record->Ranges[0].BitCount != 1) {
+        MyFreePool__(record);
+        *Handled = FALSE;
+        return STATUS_NOT_SUPPORTED;
+    }
+    sector = (int8*)MyAllocatePool__(NonPagedPool, 512);
+    parentBefore = (int8*)MyAllocatePool__(NonPagedPool, 512);
+    fidBefore = (int8*)MyAllocatePool__(NonPagedPool,
+                                        FileInfo->FileIdentLen);
+    if (!sector || !parentBefore || !fidBefore) {
+        status = STATUS_INSUFFICIENT_RESOURCES;
+        goto cleanup;
+    }
+
+    status = UDFOpenIntegrityForWrite(IrpContext, Vcb, FALSE);
+    if (!NT_SUCCESS(status)) goto cleanup;
+    status = UDFFlushFile__(IrpContext, Vcb, parent, 0);
+    if (!NT_SUCCESS(status)) {
+        Vcb->VcbState |= VCB_STATE_VOLUME_READ_ONLY;
+        goto cleanup;
+    }
+    status = UDFBarrierFlushDevice(Vcb->TargetDeviceObject);
+    if (!NT_SUCCESS(status)) {
+        Vcb->VcbState |= VCB_STATE_VOLUME_READ_ONLY;
+        goto cleanup;
+    }
+    /* A prior append or retag may have changed the parent's mapping while
+     * preflushing it.  This transaction cannot use a stale FID address. */
+    parentIndex = parent->Dloc->DirIndex;
+    entry = parentIndex ? UDFDirIndex(parentIndex, FileInfo->Index) : NULL;
+    if (parent->Dloc->DataLoc.Modified ||
+        parent->Dloc->AllocLoc.Modified ||
+        parent->Dloc->FELoc.Modified ||
+        (parent->Dloc->FE_Flags & UDF_FE_FLAG_FE_MODIFIED) ||
+        parent->Dloc->DataLoc.Offset ||
+        !entry || entry->Length != FileInfo->FileIdentLen ||
+        (entry->FileCharacteristics & FILE_DELETED) ||
+        UDFDeleteParentHasOtherDirtyFid(parentIndex, FileInfo->Index) ||
+        fidLba != UDFExtentOffsetToLba(Vcb,
+                       parent->Dloc->DataLoc.Mapping, entry->Offset,
+                       NULL, NULL, NULL, NULL) ||
+        !UDFDeleteHasIndependentMetadataMirror(Vcb, parentFeLba) ||
+        !UDFDeleteHasIndependentMetadataMirror(Vcb, fidLba)) {
+        status = STATUS_CANNOT_DELETE;
+        goto cleanup;
+    }
+    parentFeFlags = parent->Dloc->FE_Flags;
+    oldFlags = entry->FI_Flags;
+    oldCharacteristics = entry->FileCharacteristics;
+    RtlCopyMemory(parentBefore, parent->Dloc->FileEntry, 512);
+    RtlCopyMemory(fidBefore, FileInfo->FileIdent,
+                  FileInfo->FileIdentLen);
+    removedId = UDFGetNTFileId(Vcb, FileInfo);
+    UDFPrint(("UDFS empty-dir prefree start FE %lx parentFE %lx FID %lx\n",
+              (ULONG)childFeLba, (ULONG)parentFeLba, (ULONG)fidLba));
+
+    _SEH2_TRY {
+        UDFAcquireResourceExclusive(&(Vcb->BitMapResource1), TRUE);
+        bitmapHeld = TRUE;
+        status = UDFValidateDeletePrefreeBitmaps(IrpContext, Vcb,
+                     bitmapPhysical, bitmapMetadata, sector);
+        if (NT_SUCCESS(status)) {
+            record->Next = Vcb->DeletePrefreeList;
+            Vcb->DeletePrefreeList = record;
+            Vcb->DeletePrefreeCount++;
+            dloc->DeletePrefree = record;
+            attached = TRUE;
+            uncertain = TRUE;
+            status = UDFWriteDeletePrefreeBitmaps(IrpContext, Vcb, record,
+                         bitmapPhysical, bitmapMetadata, sector,
+                         &uncertain);
+        }
+        if (NT_SUCCESS(status))
+            status = UDFBarrierFlushDevice(Vcb->TargetDeviceObject);
+        UDFReleaseResource(&(Vcb->BitMapResource1));
+        bitmapHeld = FALSE;
+
+        if (NT_SUCCESS(status)) {
+            UDFDecFileLinkCount(parent);
+            parentTouched = TRUE;
+            status = UDFFlushFE(IrpContext, Vcb, parent, parentPart);
+        }
+        if (NT_SUCCESS(status))
+            status = UDFBarrierFlushDevice(Vcb->TargetDeviceObject);
+        if (NT_SUCCESS(status)) {
+            entry->FI_Flags |= UDF_FI_FLAG_FI_MODIFIED;
+            entry->FileCharacteristics |= FILE_DELETED;
+            FileInfo->FileIdent->fileCharacteristics |= FILE_DELETED;
+            RtlZeroMemory(&FileInfo->FileIdent->icb, sizeof(long_ad));
+            fidTouched = TRUE;
+            status = UDFFlushFI(IrpContext, Vcb, FileInfo, childPart);
+        }
+        if (NT_SUCCESS(status))
+            status = UDFBarrierFlushDevice(Vcb->TargetDeviceObject);
+        if (NT_SUCCESS(status)) {
+            committed = TRUE;
+            parentIndex->DelCount++;
+            UDFChangeFileCounter(Vcb, FALSE, FALSE);
+            UDFDecFileLinkCount(FileInfo);
+            dloc->FE_Flags &= ~UDF_FE_FLAG_FE_MODIFIED;
+            dloc->FE_Flags |= UDF_FE_FLAG_FREE_DEFERRED;
+            UDFRemoveFileId(Vcb, removedId);
+            UDFPrint(("UDFS empty-dir prefree committed FE %lx\n",
+                      (ULONG)childFeLba));
+            /* Cleanup owns the FCB until teardown. The overlay keeps its
+             * freed on-disk FE bit unavailable to RAM allocation meanwhile. */
+        }
+    } _SEH2_FINALLY {
+        if (_SEH2_AbnormalTermination() || !NT_SUCCESS(status)) {
+            if (uncertain || _SEH2_AbnormalTermination())
+                Vcb->VcbState |= VCB_STATE_VOLUME_READ_ONLY;
+            if (!committed && fidTouched) {
+                RtlCopyMemory(FileInfo->FileIdent, fidBefore,
+                              FileInfo->FileIdentLen);
+                entry->FileCharacteristics = oldCharacteristics;
+                entry->FI_Flags = oldFlags;
+            }
+            if (!committed && parentTouched) {
+                RtlCopyMemory(parent->Dloc->FileEntry, parentBefore, 512);
+                parent->Dloc->FE_Flags = parentFeFlags;
+            }
+            if (!committed && attached) {
+                if (!bitmapHeld) {
+                    UDFAcquireResourceExclusive(&(Vcb->BitMapResource1),
+                                                TRUE);
+                    bitmapHeld = TRUE;
+                }
+                UDFDetachDeletePrefree(Vcb, dloc);
+                record = NULL;
+                attached = FALSE;
+            }
+        }
+        if (bitmapHeld)
+            UDFReleaseResource(&(Vcb->BitMapResource1));
+    } _SEH2_END;
+
+cleanup:
+    if (fidBefore) MyFreePool__(fidBefore);
+    if (parentBefore) MyFreePool__(parentBefore);
+    if (sector) MyFreePool__(sector);
+    if (record && !attached) MyFreePool__(record);
+    return status;
+}
+
 /*
     This routine marks file as deleted & decrements file link counter.
     It can optionaly free allocation space
  */
+/* OpenCount counts references held by children, not user handles of a stream.
+ * FcbCleanup is decremented when that stream's last FILE_OBJECT is cleaned up.
+ * Check the shared Dloc's FCB because a directory-index FI may be a parallel
+ * FI rather than the one attached to the open handle. */
+BOOLEAN
+UDFStreamDirectoryHasLiveHandles(
+    IN PUDF_FILE_INFO SDirInfo
+    )
+{
+    PDIR_INDEX_ITEM Entry;
+    PUDF_FILE_INFO StreamInfo;
+    PFCB StreamFcb;
+    uint_di Index;
+
+    if (!SDirInfo || !SDirInfo->Dloc || !SDirInfo->Dloc->DirIndex)
+        return FALSE;
+
+    for (Index = 2;
+         (Entry = UDFDirIndex(SDirInfo->Dloc->DirIndex, Index));
+         Index++) {
+        StreamInfo = Entry->FileInfo;
+        if (!StreamInfo)
+            continue;
+        StreamFcb = StreamInfo->Dloc ? StreamInfo->Dloc->CommonFcb : NULL;
+        if (!StreamFcb)
+            StreamFcb = StreamInfo->Fcb;
+        if (StreamFcb && StreamFcb->FcbCleanup)
+            return TRUE;
+    }
+    return FALSE;
+}
+
 NTSTATUS
 UDFUnlinkFile__(
     IN PIRP_CONTEXT IrpContext,
@@ -1721,6 +2405,15 @@ UDFUnlinkFile__(
     long_ad OldIcb;
     FILE_ID RemovedFileId;
     BOOLEAN RemoveFileId;
+    BOOLEAN CommitBarrierFailed = FALSE;
+    BOOLEAN PrefreeModified = FALSE;
+    BOOLEAN PrefreeLockHeld = FALSE;
+    BOOLEAN PrefreeAttached = FALSE;
+    BOOLEAN DirectoryHandled = FALSE;
+    PUDF_DELETE_PREFREE Prefree = NULL;
+    int8* PrefreeSector = NULL;
+    uint32 PhysicalBitmapLba = 0, MetadataBitmapLba = 0;
+    NTSTATUS RestoreStatus;
 
     AdPrint(("UDFUnlinkFile__:\n"));
     if (!FileInfo) return STATUS_SUCCESS;
@@ -1784,6 +2477,20 @@ UDFUnlinkFile__(
          Dloc->FELoc.Modified ||
         (DirNdx && (DirNdx->FI_Flags & UDF_FI_FLAG_FI_MODIFIED)) )) {
         return STATUS_CANNOT_DELETE;
+    }
+    /* A live named-stream handle must retain the stream directory and its
+     * owner until cleanup.  This check precedes every FID/link-count change;
+     * returning STATUS_CANNOT_DELETE later would leave a dirty parent FID. */
+    if (FreeSpace &&
+        UDFStreamDirectoryHasLiveHandles(UDFIsAStreamDir(FileInfo) ?
+            FileInfo : (UDFHasAStreamDir(FileInfo) ? Dloc->SDirInfo : NULL)))
+        return STATUS_CANNOT_DELETE;
+    if (FreeSpace && UDFIsADirectory(FileInfo)) {
+        status = UDFTryPreparedEmptyDirectoryUnlink(IrpContext, Vcb,
+                                                     FileInfo,
+                                                     &DirectoryHandled);
+        if (DirectoryHandled)
+            return status;
     }
     /* An ordinary final-link delete may fail while writing its FID. Save the
      * state that must be restored before cleanup can flush the parent. */
@@ -1951,7 +2658,113 @@ cleanup_SDir:
             !(Vcb->VcbState & VCB_STATE_REMOVABLE_MEDIA) &&
             ((PartNum = UDFGetRefPartNumByPhysLba(
                 Vcb, Dloc->FELoc.Mapping[0].extLocation)) != (uint32)-1)) {
-            status = UDFFlushFI(IrpContext, Vcb, FileInfo, PartNum);
+            /* A supported final-link delete pre-frees its exact on-disk
+             * bitmap bits while RAM still reserves them, barriers that
+             * generation, then barriers the FID tombstone.  Both crash
+             * sides are repairable by the existing complete owner graph. */
+            if (UDFExtentOffsetToLba(Vcb,
+                    DirInfo->Dloc->DataLoc.Mapping, DirNdx->Offset,
+                    NULL, NULL, NULL, NULL) != LBA_OUT_OF_EXTENT)
+                status = UDFBuildDeletePrefree(Vcb, FileInfo, &Prefree,
+                                &PhysicalBitmapLba, &MetadataBitmapLba);
+            else
+                status = STATUS_NOT_SUPPORTED;
+            if (NT_SUCCESS(status)) {
+                _SEH2_TRY {
+                    PrefreeSector = (int8*)MyAllocatePool__(NonPagedPool, 512);
+                    if (!PrefreeSector)
+                        status = STATUS_INSUFFICIENT_RESOURCES;
+                    if (NT_SUCCESS(status))
+                        status = UDFOpenIntegrityForWrite(IrpContext, Vcb,
+                                                          FALSE);
+                    if (NT_SUCCESS(status)) {
+                        UDFAcquireResourceExclusive(&(Vcb->BitMapResource1),
+                                                     TRUE);
+                        PrefreeLockHeld = TRUE;
+                        status = UDFValidateDeletePrefreeBitmaps(IrpContext,
+                            Vcb, PhysicalBitmapLba, MetadataBitmapLba,
+                            PrefreeSector);
+                        if (NT_SUCCESS(status)) {
+                            Prefree->Next = Vcb->DeletePrefreeList;
+                            Vcb->DeletePrefreeList = Prefree;
+                            Vcb->DeletePrefreeCount++;
+                            Dloc->DeletePrefree = Prefree;
+                            PrefreeAttached = TRUE;
+                            status = UDFWriteDeletePrefreeBitmaps(IrpContext,
+                                Vcb, Prefree, PhysicalBitmapLba,
+                                MetadataBitmapLba, PrefreeSector,
+                                &PrefreeModified);
+                            if (NT_SUCCESS(status))
+                                status = UDFBarrierFlushDevice(
+                                    Vcb->TargetDeviceObject);
+                            if (NT_SUCCESS(status)) {
+                                uint32 rangeIndex;
+                                /* The dense bitmap's old copy tracks the
+                                 * actual disk generation.  Without this,
+                                 * free then reallocate can leave RAM equal
+                                 * to the old copy, so the next volume flush
+                                 * skips writing the now-used disk bit. */
+                                for (rangeIndex = 0;
+                                     rangeIndex < Prefree->RangeCount;
+                                     ++rangeIndex) {
+                                    PUDF_DELETE_PREFREE_RANGE range =
+                                        &Prefree->Ranges[rangeIndex];
+                                    if (!range->Metadata)
+                                        UDFSetFreeBits(Vcb->FSBM_OldBitmap,
+                                                       range->FirstBit,
+                                                       range->BitCount);
+                                }
+                            }
+                            if (NT_SUCCESS(status))
+                                status = UDFFlushFI(IrpContext, Vcb,
+                                                    FileInfo, PartNum);
+                            if (NT_SUCCESS(status))
+                                status = UDFBarrierFlushDevice(
+                                    Vcb->TargetDeviceObject);
+                            if (!NT_SUCCESS(status)) {
+                                /* Any failed write or barrier leaves an
+                                 * uncertain durable generation. */
+                                CommitBarrierFailed = TRUE;
+                                Vcb->VcbState |= VCB_STATE_VOLUME_READ_ONLY;
+                                UDFDetachDeletePrefree(Vcb, Dloc);
+                                Prefree = NULL;
+                                PrefreeAttached = FALSE;
+                            }
+                        }
+                    }
+                } _SEH2_FINALLY {
+                    if (_SEH2_AbnormalTermination()) {
+                        Vcb->VcbState |= VCB_STATE_VOLUME_READ_ONLY;
+                        if (PrefreeAttached) {
+                            UDFDetachDeletePrefree(Vcb, Dloc);
+                            Prefree = NULL;
+                        }
+                    }
+                    if (PrefreeLockHeld)
+                        UDFReleaseResource(&(Vcb->BitMapResource1));
+                    if (PrefreeSector)
+                        MyFreePool__(PrefreeSector);
+                    if (Prefree && (!NT_SUCCESS(status) ||
+                                    _SEH2_AbnormalTermination()))
+                        MyFreePool__(Prefree);
+                } _SEH2_END;
+                if (NT_SUCCESS(status))
+                    UDFPrint(("UDFS unlink prefree: FE %x, ranges %u\n",
+                        Dloc->FELoc.Mapping[0].extLocation,
+                        Dloc->DeletePrefree->RangeCount));
+            } else if (status == STATUS_NOT_SUPPORTED) {
+                /* Preserve ordinary deletion on layouts not yet covered by
+                 * the bounded prefree protocol.  R250 still orders any
+                 * subsequent reuse behind the tombstone. */
+                status = UDFFlushFI(IrpContext, Vcb, FileInfo, PartNum);
+                if (NT_SUCCESS(status)) {
+                    status = UDFBarrierFlushDevice(Vcb->TargetDeviceObject);
+                    if (!NT_SUCCESS(status)) {
+                        CommitBarrierFailed = TRUE;
+                        Vcb->VcbState |= VCB_STATE_VOLUME_READ_ONLY;
+                    }
+                }
+            }
             if (!NT_SUCCESS(status)) {
                 /* The FID was changed in memory before UDFFlushFI. A later
                  * parent flush must not turn this failed unlink into a delete.
@@ -1965,8 +2778,17 @@ cleanup_SDir:
                 UDFChangeFileCounter(Vcb, TRUE, TRUE);
                 UDFIncFileLinkCount(FileInfo);
                 Dloc->FE_Flags = OldFeFlags;
-                if (NT_SUCCESS(UDFFlushFI(IrpContext, Vcb, FileInfo, PartNum)))
-                    DirNdx->FI_Flags = OldFiFlags;
+                if (!CommitBarrierFailed) {
+                    RestoreStatus = UDFFlushFI(IrpContext, Vcb, FileInfo,
+                                               PartNum);
+                    if (NT_SUCCESS(RestoreStatus))
+                        RestoreStatus = UDFBarrierFlushDevice(
+                            Vcb->TargetDeviceObject);
+                    if (NT_SUCCESS(RestoreStatus))
+                        DirNdx->FI_Flags = OldFiFlags;
+                    else
+                        Vcb->VcbState |= VCB_STATE_VOLUME_READ_ONLY;
+                }
                 return status;
             }
             Dloc->FE_Flags &= ~UDF_FE_FLAG_FE_MODIFIED;
@@ -1990,9 +2812,14 @@ cleanup_SDir:
 
         } else {
 
+            // Remove the Dloc lookup before its FE bit becomes allocatable.
+            // The overlay is independent of the lookup and stays present
+            // until RAM release finishes under the bitmap lock.
             UDFUnlinkDloc(Vcb, Dloc);
-            // free allocation
-            UDFFreeFileAllocation(Vcb, DirInfo, FileInfo);
+            if (Dloc->DeletePrefree)
+                UDFReleasePrefreedAllocation(Vcb, DirInfo, FileInfo);
+            else
+                UDFFreeFileAllocation(Vcb, DirInfo, FileInfo);
             ASSERT(!(FileInfo->Dloc->FE_Flags & UDF_FE_FLAG_FE_MODIFIED));
             FileInfo->Dloc->FE_Flags &= ~UDF_FE_FLAG_FE_MODIFIED;
         }
@@ -2057,7 +2884,13 @@ UDFDeleteAllStreams(
     // SDir runs the deltree of its streams and clears the base file's HAS_SDIR /
     // streamDirectoryICB (its IsSDir branch). Data blocks are freed there (or
     // deferred while an FCB still owns the Dloc).
-    UDFFlushFile__(IrpContext, Vcb, SDirInfo, 0);
+    status = UDFFlushFile__(IrpContext, Vcb, SDirInfo, 0);
+    if (!NT_SUCCESS(status)) {
+        /* The stream directory remains attached to the base file. A failed
+         * metadata flush must not be followed by namespace deletion. */
+        UDFCloseFile__(IrpContext, Vcb, SDirInfo);
+        return status;
+    }
     status = UDFUnlinkFile__(IrpContext, Vcb, SDirInfo, TRUE);
     if (!NT_SUCCESS(status)) {
         UDFCloseFile__(IrpContext, Vcb, SDirInfo);
@@ -2128,14 +2961,10 @@ UDFUnlinkAllFilesInDir(
     uint_di i;
 
     hCurDirNdx = DirInfo->Dloc->DirIndex;
-    // check if we can delete all files
-    for(i=2; (CurDirNdx = UDFDirIndex(hCurDirNdx,i)); i++) {
-        // Stream files may be cached (FileInfo non-NULL) after handles
-        // are closed but before delayed close runs. Only block deletion
-        // if the stream has active user handles.
-        if (CurDirNdx->FileInfo && CurDirNdx->FileInfo->OpenCount)
-            return STATUS_CANNOT_DELETE;
-    }
+    // Retain the stream directory while a child still has a live handle.
+    // Callers normally preflight before changing their own FID as well.
+    if (UDFStreamDirectoryHasLiveHandles(DirInfo))
+        return STATUS_CANNOT_DELETE;
     // start deletion
     for(i=2; (CurDirNdx = UDFDirIndex(hCurDirNdx,i)); i++) {
 
@@ -2824,7 +3653,10 @@ UDFCleanUpFile__(
             // Safe to free now: this is the last Dloc reference (KeepDloc=FALSE).
             if (Dloc->FE_Flags & UDF_FE_FLAG_FREE_DEFERRED) {
                 UDFUnlinkDloc(Vcb, Dloc);
-                UDFFreeFileAllocation(Vcb, NULL, FileInfo);
+                if (Dloc->DeletePrefree)
+                    UDFReleasePrefreedAllocation(Vcb, NULL, FileInfo);
+                else
+                    UDFFreeFileAllocation(Vcb, NULL, FileInfo);
                 Dloc->FE_Flags &= ~(UDF_FE_FLAG_FREE_DEFERRED | UDF_FE_FLAG_FE_MODIFIED);
             }
 
@@ -4133,11 +4965,198 @@ UDFRecordDirectory__(
     return UDFIndexDirectory(IrpContext, Vcb, DirInfo);
 } // end UDFRecordDirectory__()
 
-/*
-    This routine changes file size (on disc)
- */
-NTSTATUS
-UDFResizeFile__(
+/* The dense physical bitmap is normally checkpointed after the namespace.
+ * Truncation is the exception: before making an old extent allocatable in
+ * RAM, persist FREE for exactly its released bits.  While the bitmap lock is
+ * held, write and barrier the shortened FE.  A cut on either side of that FE
+ * then has either an old owner with a referenced-free bit (repairable from a
+ * complete graph), or no old owner.  Never publish unrelated RAM allocations
+ * early by flushing the whole bitmap here. */
+static NTSTATUS
+UDFTruncatePrefreeRange(PIRP_CONTEXT IrpContext, PVCB Vcb,
+                       uint32 BitmapLba, uint32 FirstLbn, uint32 Blocks,
+                       int8* Sector, PBOOLEAN PossiblyModified)
+{
+    const uint32 SectorBytes = Vcb->SectorSize;
+    const uint32 BitmapBytes = Vcb->FSBM_ByteCount;
+    const uint32 DataOffset = sizeof(SPACE_BITMAP_DESC);
+    NTSTATUS status;
+    SIZE_T written;
+
+    if (FirstLbn >= Vcb->FSBM_BitCount ||
+        Blocks > Vcb->FSBM_BitCount - FirstLbn)
+        return STATUS_FILE_CORRUPT_ERROR;
+    while (Blocks) {
+        uint32 byteOffset = FirstLbn >> 3;
+        uint32 sectorOffset = (DataOffset + byteOffset) % SectorBytes;
+        uint32 sectorIndex = (DataOffset + byteOffset) / SectorBytes;
+        uint32 bits = min(Blocks, (SectorBytes - sectorOffset) * 8 -
+                                  (FirstLbn & 7));
+        uint32 j;
+        BOOLEAN changed = FALSE;
+
+        if (byteOffset >= BitmapBytes ||
+            ((FirstLbn + bits - 1) >> 3) >= BitmapBytes)
+            return STATUS_FILE_CORRUPT_ERROR;
+        status = UDFReadSectors(IrpContext, Vcb, FALSE,
+                                BitmapLba + sectorIndex, 1, FALSE, Sector);
+        if (!NT_SUCCESS(status)) return status;
+        for (j = 0; j < bits; ++j) {
+            uint32 bit = FirstLbn + j;
+            uint8* byte = (uint8*)Sector +
+                ((DataOffset + (bit >> 3)) % SectorBytes);
+            uint8 mask = (uint8)(1U << (bit & 7));
+            if (!(*byte & mask)) {
+                *byte |= mask;
+                changed = TRUE;
+            }
+        }
+        if (changed) {
+            written = 0;
+            *PossiblyModified = TRUE;
+            status = UDFWriteSectors(IrpContext, Vcb, FALSE,
+                                     BitmapLba + sectorIndex, 1, FALSE,
+                                     Sector, &written);
+            if (!NT_SUCCESS(status)) return status;
+            if (written != SectorBytes) return STATUS_IO_DEVICE_ERROR;
+        }
+        FirstLbn += bits;
+        Blocks -= bits;
+    }
+    return STATUS_SUCCESS;
+}
+
+static NTSTATUS
+UDFTruncatePrefreeMap(PIRP_CONTEXT IrpContext, PVCB Vcb,
+                      uint32 BitmapLba, PEXTENT_MAP Map,
+                      uint64 KeepBytes, uint32 FeLba, int8* Sector,
+                      PBOOLEAN PossiblyModified)
+{
+    uint64 offset = 0;
+    uint32 i;
+    for (i = 0; Map && (Map[i].extLength & UDF_EXTENT_LENGTH_MASK); ++i) {
+        uint32 bytes = Map[i].extLength & UDF_EXTENT_LENGTH_MASK;
+        uint32 blocks = (bytes + Vcb->SectorSize - 1) >> Vcb->SectorShift;
+        uint32 keep = 0;
+        uint32 first;
+        NTSTATUS status;
+
+        if (KeepBytes > offset) {
+            uint64 within = min((uint64)bytes, KeepBytes - offset);
+            keep = (uint32)((within + Vcb->SectorSize - 1) >>
+                            Vcb->SectorShift);
+        }
+        offset += bytes;
+        if ((Map[i].extLength >> 30) == EXTENT_NOT_RECORDED_NOT_ALLOCATED)
+            continue;
+        if (keep >= blocks) continue;
+        if (!Map[i].extLocation ||
+            Map[i].extLocation < Vcb->Partitions[0].PartitionRoot)
+            return STATUS_FILE_CORRUPT_ERROR;
+        /* The FE can be the first entry of an in-ICB transition.  It is
+         * never a released data or allocation-descriptor block. */
+        first = Map[i].extLocation + keep;
+        if (first == FeLba) {
+            first++;
+            keep++;
+        }
+        if (keep >= blocks) continue;
+        if (first <= FeLba && FeLba < Map[i].extLocation + blocks)
+            return STATUS_NOT_SUPPORTED;
+        if (UDFPhysLbaToMetadata(Vcb, first) != LBA_OUT_OF_EXTENT ||
+            UDFPhysLbaToMetadata(Vcb, Map[i].extLocation + blocks - 1) !=
+                LBA_OUT_OF_EXTENT)
+            return STATUS_NOT_SUPPORTED;
+        status = UDFTruncatePrefreeRange(IrpContext, Vcb, BitmapLba,
+                    first - Vcb->Partitions[0].PartitionRoot,
+                    blocks - keep, Sector, PossiblyModified);
+        if (!NT_SUCCESS(status)) return status;
+    }
+    return STATUS_SUCCESS;
+}
+
+static NTSTATUS
+UDFTruncatePrefree(PIRP_CONTEXT IrpContext, PVCB Vcb,
+                   PUDF_FILE_INFO FileInfo, int64 NewLength,
+                   PBOOLEAN PossiblyModified)
+{
+    uint32 bitmapLba, feLba, partNum;
+    uint32 i;
+    uint64 keep;
+    uint16 ident;
+    NTSTATUS status;
+    int8* sector;
+    PSPACE_BITMAP_DESC desc;
+    BOOLEAN switchToIcb;
+
+    if (Vcb->CDR_Mode || Vcb->BitmapFcb || !Vcb->FSBM_Bitmap ||
+        !Vcb->FSBM_OldBitmap || Vcb->SectorSize != 512 ||
+        !Vcb->PartitionMaps ||
+        Vcb->Partitions[0].PartitionType == UDF_METADATA_MAP25 ||
+        !FileInfo->Dloc->DataLoc.Mapping ||
+        (FileInfo->Dloc->DataLoc.Flags & EXTENT_FLAG_PREALLOCATED))
+        return STATUS_NOT_SUPPORTED;
+    partNum = 0;
+    feLba = FileInfo->Dloc->FELoc.Mapping[0].extLocation;
+    bitmapLba = Vcb->Partitions[partNum].PartitionRoot +
+                Vcb->Partitions[partNum].UspaceBitmap;
+    sector = (int8*)MyAllocatePool__(NonPagedPool, Vcb->SectorSize);
+    if (!sector) return STATUS_INSUFFICIENT_RESOURCES;
+    status = UDFReadTagged(IrpContext, Vcb, sector, bitmapLba,
+                           Vcb->Partitions[partNum].UspaceBitmap, &ident);
+    if (!NT_SUCCESS(status)) goto done;
+    desc = (PSPACE_BITMAP_DESC)sector;
+    /* The descriptor's CRC may cover the two size fields, but it must not
+     * cover bitmap payload bytes changed by these sector writes. */
+    if (ident != TID_SPACE_BITMAP_DESC ||
+        desc->descTag.descCRCLength >
+            sizeof(SPACE_BITMAP_DESC) - sizeof(tag) ||
+        desc->numOfBits != Vcb->FSBM_BitCount ||
+        desc->numOfBytes < Vcb->FSBM_ByteCount) {
+        status = STATUS_NOT_SUPPORTED;
+        goto done;
+    }
+
+    switchToIcb =
+        NewLength <= (int64)(Vcb->SectorSize - FileInfo->Dloc->FileEntryLen) &&
+        ((((PFILE_ENTRY)FileInfo->Dloc->FileEntry)->icbTag.flags &
+          ICB_FLAG_ALLOC_MASK) != ICB_FLAG_AD_IN_ICB);
+    /* An external AD chain may be shortened by UDFBuildAllocDescs during
+     * the FE flush, after this prefree scan.  Handle the all-released ICB
+     * conversion, but refuse a partial shrink until its exact AD delta can
+     * be included in the same transaction. */
+    if (!switchToIcb && FileInfo->Dloc->AllocLoc.Mapping) {
+        PEXTENT_MAP map = FileInfo->Dloc->AllocLoc.Mapping;
+        for (i = 0; map[i].extLength & UDF_EXTENT_LENGTH_MASK; ++i) {
+            if ((map[i].extLength >> 30) !=
+                    EXTENT_NOT_RECORDED_NOT_ALLOCATED &&
+                (map[i].extLocation != feLba ||
+                 (map[i].extLength & UDF_EXTENT_LENGTH_MASK) >
+                    Vcb->SectorSize)) {
+                status = STATUS_NOT_SUPPORTED;
+                goto done;
+            }
+        }
+    }
+    keep = switchToIcb ? 0 :
+           (uint64)FileInfo->Dloc->DataLoc.Offset + (uint64)NewLength;
+    status = UDFTruncatePrefreeMap(IrpContext, Vcb, bitmapLba,
+                    FileInfo->Dloc->DataLoc.Mapping, keep, feLba,
+                    sector, PossiblyModified);
+    if (!NT_SUCCESS(status)) goto done;
+    if (switchToIcb && FileInfo->Dloc->AllocLoc.Mapping)
+        status = UDFTruncatePrefreeMap(IrpContext, Vcb, bitmapLba,
+                    FileInfo->Dloc->AllocLoc.Mapping, 0, feLba,
+                    sector, PossiblyModified);
+done:
+    MyFreePool__(sector);
+    return status;
+}
+
+/* This is the old in-memory resize body.  The public wrapper below orders
+ * physical frees with the on-disk bitmap and the shortened FE. */
+static NTSTATUS
+UDFResizeFileUnordered__(
     IN PIRP_CONTEXT IrpContext,
     IN PVCB Vcb,
     IN OUT PUDF_FILE_INFO FileInfo,
@@ -4271,6 +5290,100 @@ mark_data_map_0:
 
     return status;
 } // end UDFResizeFile__()
+
+NTSTATUS
+UDFResizeFile__(PIRP_CONTEXT IrpContext, PVCB Vcb,
+                PUDF_FILE_INFO FileInfo, int64 NewLength)
+{
+    NTSTATUS status;
+    uint32 partNum;
+    SIZE_T entries;
+    PEXTENT_MAP released;
+    BOOLEAN possiblyModified = FALSE;
+    BOOLEAN txnInitialized = FALSE;
+
+    if (!FileInfo || !FileInfo->Dloc || !FileInfo->Dloc->DataLoc.Mapping ||
+        NewLength < 0 ||
+        NewLength >= FileInfo->Dloc->DataLoc.Length ||
+        UDFIsADirectory(FileInfo) ||
+        (FileInfo->Dloc->FE_Flags & UDF_FE_FLAG_NEW_UNPUBLISHED))
+        return UDFResizeFileUnordered__(IrpContext, Vcb, FileInfo, NewLength);
+
+    /* No other allocator may see the freed RAM bits before the old FE is
+     * durable.  This resource is recursively exclusive for calls below. */
+    status = UDFDrainNewFileData(IrpContext, Vcb, FileInfo);
+    if (!NT_SUCCESS(status)) return status;
+    status = UDFOpenIntegrityForWrite(IrpContext, Vcb, FALSE);
+    if (!NT_SUCCESS(status)) return status;
+    entries = UDFGetMappingLength(FileInfo->Dloc->DataLoc.Mapping) /
+              sizeof(EXTENT_MAP) +
+              UDFGetMappingLength(FileInfo->Dloc->AllocLoc.Mapping) /
+              sizeof(EXTENT_MAP) + 4;
+    if (entries > 65536 || entries > ((SIZE_T)-1) / sizeof(EXTENT_MAP))
+        return STATUS_NOT_SUPPORTED;
+    released = (PEXTENT_MAP)MyAllocatePoolTag__(NonPagedPool,
+                    entries * sizeof(EXTENT_MAP), MEM_EXTMAP_TAG);
+    if (!released) return STATUS_INSUFFICIENT_RESOURCES;
+    RtlZeroMemory(released, entries * sizeof(EXTENT_MAP));
+    UDFAcquireResourceExclusive(&(Vcb->BitMapResource1), TRUE);
+    _SEH2_TRY {
+        if (Vcb->TruncateTxnOwner) {
+            status = STATUS_NOT_SUPPORTED;
+        } else {
+            Vcb->TruncateTxnReleased = released;
+            Vcb->TruncateTxnCapacity = (ULONG)(entries - 1);
+            Vcb->TruncateTxnCount = 0;
+            Vcb->TruncateTxnError = STATUS_SUCCESS;
+            txnInitialized = TRUE;
+            status = UDFTruncatePrefree(IrpContext, Vcb, FileInfo, NewLength,
+                                        &possiblyModified);
+            if (NT_SUCCESS(status)) {
+                possiblyModified = TRUE;
+                status = UDFBarrierFlushDevice(Vcb->TargetDeviceObject);
+            }
+            if (NT_SUCCESS(status)) {
+                Vcb->TruncateTxnOwner = PsGetCurrentThread();
+                status = UDFResizeFileUnordered__(IrpContext, Vcb,
+                                                  FileInfo, NewLength);
+            }
+        }
+        if (NT_SUCCESS(status) && !NT_SUCCESS(Vcb->TruncateTxnError))
+            status = Vcb->TruncateTxnError;
+        if (NT_SUCCESS(status)) {
+            partNum = UDFGetRefPartNumByPhysLba(Vcb,
+                        FileInfo->Dloc->FELoc.Mapping[0].extLocation);
+            if (partNum == (uint32)-1)
+                status = STATUS_FILE_CORRUPT_ERROR;
+            else
+                status = UDFFlushFE(IrpContext, Vcb, FileInfo, partNum);
+        }
+        if (NT_SUCCESS(status) && !NT_SUCCESS(Vcb->TruncateTxnError))
+            status = Vcb->TruncateTxnError;
+        if (NT_SUCCESS(status))
+            status = UDFBarrierFlushDevice(Vcb->TargetDeviceObject);
+        if (txnInitialized) {
+            Vcb->TruncateTxnOwner = NULL;
+            released[Vcb->TruncateTxnCount].extLength = 0;
+            released[Vcb->TruncateTxnCount].extLocation = 0;
+            if (NT_SUCCESS(status) && Vcb->TruncateTxnCount)
+                UDFMarkSpaceAsXXX(Vcb, FileInfo->Dloc, released,
+                                  AS_DISCARDED);
+        }
+    } _SEH2_FINALLY {
+        if (_SEH2_AbnormalTermination() ||
+            (!NT_SUCCESS(status) && possiblyModified))
+            Vcb->VcbState |= VCB_STATE_VOLUME_READ_ONLY;
+        if (txnInitialized) {
+            Vcb->TruncateTxnOwner = NULL;
+            Vcb->TruncateTxnReleased = NULL;
+            Vcb->TruncateTxnCapacity = 0;
+            Vcb->TruncateTxnCount = 0;
+        }
+        UDFReleaseResource(&(Vcb->BitMapResource1));
+        MyFreePool__(released);
+    } _SEH2_END;
+    return status;
+}
 
 /*
     This routine loads VAT.
@@ -4557,6 +5670,10 @@ UDFReleaseMetadata(
         DbgFreePool(Vcb->MetadataBitmap);
         Vcb->MetadataBitmap = NULL;
     }
+    if (Vcb->MetadataPendingAlloc) {
+        DbgFreePool(Vcb->MetadataPendingAlloc);
+        Vcb->MetadataPendingAlloc = NULL;
+    }
 
     Vcb->MetadataBitCount = 0;
     Vcb->MetadataFreeCount = 0;
@@ -4663,6 +5780,14 @@ UDFLoadMetadata(
             status = STATUS_INSUFFICIENT_RESOURCES;
             goto err_metadata;
         }
+        Vcb->MetadataPendingAlloc = (PCHAR)DbgAllocatePool(NonPagedPool,
+                                                            Sbd->numOfBytes);
+        if (!Vcb->MetadataPendingAlloc) {
+            DbgFreePool(Sbd);
+            status = STATUS_INSUFFICIENT_RESOURCES;
+            goto err_metadata;
+        }
+        RtlZeroMemory(Vcb->MetadataPendingAlloc, Sbd->numOfBytes);
         
         RtlCopyMemory(Vcb->MetadataBitmap, Sbd+1, Sbd->numOfBytes);
         Vcb->MetadataBitmapByteCount = Sbd->numOfBytes;
@@ -4702,7 +5827,8 @@ UDFFlushMetadataBitmap(
     if (!Vcb->MetadataBitmapModified)
         return STATUS_SUCCESS;
 
-    if (!Vcb->MetadataBitmap || !Vcb->MetadataBitmapFileInfo)
+    if (!Vcb->MetadataBitmap || !Vcb->MetadataPendingAlloc ||
+        !Vcb->MetadataBitmapFileInfo)
         return STATUS_FILE_CORRUPT_ERROR;
 
     len = (uint32)UDFGetFileSize(Vcb->MetadataBitmapFileInfo);
@@ -4710,53 +5836,89 @@ UDFFlushMetadataBitmap(
         Vcb->MetadataBitmapByteCount > len - sizeof(SPACE_BITMAP_DESC))
         return STATUS_FILE_CORRUPT_ERROR;
 
+    /* An allocation or deletion may have made an FE/FID dirty before this
+     * bitmap is serialized. Keep an OPEN integrity checkpoint durable while
+     * its owners are drained to the lower device. */
+    status = UDFOpenIntegrityForWrite(IrpContext, Vcb, FALSE);
+    if (!NT_SUCCESS(status))
+        return status;
+
     Sbd = (PSPACE_BITMAP_DESC)DbgAllocatePool(NonPagedPool, len);
     if (!Sbd)
         return STATUS_INSUFFICIENT_RESOURCES;
 
-    status = UDFReadFile__(IrpContext, Vcb, Vcb->MetadataBitmapFileInfo,
-                           0, len, FALSE, (int8*)Sbd);
-    if (NT_SUCCESS(status)) {
-        if (Sbd->descTag.tagIdent != TID_SPACE_BITMAP_DESC ||
-            Sbd->numOfBytes > len - sizeof(SPACE_BITMAP_DESC) ||
-            Sbd->numOfBits > Sbd->numOfBytes * 8) {
-            status = STATUS_FILE_CORRUPT_ERROR;
-        } else {
-            uint32 descriptorLba = UDFExtentOffsetToLba(
-                Vcb, Vcb->MetadataBitmapFileInfo->Dloc->DataLoc.Mapping,
-                Vcb->MetadataBitmapFileInfo->Dloc->DataLoc.Offset,
-                NULL, NULL, NULL, NULL);
-            if (descriptorLba == LBA_OUT_OF_EXTENT) {
-                DbgFreePool(Sbd);
-                return STATUS_FILE_CORRUPT_ERROR;
+    /* Serialize the RAM copy and the disk-only prefree overlay under the
+     * allocator lock.  Otherwise this whole-bitmap flush could silently
+     * turn a prepared FREE bit back to USED before final FCB teardown. */
+    UDFAcquireResourceExclusive(&(Vcb->BitMapResource1), TRUE);
+    _SEH2_TRY {
+        status = UDFReadFile__(IrpContext, Vcb,
+                               Vcb->MetadataBitmapFileInfo,
+                               0, len, FALSE, (int8*)Sbd);
+        if (NT_SUCCESS(status)) {
+            if (Sbd->descTag.tagIdent != TID_SPACE_BITMAP_DESC ||
+                Sbd->numOfBytes > len - sizeof(SPACE_BITMAP_DESC) ||
+                Sbd->numOfBits > Sbd->numOfBytes * 8) {
+                status = STATUS_FILE_CORRUPT_ERROR;
+            } else {
+                uint32 descriptorLba = UDFExtentOffsetToLba(
+                    Vcb, Vcb->MetadataBitmapFileInfo->Dloc->DataLoc.Mapping,
+                    Vcb->MetadataBitmapFileInfo->Dloc->DataLoc.Offset,
+                    NULL, NULL, NULL, NULL);
+                if (descriptorLba == LBA_OUT_OF_EXTENT) {
+                    status = STATUS_FILE_CORRUPT_ERROR;
+                    goto done_metadata_bitmap;
+                }
+                Sbd->numOfBits = Vcb->MetadataBitCount;
+                Sbd->numOfBytes = Vcb->MetadataBitmapByteCount;
+                RtlCopyMemory(Sbd + 1, Vcb->MetadataBitmap,
+                              Vcb->MetadataBitmapByteCount);
+                status = UDFOverlayDeletePrefreeMetadata(
+                    Vcb, (int8*)(Sbd + 1), Vcb->MetadataBitCount);
+                if (!NT_SUCCESS(status))
+                    goto done_metadata_bitmap;
+                /* Publish allocation/free bits only after the preceding
+                 * FE/FID owners are durable. UDFUmount__ runs later, so its
+                 * pre-physical-bitmap barrier cannot order this write. */
+                status = UDFBarrierFlushDevice(Vcb->TargetDeviceObject);
+                if (!NT_SUCCESS(status))
+                    goto done_metadata_bitmap;
+                // ECMA 167 4/14.12: the CRC covers only the two bitmap length
+                // fields.  The bitmap payload is mutable and excluded from it.
+                UDFSetUpTag(Vcb, &Sbd->descTag,
+                            sizeof(SPACE_BITMAP_DESC),
+                            UDFPhysLbaToPart(Vcb, Vcb->MetadataPhysRef,
+                                             descriptorLba), 0);
+                status = UDFWriteFile__(IrpContext, Vcb,
+                                        Vcb->MetadataBitmapFileInfo, 0, len,
+                                        FALSE, (int8*)Sbd, &written);
+                if (NT_SUCCESS(status) && written != len)
+                    status = STATUS_IO_DEVICE_ERROR;
+                // The bitmap may be embedded in its File Entry.  Flush that FE
+                // before UDFUmount__ closes the LVID; closing the FileInfo later
+                // must not reopen a volume whose metadata is already committed.
+                if (NT_SUCCESS(status))
+                    status = UDFFlushFile__(IrpContext, Vcb,
+                                            Vcb->MetadataBitmapFileInfo, 0);
+                /* Retire per-bit allocation provenance only after the
+                 * serialized bitmap generation reaches the lower device.
+                 * A successful cache/FE flush alone does not guarantee it. */
+                if (NT_SUCCESS(status))
+                    status = UDFBarrierFlushDevice(Vcb->TargetDeviceObject);
+                if (NT_SUCCESS(status)) {
+                    RtlZeroMemory(Vcb->MetadataPendingAlloc,
+                                  Vcb->MetadataBitmapByteCount);
+                    Vcb->MetadataBitmapModified = FALSE;
+                }
             }
-            Sbd->numOfBits = Vcb->MetadataBitCount;
-            Sbd->numOfBytes = Vcb->MetadataBitmapByteCount;
-            RtlCopyMemory(Sbd + 1, Vcb->MetadataBitmap,
-                          Vcb->MetadataBitmapByteCount);
-            // ECMA 167 4/14.12: the CRC covers only the two bitmap length
-            // fields.  The bitmap payload is mutable and excluded from it.
-            UDFSetUpTag(Vcb, &Sbd->descTag,
-                        sizeof(SPACE_BITMAP_DESC),
-                        UDFPhysLbaToPart(Vcb, Vcb->MetadataPhysRef,
-                                         descriptorLba), 0);
-            status = UDFWriteFile__(IrpContext, Vcb,
-                                    Vcb->MetadataBitmapFileInfo, 0, len,
-                                    FALSE, (int8*)Sbd, &written);
-            if (NT_SUCCESS(status) && written != len)
-                status = STATUS_IO_DEVICE_ERROR;
-            // The bitmap may be embedded in its File Entry.  Flush that FE
-            // before UDFUmount__ closes the LVID; closing the FileInfo later
-            // must not reopen a volume whose metadata is already committed.
-            if (NT_SUCCESS(status))
-                status = UDFFlushFile__(IrpContext, Vcb,
-                                        Vcb->MetadataBitmapFileInfo, 0);
-            if (NT_SUCCESS(status))
-                Vcb->MetadataBitmapModified = FALSE;
         }
-    }
 
-    DbgFreePool(Sbd);
+done_metadata_bitmap:
+        NOTHING;
+    } _SEH2_FINALLY {
+        UDFReleaseResource(&(Vcb->BitMapResource1));
+        DbgFreePool(Sbd);
+    } _SEH2_END;
     return status;
 }
 

@@ -51,6 +51,7 @@ NTSTATUS
 UDFPrepareXSpaceBitmap(
     PIRP_CONTEXT IrpContext,
     IN PVCB Vcb,
+    IN uint32 RefPartNum,
  IN OUT PSHORT_AD XSpaceBitmap,
  IN OUT PEXTENT_INFO XSBMExtInfo,
  IN OUT int8** XSBM,
@@ -64,7 +65,6 @@ UDFPrepareXSpaceBitmap(
     lb_addr locAddr;
     int8* _XSBM;
     uint16 Ident;
-    uint32 RefPartNum;
 
     if (!(XSpaceBitmap->extLength)) {
         *XSl = 0;
@@ -72,9 +72,14 @@ UDFPrepareXSpaceBitmap(
         return STATUS_SUCCESS;
     }
 
-    RefPartNum = Vcb->PartitionMaps - 1;
+    if (RefPartNum >= Vcb->PartitionMaps ||
+        Vcb->Partitions[RefPartNum].PartitionType == UDF_METADATA_MAP25)
+        return STATUS_INVALID_PARAMETER;
     locAddr.partitionReferenceNum = (uint16)RefPartNum;
-    plen = UDFPartStart(Vcb, RefPartNum) + UDFPartLen(Vcb, RefPartNum);
+    /* Bitmap bit zero names partition-relative block zero. The descriptor
+     * lives in the physical map supplied by the Partition Descriptor, even
+     * when a shorter metadata map refers to that same physical partition. */
+    plen = UDFPartLen(Vcb, RefPartNum);
 
     BS = Vcb->SectorSize;
     LBS = Vcb->SectorSize;
@@ -196,22 +201,22 @@ UDFUpdateXSpaceBitmaps(
     int8* bad_bm;
     int8* old_bm;
     int8* new_bm;
-    int8* fpart_bm;
-    int8* upart_bm;
+    int8* fpart_bm = NULL;
+    int8* upart_bm = NULL;
     NTSTATUS status, status2;
     int8* USBM=NULL;
     int8* FSBM=NULL;
-    uint32 USl, FSl;
-    EXTENT_INFO FSBMExtInfo, USBMExtInfo;
-    SIZE_T WrittenBytes;
+    uint32 USl = 0, FSl = 0;
+    EXTENT_INFO FSBMExtInfo = {0}, USBMExtInfo = {0};
+    SIZE_T WrittenBytes = 0;
 
     UDF_CHECK_BITMAP_RESOURCE(Vcb);
 
     plen = UDFPartLen(Vcb, RefPartNum);
     // prepare bitmaps for updating
 
-    status =  UDFPrepareXSpaceBitmap(IrpContext, Vcb, &phd->unallocatedSpaceBitmap, &USBMExtInfo, &USBM, &USl);
-    status2 = UDFPrepareXSpaceBitmap(IrpContext, Vcb, &phd->freedSpaceBitmap, &FSBMExtInfo, &FSBM, &FSl);
+    status =  UDFPrepareXSpaceBitmap(IrpContext, Vcb, RefPartNum, &phd->unallocatedSpaceBitmap, &USBMExtInfo, &USBM, &USl);
+    status2 = UDFPrepareXSpaceBitmap(IrpContext, Vcb, RefPartNum, &phd->freedSpaceBitmap, &FSBMExtInfo, &FSBM, &FSl);
     if (!NT_SUCCESS(status) ||
        !NT_SUCCESS(status2)) {
         BrutePoint();
@@ -224,10 +229,22 @@ UDFUpdateXSpaceBitmaps(
 
     if ((status  == STATUS_INSUFFICIENT_RESOURCES) ||
        (status2 == STATUS_INSUFFICIENT_RESOURCES)) {
+        /* This fallback writes RAM bitmap bytes directly.  It cannot
+         * preserve the disk-only FREE bits of pending unlink transactions. */
+        if (Vcb->DeletePrefreeList) {
+            if (USBM) DbgFreePool(USBM);
+            if (FSBM) DbgFreePool(FSBM);
+            if (USBMExtInfo.Mapping) MyFreePool__(USBMExtInfo.Mapping);
+            if (FSBMExtInfo.Mapping) MyFreePool__(FSBMExtInfo.Mapping);
+            return STATUS_INSUFFICIENT_RESOURCES;
+        }
         // try to recover insufficient resources
         if (USl && USBMExtInfo.Mapping) {
             USl -= sizeof(SPACE_BITMAP_DESC);
+            WrittenBytes = 0;
             status  = UDFWriteExtent(IrpContext, Vcb, &USBMExtInfo, sizeof(SPACE_BITMAP_DESC), USl, FALSE, new_bm, &WrittenBytes);
+            if (NT_SUCCESS(status) && WrittenBytes != USl)
+                status = STATUS_IO_DEVICE_ERROR;
 #ifdef UDF_DBG
         } else {
             UDFPrint(("Can't update USBM\n"));
@@ -237,7 +254,10 @@ UDFUpdateXSpaceBitmaps(
 
         if (FSl && FSBMExtInfo.Mapping) {
             FSl -= sizeof(SPACE_BITMAP_DESC);
+            WrittenBytes = 0;
             status2 = UDFWriteExtent(IrpContext, Vcb, &FSBMExtInfo, sizeof(SPACE_BITMAP_DESC), FSl, FALSE, new_bm, &WrittenBytes);
+            if (NT_SUCCESS(status2) && WrittenBytes != FSl)
+                status2 = STATUS_IO_DEVICE_ERROR;
         } else {
             status2 = status;
             UDFPrint(("Can't update FSBM\n"));
@@ -273,14 +293,29 @@ UDFUpdateXSpaceBitmaps(
             }
             j++;
         }
+        status = UDFOverlayDeletePrefreePhysical(Vcb, upart_bm,
+                                                 fpart_bm, pend);
+        if (!NT_SUCCESS(status)) {
+            if (USBM) DbgFreePool(USBM);
+            if (FSBM) DbgFreePool(FSBM);
+            if (USBMExtInfo.Mapping) MyFreePool__(USBMExtInfo.Mapping);
+            if (FSBMExtInfo.Mapping) MyFreePool__(FSBMExtInfo.Mapping);
+            return status;
+        }
         // flush updates
         if (USBM) {
+            WrittenBytes = 0;
             status  = UDFWriteExtent(IrpContext, Vcb, &USBMExtInfo, 0, USl, FALSE, USBM, &WrittenBytes);
+            if (NT_SUCCESS(status) && WrittenBytes != USl)
+                status = STATUS_IO_DEVICE_ERROR;
             DbgFreePool(USBM);
             MyFreePool__(USBMExtInfo.Mapping);
         }
         if (FSBM) {
+            WrittenBytes = 0;
             status2 = UDFWriteExtent(IrpContext, Vcb, &FSBMExtInfo, 0, FSl, FALSE, FSBM, &WrittenBytes);
+            if (NT_SUCCESS(status2) && WrittenBytes != FSl)
+                status2 = STATUS_IO_DEVICE_ERROR;
             DbgFreePool(FSBM);
             MyFreePool__(FSBMExtInfo.Mapping);
         } else {
@@ -311,7 +346,12 @@ UDFUpdatePartDesc(
 
     for(i=0; i<Vcb->PartitionMaps; i++)
     {
-        if ((UDFGetPartNumByPartRef(Vcb,i) == p->partitionNumber) &&
+        /* Both the physical and metadata maps name this Partition Descriptor.
+         * Its unallocated-space bitmap belongs to the physical map alone;
+         * using the metadata map's shorter length here truncates that bitmap.
+         * UDFFlushMetadataBitmap handles the separate metadata bitmap. */
+        if ((Vcb->Partitions[i].PartitionType != UDF_METADATA_MAP25) &&
+            (UDFGetPartNumByPartRef(Vcb,i) == p->partitionNumber) &&
            (!strcmp((int8*)&(p->partitionContents.ident), PARTITION_CONTENTS_NSR02) ||
             !strcmp((int8*)&(p->partitionContents.ident), PARTITION_CONTENTS_NSR03)))
         {
@@ -1000,12 +1040,14 @@ UDFUpdateNonAllocated(
 NTSTATUS
 UDFUmount__(
     IN PIRP_CONTEXT IrpContext,
-    IN PVCB Vcb
+    IN PVCB Vcb,
+    OUT PBOOLEAN CloseDeferred
     )
 {
     uint32 flags = 0;
     NTSTATUS status;
 
+    *CloseDeferred = FALSE;
     if ((Vcb->VcbState & VCB_STATE_VOLUME_READ_ONLY)
         || !Vcb->Modified)
         return STATUS_SUCCESS;
@@ -1072,6 +1114,17 @@ UDFUmount__(
         }
     }
 
+    /* Make the file entries and namespace drained by UDFFlushVolume durable
+     * before UDFUpdatePartDesc writes either the RAM bitmap or dirty cache
+     * pages. Otherwise an explicit close can publish allocated blocks while
+     * their FE/FID owner is still only in the lower device's volatile cache.
+     * Per-page lazy writeback before this checkpoint remains a separate case. */
+    if (flags & 1) {
+        status = UDFBarrierFlushDevice(Vcb->TargetDeviceObject);
+        if (!NT_SUCCESS(status))
+            goto release_bitmap;
+    }
+
     if (Vcb->VDS1_Len) {
         status = UDFUpdateVDS(IrpContext, Vcb, Vcb->VDS1, Vcb->VDS1 + Vcb->VDS1_Len, flags);
         if (!NT_SUCCESS(status))
@@ -1081,6 +1134,18 @@ UDFUmount__(
         status = UDFUpdateVDS(IrpContext, Vcb, Vcb->VDS2, Vcb->VDS2 + Vcb->VDS2_Len, flags);
         if (!NT_SUCCESS(status))
             goto release_bitmap;
+    }
+
+    /* A deleted FCB can outlive its last handle while Cache Manager owns a
+     * FILE_OBJECT.  Its prepared disk FREE bits stay overlaid during the
+     * bitmap writes above; new allocations are now durable too.  Complete
+     * the requested flush, but leave LVID OPEN and Modified set until the
+     * pending FCB finally releases its RAM reservation. */
+    if (Vcb->DeletePrefreeList) {
+        status = UDFBarrierFlushDevice(Vcb->TargetDeviceObject);
+        if (NT_SUCCESS(status))
+            *CloseDeferred = TRUE;
+        goto release_bitmap;
     }
 
     // Update Integrity Desc if any
@@ -1445,15 +1510,14 @@ UDFLoadLogicalVolInt(
 
             struct LogicalVolIntegrityDesc* lvid = (struct LogicalVolIntegrityDesc*)Buf;
 
-            /* A fixed disk's clean checkpoint must cover both partition
-             * tables and the implementation-use file/directory counters.
-             * Each partition contributes one free and one size entry. */
+            /* A fixed writable disk must not treat a CRC-less or
+             * under-covered LVID as a clean checkpoint. UDFReadTagged
+             * accepts a zero descriptor CRC for legacy media; that is too
+             * weak for deciding that crash recovery may be skipped. Keep
+             * the existing read-only policy on an untrusted LVID. */
             if (Vcb->TargetDeviceObject->DeviceType == FILE_DEVICE_DISK &&
                 SectorSize(Vcb) == 512 &&
-                (lvid->numOfPartitions == 0 ||
-                 lvid->numOfPartitions > (512 - 120) / (2 * sizeof(uint32)) ||
-                 lvid->descTag.descCRCLength <
-                     120 - sizeof(tag) + 2 * sizeof(uint32) * lvid->numOfPartitions ||
+                (lvid->descTag.descCRCLength < 136 - sizeof(tag) ||
                  lvid->descTag.descCRCLength > SectorSize(Vcb) - sizeof(tag) ||
                  lvid->descTag.descCRC !=
                      UDFCrc((uint8*)Buf + sizeof(tag),
@@ -2350,10 +2414,26 @@ UDFLoadPartDesc(
                 }
                 // Create bitmap cache stream and CcPinRead BEFORE building
                 // the in-memory bitmap. This loads bitmap data from disk into
+                /* With a bounded physical bitmap, defer its disk update to
+                 * the volume checkpoint. Cc can otherwise persist newly
+                 * allocated data blocks while their cached FE/FID owner is
+                 * still unpublished, leaving orphans after a hard cut. The
+                 * existing legacy bitmap path keeps those reservations in
+                 * nonpaged memory and writes them after the namespace drain.
+                 * Large volumes retain the paged bitmap stream. */
+                BOOLEAN deferPhysicalBitmap =
+                    Vcb->TargetDeviceObject->DeviceType == FILE_DEVICE_DISK &&
+                    Vcb->MetadataRef < Vcb->PartitionMaps &&
+                    Vcb->Partitions[Vcb->MetadataRef].PartitionType == UDF_METADATA_MAP25 &&
+                    p->partitionLength <= 128U * 1024U * 1024U;
+                if (deferPhysicalBitmap)
+                    UDFPrint(("UDFS physical bitmap: volume-checkpoint writer, %lu blocks\n",
+                              (ULONG)p->partitionLength));
                 if (
                     phd->unallocatedSpaceBitmap.extLength &&
                     !(phd->unallocatedSpaceBitmap.extLength >> 30) &&
-                    !Vcb->BitmapFcb
+                    !Vcb->BitmapFcb &&
+                    !deferPhysicalBitmap
                 ) 
                 {
                     lb_addr bmLocAddr;

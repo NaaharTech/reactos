@@ -202,6 +202,11 @@ UDFRecoverDirtyVolumeBeforeLoad(PIRP_CONTEXT IrpContext, PVCB Vcb)
     status = UdfsRecoveryPeekIntegrity(&reader, &integrityType);
     UdfsRecoveryPhaseEnd(&io, &phase, "peek", status);
     if (status != UdfsRecoveryProbeValidLayout) {
+        /* A corrupt integrity chain cannot certify a clean checkpoint.
+         * Preserve read access when the ordinary mount accepts the volume,
+         * but never let an older CLOSED LVID authorize writes. */
+        if (status == UdfsRecoveryProbeCorrupt)
+            Vcb->VcbState |= VCB_STATE_VOLUME_READ_ONLY;
         UDFPrint(("UDFS recovery: descriptor/integrity probe refused %u; existing mount policy\n",
                   (ULONG)status));
         return STATUS_SUCCESS;

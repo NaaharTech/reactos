@@ -1417,6 +1417,7 @@ UDFRemoveDloc(
 
     if (!UDFReleaseDirectoryAppend(Vcb, Dloc))
         return STATUS_CANNOT_DELETE;
+    UDFAbandonDeletePrefreeDloc(Vcb, Dloc);
     UDFAcquireResourceExclusive(&(Vcb->DlocResource),TRUE);
 
     if ((i = UDFFindDlocInMem(Vcb, Dloc)) == (-1)) {
@@ -1476,6 +1477,7 @@ UDFFreeDloc(
 
     if (!UDFReleaseDirectoryAppend(Vcb, Dloc))
         return;
+    UDFAbandonDeletePrefreeDloc(Vcb, Dloc);
     UDFAcquireResourceExclusive(&(Vcb->DlocResource),TRUE);
 
     if ((i = UDFFindDlocInMem(Vcb, Dloc)) != (-1)) {
