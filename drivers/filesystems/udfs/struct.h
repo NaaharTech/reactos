@@ -730,6 +730,9 @@ struct VCB {
     struct LogicalVolIntegrityDesc* LVid;
     uint32          IntegrityType;
     uint32          origIntegrityType;
+    /* First OPEN write can finish before its device barrier. Other writers
+     * must wait for that barrier before using the already-OPEN fast path. */
+    volatile LONG   IntegrityOpenPending;
     extent_ad       LVid_loc;
     // Optional two-slot journal in unused sectors of the LVID extent.
     uint32          LvidJournalSlot[2];

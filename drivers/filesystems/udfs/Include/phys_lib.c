@@ -1118,8 +1118,11 @@ UDFOpenIntegrityForWrite(IN PIRP_CONTEXT IrpContext, IN PVCB Vcb,
 
     if (Vcb->VcbState & VCB_STATE_VOLUME_READ_ONLY)
         return STATUS_MEDIA_WRITE_PROTECTED;
-    if (Vcb->Modified && Vcb->IntegrityType != INTEGRITY_TYPE_CLOSE)
-        return STATUS_SUCCESS;
+    if (Vcb->Modified && Vcb->IntegrityType != INTEGRITY_TYPE_CLOSE &&
+        (ExIsResourceAcquiredExclusiveLite(&Vcb->BitMapResource1) ||
+         !InterlockedCompareExchange(&Vcb->IntegrityOpenPending, 0, 0)))
+        return (Vcb->VcbState & VCB_STATE_VOLUME_READ_ONLY) ?
+               STATUS_MEDIA_WRITE_PROTECTED : STATUS_SUCCESS;
     if (Vcb->CDR_Mode) {
         UDFSetModified(Vcb);
         return STATUS_SUCCESS;
@@ -1128,7 +1131,15 @@ UDFOpenIntegrityForWrite(IN PIRP_CONTEXT IrpContext, IN PVCB Vcb,
     /* A bitmap paging write can be invoked by CcFlushCache while the caller
      * owns this resource. Avoid taking it on the already-OPEN fast path. */
     UDFAcquireResourceExclusive(&(Vcb->BitMapResource1), TRUE);
-    if (!Vcb->Modified || Vcb->IntegrityType == INTEGRITY_TYPE_CLOSE) {
+    /* The first caller may have failed its barrier while this thread waited.
+     * Never turn that failed checkpoint into an apparently successful write. */
+    if (Vcb->VcbState & VCB_STATE_VOLUME_READ_ONLY) {
+        status = STATUS_MEDIA_WRITE_PROTECTED;
+    } else if (!Vcb->Modified || Vcb->IntegrityType == INTEGRITY_TYPE_CLOSE) {
+        /* UDFUpdateLogicalVolInt sets IntegrityType=OPEN before the lower
+         * barrier. Its recursive sector write is allowed on this thread;
+         * unrelated writers block on BitMapResource1 until the barrier ends. */
+        InterlockedExchange(&Vcb->IntegrityOpenPending, 1);
         UDFSetModified(Vcb);
         if (Vcb->LVid && !Direct) {
             status = UDFUpdateLogicalVolInt(IrpContext, Vcb, FALSE);
@@ -1137,6 +1148,7 @@ UDFOpenIntegrityForWrite(IN PIRP_CONTEXT IrpContext, IN PVCB Vcb,
             if (!NT_SUCCESS(status))
                 Vcb->VcbState |= VCB_STATE_VOLUME_READ_ONLY;
         }
+        InterlockedExchange(&Vcb->IntegrityOpenPending, 0);
     }
     UDFReleaseResource(&(Vcb->BitMapResource1));
     return status;
