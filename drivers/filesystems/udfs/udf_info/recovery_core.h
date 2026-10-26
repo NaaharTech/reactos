@@ -124,6 +124,8 @@ typedef struct _UDFS_RECOVERY_PROBE {
     uint8_t LvidTagRepairMode; /* 0 none, 1 checksum, 2 linked header, 3 journal */
     uint8_t LvidCountersMatch;
     uint8_t OwnershipGraphScanned;
+    /* Valid FE/EFE candidates in bitmap-free metadata blocks were checked. */
+    uint8_t FreeMetadataFeScanComplete;
     uint8_t CompleteOwnershipGraph;
     uint8_t WritableMountAuthorized;
 } UDFS_RECOVERY_PROBE;

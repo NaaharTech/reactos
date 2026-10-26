@@ -1608,13 +1608,14 @@ PlanOwnedMetadataBlock(const UDFS_RECOVERY_READER *reader,
     return UdfsRecoveryProbeValidLayout;
 }
 
-/* The namespace walk proves ownership of this physical block. Keep the same
- * sector-bounded plan as metadata repairs; an allocated but unreferenced
- * block is never accepted here. */
+/* Plan one physical bitmap transition. Free-to-owned is justified by the
+ * namespace graph; owned-to-free is used only by the separately checked
+ * uncommitted-allocation rollback gate. */
 static UDFS_RECOVERY_PROBE_STATUS
-PlanOwnedPhysicalBlock(const UDFS_RECOVERY_READER *reader,
-                       UDFS_RECOVERY_PROBE *result,
-                       UDFS_RECOVERY_REPAIR_PLAN *plan, uint32_t lbn)
+PlanPhysicalBitmapBlock(const UDFS_RECOVERY_READER *reader,
+                        UDFS_RECOVERY_PROBE *result,
+                        UDFS_RECOVERY_REPAIR_PLAN *plan, uint32_t lbn,
+                        int makeFree)
 {
     uint64_t byteOffset = 24ULL + (lbn >> 3);
     uint64_t address = (uint64_t)result->PartitionStart +
@@ -1641,8 +1642,12 @@ PlanOwnedPhysicalBlock(const UDFS_RECOVERY_READER *reader,
         plan->BitmapEditCount++;
     }
     edit = &plan->BitmapEdits[i];
-    if (!(edit->After[offset] & mask)) return UdfsRecoveryProbeCorrupt;
-    edit->After[offset] &= (uint8_t)~mask;
+    if (!!(edit->After[offset] & mask) == !!makeFree)
+        return UdfsRecoveryProbeCorrupt;
+    if (makeFree)
+        edit->After[offset] |= mask;
+    else
+        edit->After[offset] &= (uint8_t)~mask;
     if (lba == result->PartitionStart + result->PhysicalBitmapLbn) {
         uint32_t length = Read16(edit->After + 10), sum = 0, j;
         uint16_t crc;
@@ -1795,6 +1800,50 @@ PlanLiveFidCopy(const UDFS_RECOVERY_READER *reader,
     return UdfsRecoveryProbeValidLayout;
 }
 
+/* A bitmap-free metadata block can still contain a recently written FE
+ * whose bitmap bit and parent FID did not survive the cut. Refuse physical
+ * rollback if either copy holds a plausible nonempty FE there: its data may
+ * be the otherwise unowned physical allocation. Empty FEs carry no AD and
+ * cannot own that allocation. Check all free slots, not only the first one. */
+static UDFS_RECOVERY_PROBE_STATUS
+GraphCheckFreeMetadataFes(RECOVERY_GRAPH *graph,
+                          const RECOVERY_EXTENT_LIST *mirrorFile,
+                          uint8_t sector[UDFS_RECOVERY_SECTOR_SIZE])
+{
+    uint32_t lbn, copy;
+    UDFS_RECOVERY_PROBE *result = graph->Result;
+    UDFS_RECOVERY_PROBE_STATUS status;
+    if (!result->MetadataDuplicated)
+        return UdfsRecoveryProbeUnsupported;
+    for (lbn = 0; lbn < result->MetadataBlocks; ++lbn) {
+        int freeBit;
+        status = GraphMetadataBitIsFree(graph, lbn, &freeBit);
+        if (status != UdfsRecoveryProbeValidLayout) return status;
+        if (!freeBit) continue;
+        for (copy = 0; copy < 2; ++copy) {
+            uint32_t lba, tag, adOffset;
+            const RECOVERY_EXTENT_LIST *file =
+                copy ? mirrorFile : graph->Metadata;
+            status = MapMetadataBlock(result, file, lbn, &lba);
+            if (status != UdfsRecoveryProbeValidLayout) return status;
+            status = ReadSector(graph->Reader, result, lba, sector);
+            if (status != UdfsRecoveryProbeValidLayout) return status;
+            tag = Read16(sector);
+            if (tag != 261 && tag != 266) continue;
+            /* An FE-like sector with a broken tag cannot prove that it has
+             * no live allocation descriptors. Keep the volume read-only. */
+            if (ValidateTag(sector, (uint16_t)tag, lbn) !=
+                UdfsRecoveryProbeValidLayout)
+                return UdfsRecoveryProbeUnsupported;
+            adOffset = tag == 266 ? 212 : 172;
+            if (Read64(sector + 56) || Read32(sector + adOffset))
+                return UdfsRecoveryProbeUnsupported;
+        }
+    }
+    result->FreeMetadataFeScanComplete = 1;
+    return UdfsRecoveryProbeValidLayout;
+}
+
 static UDFS_RECOVERY_PROBE_STATUS
 GraphRun(const UDFS_RECOVERY_READER *reader, UDFS_RECOVERY_PROBE *result,
          const RECOVERY_EXTENT_LIST *mainFile,
@@ -1942,8 +1991,8 @@ GraphRun(const UDFS_RECOVERY_READER *reader, UDFS_RECOVERY_PROBE *result,
                 uint8_t remainingBits = referencedFree;
                 while (remainingBits) {
                     uint32_t bit = FirstByteBit(remainingBits);
-                    status = PlanOwnedPhysicalBlock(reader, result, plan,
-                                                    first + bit);
+                    status = PlanPhysicalBitmapBlock(reader, result, plan,
+                                                     first + bit, 0);
                     if (status != UdfsRecoveryProbeValidLayout) goto done;
                     remainingBits &= (uint8_t)(remainingBits - 1);
                 }
@@ -1953,6 +2002,16 @@ GraphRun(const UDFS_RECOVERY_READER *reader, UDFS_RECOVERY_PROBE *result,
             result->ReferencedFreePhysicalBlocks += CountByteBits(referencedFree);
         }
         if (unowned) {
+            if (plan) {
+                uint8_t remainingBits = unowned;
+                while (remainingBits) {
+                    uint32_t bit = FirstByteBit(remainingBits);
+                    status = PlanPhysicalBitmapBlock(reader, result, plan,
+                                                     first + bit, 1);
+                    if (status != UdfsRecoveryProbeValidLayout) goto done;
+                    remainingBits &= (uint8_t)(remainingBits - 1);
+                }
+            }
             if (!result->UnownedPhysicalBlocks)
                 result->FirstUnownedPhysicalLbn = first + FirstByteBit(unowned);
             result->UnownedPhysicalBlocks += CountByteBits(unowned);
@@ -2051,6 +2110,12 @@ GraphRun(const UDFS_RECOVERY_READER *reader, UDFS_RECOVERY_PROBE *result,
             if (status != UdfsRecoveryProbeValidLayout)
                 goto done;
         }
+    }
+    if (result->UnownedPhysicalBlocks && !result->UnownedMetadataBlocks &&
+        !result->ReferencedFreePhysicalBlocks &&
+        !result->ReferencedFreeMetadataBlocks && !result->OverlapBlocks) {
+        status = GraphCheckFreeMetadataFes(graph, mirrorFile, fsd);
+        if (status != UdfsRecoveryProbeValidLayout) goto done;
     }
     result->OwnershipGraphScanned = 1;
     if (result->OverlapBlocks || result->ReferencedFreePhysicalBlocks ||
@@ -2911,9 +2976,43 @@ UdfsRecoveryProbeLayout(const UDFS_RECOVERY_READER *reader,
     return ProbeLayout(reader, result, NULL);
 }
 
-/* A fully walked, duplicate-free namespace with an exact physical owner graph
- * may account for metadata still marked free. Never free orphan allocations,
- * repair overlap, choose between conflicting mirrors, or infer file data. */
+/* Roll back only physical allocations absent from every durable owner when
+ * the old OPEN LVID still describes exactly the reachable graph. The full
+ * free-metadata FE scan rejects an interrupted FE that might own the bytes.
+ * Every released bit moves the bitmap free count toward the unchanged old
+ * LVID count, so a cut in the bitmap batch can be retried. */
+static int
+GraphCanRollbackPhysicalOrphans(const UDFS_RECOVERY_PROBE *probe)
+{
+    return probe->Status == UdfsRecoveryProbeGraphMismatch &&
+        probe->LvidIntegrityType == 0 && probe->MetadataDuplicated &&
+        probe->BitmapContentsScanned && probe->OwnershipGraphScanned &&
+        probe->FreeMetadataFeScanComplete &&
+        probe->UnownedPhysicalBlocks && !probe->UnownedMetadataBlocks &&
+        !probe->ReferencedFreePhysicalBlocks &&
+        !probe->ReferencedFreeMetadataBlocks && !probe->OverlapBlocks &&
+        !probe->FidSplitCount && !probe->MirrorDirectorySplitCount &&
+        !probe->DirectoryLinkFixCount &&
+        probe->LvidPhysicalSizeBlocks == probe->PartitionBlocks &&
+        probe->LvidMetadataSizeBlocks == probe->MetadataBlocks &&
+        probe->LvidMetadataFreeBlocks == probe->MetadataFreeBlocks &&
+        probe->LvidFileCount == probe->FilesVisited &&
+        probe->LvidDirectoryCount == probe->DirectoriesVisited &&
+        probe->LvidNextUniqueId > probe->MaxUniqueId &&
+        probe->LvidPhysicalFreeBlocks > probe->PhysicalFreeBlocks &&
+        probe->LvidPhysicalFreeBlocks <= probe->PartitionBlocks &&
+        probe->LvidPhysicalFreeBlocks - probe->PhysicalFreeBlocks ==
+            probe->UnownedPhysicalBlocks &&
+        (uint64_t)probe->OwnedPhysicalBlocks +
+            probe->LvidPhysicalFreeBlocks == probe->PartitionBlocks &&
+        (uint64_t)probe->OwnedPhysicalBlocks +
+            probe->UnownedPhysicalBlocks + probe->PhysicalFreeBlocks ==
+            probe->PartitionBlocks;
+}
+
+/* A fully walked, duplicate-free namespace with an exact physical owner
+ * graph may account for metadata still marked free. A separately validated
+ * physical-only rollback is the sole exception to exact ownership. */
 static int
 GraphCanRecover(const UDFS_RECOVERY_PROBE *probe)
 {
@@ -2941,7 +3040,8 @@ GraphCanRecover(const UDFS_RECOVERY_PROBE *probe)
             probe->ReferencedFreeMetadataBlocks == 1 &&
             probe->FirstReferencedFreeMetadataLbn ==
                 probe->DirectoryLinkFixChildLbn)))) &&
-        !probe->UnownedPhysicalBlocks &&
+        (!probe->UnownedPhysicalBlocks ||
+         GraphCanRollbackPhysicalOrphans(probe)) &&
         !probe->UnownedMetadataBlocks && !probe->OverlapBlocks &&
         probe->ReferencedFreeMirrorBlocksCompared ==
             probe->ReferencedFreeMetadataBlocks &&
@@ -3240,16 +3340,21 @@ UdfsRecoveryPrepareRepair(const UDFS_RECOVERY_READER *reader,
     }
 
     newPhysicalFree = probe->PhysicalFreeBlocks -
-                      probe->ReferencedFreePhysicalBlocks;
+                      probe->ReferencedFreePhysicalBlocks +
+                      (GraphCanRollbackPhysicalOrphans(probe) ?
+                       probe->UnownedPhysicalBlocks : 0);
     newMetadataFree = probe->MetadataFreeBlocks -
                       probe->ReferencedFreeMetadataBlocks;
     nextUniqueId = probe->MaxUniqueId + 1;
     if (nextUniqueId < probe->LvidNextUniqueId)
         nextUniqueId = probe->LvidNextUniqueId;
     memcpy(edit->After, normalizedLvid, UDFS_RECOVERY_SECTOR_SIZE);
-    memcpy(edit->After + 16,
-           probe->LvidTagRepairMode == 3 ? normalizedLvid + 16 :
-                                           recordingTime, 12);
+    /* A journaled OPEN descriptor already has an exact durable sidecar.
+     * Changing only its final timestamp makes a torn CLOSED write differ
+     * from that checkpoint, so the next mount cannot reconstruct it.
+     * Preserve the OPEN time; a first legacy bootstrap below publishes its
+     * new recording time in a sidecar before closing. */
+    memcpy(edit->After + 16, normalizedLvid + 16, 12);
     Write32(edit->After + 28, 1);
     Write64(edit->After + 40, nextUniqueId);
     Write32(edit->After + 80, newPhysicalFree);
