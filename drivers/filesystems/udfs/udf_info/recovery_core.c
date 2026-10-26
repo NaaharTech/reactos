@@ -128,6 +128,40 @@ ValidateTag(const uint8_t sector[UDFS_RECOVERY_SECTOR_SIZE],
     return UdfsRecoveryProbeValidLayout;
 }
 
+/* A linked final OPEN LVID can have only its tag-checksum byte torn while
+ * its CRC-covered body is intact. Normalize that one byte in memory so the
+ * complete owner graph can decide whether a repair is safe. The raw sector
+ * remains the compare-before-write value; no other damaged tag is accepted. */
+static UDFS_RECOVERY_PROBE_STATUS
+NormalizeOpenLvidTagChecksum(uint8_t sector[UDFS_RECOVERY_SECTOR_SIZE],
+                             uint32_t lba, int allow, uint8_t *repaired)
+{
+    UDFS_RECOVERY_PROBE_STATUS status = ValidateTag(sector, 9, lba);
+    uint32_t i, checksum = 0;
+    uint8_t oldChecksum;
+
+    if (repaired) *repaired = 0;
+    if (status != UdfsRecoveryProbeCorrupt || !allow)
+        return status;
+    if (Read16(sector + 10) < 136 - 16 ||
+        Read32(sector + 28) != 0 ||
+        Read32(sector + 32) != 0 || Read32(sector + 36) != 0)
+        return status;
+    for (i = 0; i < 16; ++i)
+        if (i != 4) checksum += sector[i];
+    oldChecksum = sector[4];
+    if (oldChecksum == (uint8_t)checksum)
+        return status;
+    sector[4] = (uint8_t)checksum;
+    status = ValidateTag(sector, 9, lba);
+    if (status != UdfsRecoveryProbeValidLayout) {
+        sector[4] = oldChecksum;
+        return status;
+    }
+    if (repaired) *repaired = 1;
+    return status;
+}
+
 /* A split mirror is recoverable only when both complete, CRC-valid directory
  * FEs differ solely in the link count and its tag CRC/checksum.  The
  * namespace walk later decides which count is correct; no copy wins merely
@@ -1979,15 +2013,20 @@ ReadPrevailingIntegrity(const UDFS_RECOVERY_READER *reader,
                         UDFS_RECOVERY_PROBE *result, uint32_t extentBytes,
                         uint32_t extentLba, uint8_t *sector,
                         uint8_t *prevailing, uint32_t *prevailingLba,
-                        uint8_t *integrityType)
+                        uint8_t *integrityType,
+                        uint8_t *checksumRepair)
 {
     uint32_t visited = 0;
     uint32_t anchors[8];
     uint8_t lastType = 0xff;
+    uint16_t previousVersion = 0, previousSerial = 0;
+    uint16_t previousCrcLength = 0;
+    int linkedFromClosed = 0;
     int found = 0;
 
     *integrityType = 0xff;
     if (prevailingLba) *prevailingLba = 0;
+    if (checksumRepair) *checksumRepair = 0;
     RecoveryAnchorCandidates(reader->SectorCount, anchors);
     for (;;) {
         uint32_t i, count;
@@ -2055,6 +2094,7 @@ ReadPrevailingIntegrity(const UDFS_RECOVERY_READER *reader,
             uint32_t lba = extentLba + i;
             uint32_t nextBytes, nextLba;
             uint16_t kind;
+            uint8_t repaired = 0;
             UDFS_RECOVERY_PROBE_STATUS status;
 
             result->FailureLba = lba;
@@ -2072,8 +2112,14 @@ ReadPrevailingIntegrity(const UDFS_RECOVERY_READER *reader,
                 return UdfsRecoveryProbeValidLayout;
             }
             if (kind != 9) return UdfsRecoveryProbeCorrupt;
-            status = ValidateTag(sector, 9, lba);
+            status = NormalizeOpenLvidTagChecksum(sector, lba,
+                         linkedFromClosed && count == 1 && i == 0 &&
+                         Read16(sector + 2) == previousVersion &&
+                         Read16(sector + 6) == previousSerial &&
+                         Read16(sector + 10) == previousCrcLength,
+                         &repaired);
             if (status != UdfsRecoveryProbeValidLayout) return status;
+            if (repaired && checksumRepair) *checksumRepair = 1;
             /* A CLOSED decision requires CRC coverage of the integrity type,
              * free/size tables and counters, not just a valid tag checksum. */
             if (Read16(sector + 10) < 136 - 16)
@@ -2089,6 +2135,10 @@ ReadPrevailingIntegrity(const UDFS_RECOVERY_READER *reader,
             if (!nextBytes) continue;
             nextLba = Read32(sector + 36);
             if (nextLba == lba) return UdfsRecoveryProbeCorrupt;
+            linkedFromClosed = lastType == 1;
+            previousVersion = Read16(sector + 2);
+            previousSerial = Read16(sector + 6);
+            previousCrcLength = Read16(sector + 10);
             extentBytes = nextBytes;
             extentLba = nextLba;
             goto next_extent;
@@ -2139,7 +2189,7 @@ UdfsRecoveryPeekIntegrity(const UDFS_RECOVERY_READER *reader,
     extentBytes = Read32(lvd + 432) & 0x3fffffff;
     extentLba = Read32(lvd + 436);
     return ReadPrevailingIntegrity(reader, &scratch, extentBytes, extentLba,
-                                   sector, NULL, NULL, integrityType);
+                                   sector, NULL, NULL, integrityType, NULL);
 }
 
 static UDFS_RECOVERY_PROBE_STATUS
@@ -2399,7 +2449,8 @@ ProbeLayout(const UDFS_RECOVERY_READER *reader,
     status = ReadPrevailingIntegrity(reader, result,
                 Read32(lvd + 432) & 0x3fffffff, Read32(lvd + 436),
                 sector, prevailingLvid, &result->PrevailingLvidLba,
-                &result->LvidIntegrityType);
+                &result->LvidIntegrityType,
+                &result->LvidTagChecksumRepair);
     if (status != UdfsRecoveryProbeValidLayout) goto done;
     if (Read16(prevailingLvid + 10) < 136 - 16) {
         status = UdfsRecoveryProbeCorrupt;
@@ -2501,6 +2552,8 @@ UdfsRecoveryPrepareRepair(const UDFS_RECOVERY_READER *reader,
     UDFS_RECOVERY_PROBE check;
     UDFS_RECOVERY_PROBE_STATUS status;
     UDFS_RECOVERY_SECTOR_EDIT *edit;
+    uint8_t normalizedLvid[UDFS_RECOVERY_SECTOR_SIZE];
+    uint8_t repaired;
     uint32_t i, newPhysicalFree, newMetadataFree, crcLength, checksum;
     uint16_t crc;
     uint64_t nextUniqueId;
@@ -2527,8 +2580,14 @@ UdfsRecoveryPrepareRepair(const UDFS_RECOVERY_READER *reader,
     edit->Lba = probe->PrevailingLvidLba;
     status = ReadSector(reader, &check, edit->Lba, edit->Before);
     if (status != UdfsRecoveryProbeValidLayout) goto done;
-    status = ValidateTag(edit->Before, 9, edit->Lba);
-    if (status != UdfsRecoveryProbeValidLayout) goto done;
+    memcpy(normalizedLvid, edit->Before, UDFS_RECOVERY_SECTOR_SIZE);
+    status = NormalizeOpenLvidTagChecksum(normalizedLvid, edit->Lba,
+                     probe->LvidTagChecksumRepair, &repaired);
+    if (status != UdfsRecoveryProbeValidLayout ||
+        repaired != probe->LvidTagChecksumRepair) {
+        status = UdfsRecoveryProbeCorrupt;
+        goto done;
+    }
     if (Read32(edit->Before + 28) != 0 ||
         Read32(edit->Before + 80) != probe->LvidPhysicalFreeBlocks ||
         Read32(edit->Before + 84) != probe->LvidMetadataFreeBlocks ||
@@ -2548,7 +2607,7 @@ UdfsRecoveryPrepareRepair(const UDFS_RECOVERY_READER *reader,
     nextUniqueId = probe->MaxUniqueId + 1;
     if (nextUniqueId < probe->LvidNextUniqueId)
         nextUniqueId = probe->LvidNextUniqueId;
-    memcpy(edit->After, edit->Before, UDFS_RECOVERY_SECTOR_SIZE);
+    memcpy(edit->After, normalizedLvid, UDFS_RECOVERY_SECTOR_SIZE);
     memcpy(edit->After + 16, recordingTime, 12);
     Write32(edit->After + 28, 1);
     Write64(edit->After + 40, nextUniqueId);
@@ -2571,8 +2630,10 @@ UdfsRecoveryPrepareRepair(const UDFS_RECOVERY_READER *reader,
         if (i != 4) checksum += edit->After[i];
     edit->After[4] = (uint8_t)checksum;
     status = ValidateTag(edit->After, 9, edit->Lba);
-    if (status == UdfsRecoveryProbeValidLayout)
+    if (status == UdfsRecoveryProbeValidLayout) {
+        plan->LvidTagChecksumRepair = repaired;
         plan->Ready = 1;
+    }
 done:
     if (status != UdfsRecoveryProbeValidLayout)
         memset(plan, 0, sizeof(*plan));
@@ -2587,6 +2648,7 @@ UdfsRecoveryApplyRepair(const UDFS_RECOVERY_READER *reader,
     uint8_t sector[UDFS_RECOVERY_SECTOR_SIZE];
     UDFS_RECOVERY_PROBE_STATUS status;
     uint32_t i, j;
+    uint8_t repaired;
 
     if (!reader || !reader->ReadSector || !reader->WriteSector ||
         !reader->Flush || !reader->Allocate || !reader->Free ||
@@ -2595,12 +2657,18 @@ UdfsRecoveryApplyRepair(const UDFS_RECOVERY_READER *reader,
         plan->FeEditCount > 2 ||
         plan->FidEditCount > 1 ||
         plan->LvidEdit.Lba >= reader->SectorCount ||
-        ValidateTag(plan->LvidEdit.Before, 9,
-                    plan->LvidEdit.Lba) != UdfsRecoveryProbeValidLayout ||
+        plan->LvidTagChecksumRepair > 1 ||
         ValidateTag(plan->LvidEdit.After, 9,
                     plan->LvidEdit.Lba) != UdfsRecoveryProbeValidLayout ||
         Read32(plan->LvidEdit.Before + 28) != 0 ||
         Read32(plan->LvidEdit.After + 28) != 1)
+        return UdfsRecoveryProbeInvalidInput;
+
+    memcpy(sector, plan->LvidEdit.Before, UDFS_RECOVERY_SECTOR_SIZE);
+    status = NormalizeOpenLvidTagChecksum(sector, plan->LvidEdit.Lba,
+                     plan->LvidTagChecksumRepair, &repaired);
+    if (status != UdfsRecoveryProbeValidLayout ||
+        repaired != plan->LvidTagChecksumRepair)
         return UdfsRecoveryProbeInvalidInput;
 
     memset(after, 0, sizeof(*after));

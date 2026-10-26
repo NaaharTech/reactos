@@ -117,6 +117,7 @@ typedef struct _UDFS_RECOVERY_PROBE {
     uint8_t MetadataDuplicated;
     uint8_t BitmapContentsScanned;
     uint8_t LvidIntegrityType;
+    uint8_t LvidTagChecksumRepair;
     uint8_t LvidCountersMatch;
     uint8_t OwnershipGraphScanned;
     uint8_t CompleteOwnershipGraph;
@@ -141,6 +142,7 @@ typedef struct _UDFS_RECOVERY_REPAIR_PLAN {
     uint32_t FidLiveLba;
     UDFS_RECOVERY_SECTOR_EDIT FidEdit;
     UDFS_RECOVERY_SECTOR_EDIT LvidEdit;
+    uint8_t LvidTagChecksumRepair;
     uint8_t Ready;
 } UDFS_RECOVERY_REPAIR_PLAN;
 
