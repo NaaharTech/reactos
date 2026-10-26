@@ -71,6 +71,7 @@ typedef struct _UDFS_RECOVERY_PROBE {
     uint32_t JournalOpenLvidLba;
     uint32_t JournalOtherLvidLba;
     uint64_t JournalGeneration;
+    uint8_t JournalOtherDamaged;
     uint32_t LvidPhysicalFreeBlocks;
     uint32_t LvidMetadataFreeBlocks;
     uint32_t LvidPhysicalSizeBlocks;
@@ -157,6 +158,10 @@ typedef struct _UDFS_RECOVERY_REPAIR_PLAN {
     /* A clean, unlinked legacy extent has no durable sidecar yet. During
      * its first recovery, write this prepared sidecar before CLOSED LVID. */
     uint8_t LegacyJournalBootstrap;
+    /* A valid journaled OPEN checkpoint needs adjusted counters. Publish
+     * the exact new OPEN state in the alternate slot before CLOSED LVID. */
+    uint8_t JournalRepairRefresh;
+    uint8_t JournalOtherDamaged;
     uint8_t Ready;
 } UDFS_RECOVERY_REPAIR_PLAN;
 

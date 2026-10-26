@@ -2411,7 +2411,8 @@ ReadPrevailingIntegrity(const UDFS_RECOVERY_READER *reader,
                                        UdfsJournalMagic, 8) == 0;
                 if (targetJournaled)
                     targetGeneration = Read64(sector + 150);
-                if ((journalSlotBad && journalOpenLba) ||
+                if ((journalSlotBad && journalOpenLba &&
+                     targetGeneration != journalGeneration) ||
                     (targetJournaled &&
                      (!targetGeneration ||
                       Read32(sector + 158) != lba ||
@@ -2440,6 +2441,15 @@ ReadPrevailingIntegrity(const UDFS_RECOVERY_READER *reader,
                         if (RecoveryDifference(sector, expected,
                                                sizeof(expected)))
                             return UdfsRecoveryProbeCorrupt;
+                        /* Keep the validated sidecar identity even when the
+                         * target OPEN tag is intact. Repair may need a new
+                         * generation to publish corrected free counters. */
+                        result->PrecedingClosedLvidLba = previousClosedLba;
+                        result->JournalOpenLvidLba = journalOpenLba;
+                        result->JournalOtherLvidLba = journalOtherLba;
+                        result->JournalGeneration = journalGeneration;
+                        result->JournalOtherDamaged =
+                            (uint8_t)journalSlotBad;
                     }
                 }
             }
@@ -2976,11 +2986,11 @@ UdfsRecoveryProbeLayout(const UDFS_RECOVERY_READER *reader,
     return ProbeLayout(reader, result, NULL);
 }
 
-/* Roll back only physical allocations absent from every durable owner when
- * the old OPEN LVID still describes exactly the reachable graph. The full
- * free-metadata FE scan rejects an interrupted FE that might own the bytes.
- * Every released bit moves the bitmap free count toward the unchanged old
- * LVID count, so a cut in the bitmap batch can be retried. */
+/* Roll back only physical allocations absent from every durable owner. An
+ * OPEN checkpoint can predate both reachable new allocations and orphans;
+ * the former must stay allocated and the latter alone may be freed. The
+ * complete owner graph and free-metadata FE scan are mandatory. A changed
+ * LVID free count must be journaled before publishing CLOSED. */
 static int
 GraphCanRollbackPhysicalOrphans(const UDFS_RECOVERY_PROBE *probe)
 {
@@ -3001,10 +3011,10 @@ GraphCanRollbackPhysicalOrphans(const UDFS_RECOVERY_PROBE *probe)
         probe->LvidNextUniqueId > probe->MaxUniqueId &&
         probe->LvidPhysicalFreeBlocks > probe->PhysicalFreeBlocks &&
         probe->LvidPhysicalFreeBlocks <= probe->PartitionBlocks &&
-        probe->LvidPhysicalFreeBlocks - probe->PhysicalFreeBlocks ==
+        probe->LvidPhysicalFreeBlocks - probe->PhysicalFreeBlocks >=
             probe->UnownedPhysicalBlocks &&
-        (uint64_t)probe->OwnedPhysicalBlocks +
-            probe->LvidPhysicalFreeBlocks == probe->PartitionBlocks &&
+        probe->OwnedPhysicalBlocks >= probe->PartitionBlocks -
+            probe->LvidPhysicalFreeBlocks &&
         (uint64_t)probe->OwnedPhysicalBlocks +
             probe->UnownedPhysicalBlocks + probe->PhysicalFreeBlocks ==
             probe->PartitionBlocks;
@@ -3259,7 +3269,9 @@ UdfsRecoveryPrepareRepair(const UDFS_RECOVERY_READER *reader,
     if (status != UdfsRecoveryProbeValidLayout) goto done;
     memcpy(normalizedLvid, edit->Before, UDFS_RECOVERY_SECTOR_SIZE);
     if (probe->LvidTagRepairMode == 2 ||
-        probe->LvidTagRepairMode == 3) {
+        probe->LvidTagRepairMode == 3 ||
+        (probe->LvidTagRepairMode == 0 &&
+         probe->JournalOpenLvidLba)) {
         plan->PrecedingClosedLvidLba = probe->PrecedingClosedLvidLba;
         if (plan->PrecedingClosedLvidLba >= reader->SectorCount ||
             plan->PrecedingClosedLvidLba == edit->Lba) {
@@ -3314,6 +3326,68 @@ UdfsRecoveryPrepareRepair(const UDFS_RECOVERY_READER *reader,
                       edit->Lba, plan->JournalOpenLvid,
                       plan->JournalOpenLvidLba,
                       previousJournal, &repaired);
+    } else if (probe->LvidTagRepairMode == 0 &&
+               probe->JournalOpenLvidLba) {
+        uint8_t expected[UDFS_RECOVERY_SECTOR_SIZE];
+        uint32_t k;
+        int alternateEmpty = 1;
+        plan->JournalOpenLvidLba = probe->JournalOpenLvidLba;
+        plan->JournalNextLvidEdit.Lba = probe->JournalOtherLvidLba;
+        plan->JournalOtherDamaged = probe->JournalOtherDamaged;
+        if (plan->JournalOpenLvidLba >= reader->SectorCount ||
+            plan->JournalNextLvidEdit.Lba >= reader->SectorCount ||
+            plan->JournalOpenLvidLba == edit->Lba ||
+            plan->JournalNextLvidEdit.Lba == edit->Lba ||
+            plan->JournalOpenLvidLba ==
+                plan->JournalNextLvidEdit.Lba ||
+            plan->JournalOpenLvidLba ==
+                plan->PrecedingClosedLvidLba ||
+            plan->JournalNextLvidEdit.Lba ==
+                plan->PrecedingClosedLvidLba ||
+            !probe->JournalGeneration ||
+            probe->JournalGeneration == UINT64_MAX) {
+            status = UdfsRecoveryProbeCorrupt;
+            goto done;
+        }
+        status = ReadSector(reader, &check, plan->JournalOpenLvidLba,
+                            plan->JournalOpenLvid);
+        if (status != UdfsRecoveryProbeValidLayout) goto done;
+        status = ReadSector(reader, &check,
+                            plan->JournalNextLvidEdit.Lba,
+                            plan->JournalNextLvidEdit.Before);
+        if (status != UdfsRecoveryProbeValidLayout) goto done;
+        if (!JournalOpenValid(plan->JournalOpenLvid,
+                              plan->JournalOpenLvidLba, edit->Lba,
+                              plan->PrecedingClosedLvid) ||
+            Read64(plan->JournalOpenLvid + 150) !=
+                probe->JournalGeneration) {
+            status = UdfsRecoveryProbeCorrupt;
+            goto done;
+        }
+        memcpy(expected, plan->JournalOpenLvid, sizeof(expected));
+        RetagLvid(expected, edit->Lba);
+        if (RecoveryDifference(normalizedLvid, expected,
+                               sizeof(expected))) {
+            status = UdfsRecoveryProbeCorrupt;
+            goto done;
+        }
+        for (k = 0; k < UDFS_RECOVERY_SECTOR_SIZE; ++k)
+            if (plan->JournalNextLvidEdit.Before[k]) {
+                alternateEmpty = 0;
+                break;
+            }
+        if ((alternateEmpty && probe->JournalOtherDamaged) ||
+            (!alternateEmpty && !probe->JournalOtherDamaged &&
+             (!JournalOpenValid(plan->JournalNextLvidEdit.Before,
+                                plan->JournalNextLvidEdit.Lba, edit->Lba,
+                                plan->PrecedingClosedLvid) ||
+              Read64(plan->JournalNextLvidEdit.Before + 150) + 1 !=
+                  probe->JournalGeneration))) {
+            status = UdfsRecoveryProbeCorrupt;
+            goto done;
+        }
+        status = NormalizeOpenLvidTag(normalizedLvid, edit->Lba, 0,
+                                      NULL, &repaired);
     } else {
         status = NormalizeOpenLvidTag(normalizedLvid, edit->Lba,
                          probe->LvidTagRepairMode,
@@ -3389,6 +3463,18 @@ UdfsRecoveryPrepareRepair(const UDFS_RECOVERY_READER *reader,
     status = PrepareLegacyJournalBootstrap(reader, probe,
                                            recordingTime, plan);
     if (status != UdfsRecoveryProbeValidLayout) goto done;
+    if (probe->LvidTagRepairMode == 0 &&
+        probe->JournalOpenLvidLba &&
+        (probe->JournalOtherDamaged ||
+         newPhysicalFree != probe->LvidPhysicalFreeBlocks ||
+         newMetadataFree != probe->LvidMetadataFreeBlocks ||
+         nextUniqueId != probe->LvidNextUniqueId ||
+         probe->FilesVisited != probe->LvidFileCount ||
+         probe->DirectoriesVisited != probe->LvidDirectoryCount)) {
+        plan->JournalRepairRefresh = 1;
+        Write64(edit->After + 150, probe->JournalGeneration + 1);
+        Write32(edit->After + 162, 1);
+    }
     crcLength = Read16(edit->After + 10);
     if (crcLength > UDFS_RECOVERY_SECTOR_SIZE - 16) {
         status = UdfsRecoveryProbeUnsupported;
@@ -3413,6 +3499,18 @@ UdfsRecoveryPrepareRepair(const UDFS_RECOVERY_READER *reader,
         RetagLvid(journal->After, journal->Lba);
         if (!JournalOpenValid(journal->After, journal->Lba,
                               edit->Lba, plan->PrecedingClosedLvid))
+            status = UdfsRecoveryProbeCorrupt;
+    }
+    if (status == UdfsRecoveryProbeValidLayout &&
+        plan->JournalRepairRefresh) {
+        UDFS_RECOVERY_SECTOR_EDIT *journal = &plan->JournalNextLvidEdit;
+        memcpy(journal->After, edit->After, UDFS_RECOVERY_SECTOR_SIZE);
+        Write32(journal->After + 28, 0);
+        RetagLvid(journal->After, journal->Lba);
+        if (!JournalOpenValid(journal->After, journal->Lba,
+                              edit->Lba, plan->PrecedingClosedLvid) ||
+            (plan->JournalOtherDamaged &&
+             RecoveryDifference(journal->Before, journal->After, 24)))
             status = UdfsRecoveryProbeCorrupt;
     }
     if (status == UdfsRecoveryProbeValidLayout &&
@@ -3456,7 +3554,13 @@ UdfsRecoveryApplyRepair(const UDFS_RECOVERY_READER *reader,
         plan->LvidEdit.Lba >= reader->SectorCount ||
         plan->LvidTagRepairMode > 3 ||
         plan->LegacyJournalBootstrap > 1 ||
+        plan->JournalRepairRefresh > 1 ||
+        plan->JournalOtherDamaged > 1 ||
+        (plan->JournalOtherDamaged && !plan->JournalRepairRefresh) ||
         (plan->LegacyJournalBootstrap && plan->LvidTagRepairMode != 0) ||
+        (plan->JournalRepairRefresh &&
+         (plan->LvidTagRepairMode != 0 ||
+          plan->LegacyJournalBootstrap)) ||
         ValidateTag(plan->LvidEdit.After, 9,
                     plan->LvidEdit.Lba) != UdfsRecoveryProbeValidLayout ||
         (plan->LvidTagRepairMode == 3 ?
@@ -3468,7 +3572,8 @@ UdfsRecoveryApplyRepair(const UDFS_RECOVERY_READER *reader,
     memset(after, 0, sizeof(*after));
     if (plan->LvidTagRepairMode == 2 ||
         plan->LvidTagRepairMode == 3 ||
-        plan->LegacyJournalBootstrap) {
+        plan->LegacyJournalBootstrap ||
+        plan->JournalRepairRefresh) {
         if (plan->PrecedingClosedLvidLba >= reader->SectorCount ||
             plan->PrecedingClosedLvidLba == plan->LvidEdit.Lba)
             return UdfsRecoveryProbeInvalidInput;
@@ -3526,6 +3631,73 @@ UdfsRecoveryApplyRepair(const UDFS_RECOVERY_READER *reader,
         if (status != UdfsRecoveryProbeValidLayout) return status;
         if (RecoveryDifference(sector, journal->Before,
                                UDFS_RECOVERY_SECTOR_SIZE) != 0)
+            return UdfsRecoveryProbeCorrupt;
+    }
+    if (plan->JournalRepairRefresh) {
+        const UDFS_RECOVERY_SECTOR_EDIT *journal =
+            &plan->JournalNextLvidEdit;
+        uint32_t k;
+        int alternateEmpty = 1;
+        if (plan->JournalOpenLvidLba >= reader->SectorCount ||
+            plan->JournalOpenLvidLba == plan->LvidEdit.Lba ||
+            plan->JournalOpenLvidLba ==
+                plan->PrecedingClosedLvidLba ||
+            journal->Lba >= reader->SectorCount ||
+            journal->Lba == plan->LvidEdit.Lba ||
+            journal->Lba == plan->JournalOpenLvidLba ||
+            journal->Lba == plan->PrecedingClosedLvidLba ||
+            !JournalOpenValid(plan->JournalOpenLvid,
+                              plan->JournalOpenLvidLba,
+                              plan->LvidEdit.Lba,
+                              plan->PrecedingClosedLvid) ||
+            Read64(plan->JournalOpenLvid + 150) == UINT64_MAX ||
+            !JournalOpenValid(journal->After, journal->Lba,
+                              plan->LvidEdit.Lba,
+                              plan->PrecedingClosedLvid) ||
+            Read64(journal->After + 150) !=
+                Read64(plan->JournalOpenLvid + 150) + 1 ||
+            Read32(journal->After + 162) != 1 ||
+            Read64(plan->LvidEdit.After + 150) !=
+                Read64(journal->After + 150) ||
+            Read32(plan->LvidEdit.After + 162) != 1)
+            return UdfsRecoveryProbeInvalidInput;
+        memcpy(sector, plan->JournalOpenLvid,
+               UDFS_RECOVERY_SECTOR_SIZE);
+        RetagLvid(sector, plan->LvidEdit.Lba);
+        if (RecoveryDifference(sector, plan->LvidEdit.Before,
+                               UDFS_RECOVERY_SECTOR_SIZE))
+            return UdfsRecoveryProbeInvalidInput;
+        memcpy(sector, journal->After, UDFS_RECOVERY_SECTOR_SIZE);
+        Write32(sector + 28, 1);
+        RetagLvid(sector, plan->LvidEdit.Lba);
+        if (RecoveryDifference(sector, plan->LvidEdit.After,
+                               UDFS_RECOVERY_SECTOR_SIZE))
+            return UdfsRecoveryProbeInvalidInput;
+        for (k = 0; k < UDFS_RECOVERY_SECTOR_SIZE; ++k)
+            if (journal->Before[k]) {
+                alternateEmpty = 0;
+                break;
+            }
+        if ((alternateEmpty && plan->JournalOtherDamaged) ||
+            (!alternateEmpty && !plan->JournalOtherDamaged &&
+             (!JournalOpenValid(journal->Before, journal->Lba,
+                                plan->LvidEdit.Lba,
+                                plan->PrecedingClosedLvid) ||
+              Read64(journal->Before + 150) + 1 !=
+                  Read64(plan->JournalOpenLvid + 150))) ||
+            (plan->JournalOtherDamaged &&
+             RecoveryDifference(journal->Before, journal->After, 24)))
+            return UdfsRecoveryProbeInvalidInput;
+        status = ReadSector(reader, after,
+                            plan->JournalOpenLvidLba, sector);
+        if (status != UdfsRecoveryProbeValidLayout) return status;
+        if (RecoveryDifference(sector, plan->JournalOpenLvid,
+                               UDFS_RECOVERY_SECTOR_SIZE))
+            return UdfsRecoveryProbeCorrupt;
+        status = ReadSector(reader, after, journal->Lba, sector);
+        if (status != UdfsRecoveryProbeValidLayout) return status;
+        if (RecoveryDifference(sector, journal->Before,
+                               UDFS_RECOVERY_SECTOR_SIZE))
             return UdfsRecoveryProbeCorrupt;
     }
     if (plan->LegacyJournalBootstrap) {
@@ -3784,8 +3956,9 @@ UdfsRecoveryApplyRepair(const UDFS_RECOVERY_READER *reader,
                    UdfsRecoveryProbeCorrupt : status;
     }
 
-    if (plan->LvidTagRepairMode == 3 &&
-        Read32(plan->JournalOpenLvid + 162) == 0) {
+    if ((plan->LvidTagRepairMode == 3 &&
+         Read32(plan->JournalOpenLvid + 162) == 0) ||
+        plan->JournalRepairRefresh) {
         const UDFS_RECOVERY_SECTOR_EDIT *journal =
             &plan->JournalNextLvidEdit;
         /* Preserve the previously durable OPEN slot until the alternate
