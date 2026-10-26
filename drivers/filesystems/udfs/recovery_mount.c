@@ -280,10 +280,11 @@ UDFRecoverDirtyVolumeBeforeLoad(PIRP_CONTEXT IrpContext, PVCB Vcb)
               (ULONG)before.ReferencedFreeMetadataBlocks,
               (ULONG)before.UnownedPhysicalBlocks,
               (ULONG)plan->BitmapEditCount));
-    if (before.UnownedPhysicalBlocks)
+    if (before.UnownedPhysicalBlocks) {
         UDFPrint(("UDFS recovery: rolling back unlinked allocations after full FE/namespace check; incomplete new file is not recovered\n"));
-    else
+    } else {
         UDFPrint(("UDFS recovery: metadata-only repair; unflushed file contents are not recovered\n"));
+    }
     UdfsRecoveryPhaseBegin(&io, &phase);
     status = UdfsRecoveryApplyRepair(&reader, plan, &after);
     UdfsRecoveryPhaseEnd(&io, &phase, "apply/reprobe", status);
