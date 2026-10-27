@@ -753,6 +753,8 @@ struct VCB {
     uint32          InitVatCount;
     uint32          VatCount;
     uint32*         Vat;
+    uint32          PreviousVatCount;
+    uint32*         PreviousVat;
     uint32          VatPartNdx;
     PUDF_FILE_INFO  VatFileInfo;
     uint32          MetadataRef;            
@@ -1237,4 +1239,3 @@ typedef struct _CDROM_TOC_LARGE {
 } CDROM_TOC_LARGE;
 
 #endif /* _UDF_STRUCTURES_H_ */ // has this file been included?
-
