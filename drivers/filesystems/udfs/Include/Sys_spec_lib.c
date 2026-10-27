@@ -376,9 +376,9 @@ UDFFileDirInfoToNT(
             FileDirNdx->FileSize =
             NTFileInfo->EndOfFile.QuadPart =
                 FileEntry->informationLength;
-            UDFPrint(("    informationLength=%I64x, lengthAllocDescs=%I64x\n",
+            UDFPrint(("    informationLength=%I64x, lengthAllocDescs=%lx\n",
                 FileEntry->informationLength,
-                FileEntry->lengthAllocDescs
+                (ULONG)FileEntry->lengthAllocDescs
                 ));
             // AllocSize
             FileDirNdx->AllocationSize =
@@ -400,9 +400,9 @@ UDFFileDirInfoToNT(
             FileDirNdx->FileSize =
             NTFileInfo->EndOfFile.QuadPart =
                 ExFileEntry->informationLength;
-            UDFPrint(("    informationLength=%I64x, lengthAllocDescs=%I64x\n",
-                FileEntry->informationLength,
-                FileEntry->lengthAllocDescs
+            UDFPrint(("    informationLength=%I64x, lengthAllocDescs=%lx\n",
+                ExFileEntry->informationLength,
+                (ULONG)ExFileEntry->lengthAllocDescs
                 ));
             // AllocSize
             FileDirNdx->AllocationSize =
