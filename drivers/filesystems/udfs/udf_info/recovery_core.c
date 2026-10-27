@@ -413,23 +413,23 @@ NormalizeLvidFromJournal(
  * because it is primary or newer-looking. */
 static int
 DirectoryFePairDiffersOnlyInLinkCount(
-    const uint8_t main[UDFS_RECOVERY_SECTOR_SIZE],
+    const uint8_t mainSector[UDFS_RECOVERY_SECTOR_SIZE],
     const uint8_t mirror[UDFS_RECOVERY_SECTOR_SIZE], uint32_t lbn)
 {
-    uint16_t kind = Read16(main), a = Read16(main + 48);
+    uint16_t kind = Read16(mainSector), a = Read16(mainSector + 48);
     uint16_t b = Read16(mirror + 48);
     uint32_t i;
     if ((kind != 261 && kind != 266) || Read16(mirror) != kind ||
-        main[27] != 4 || mirror[27] != 4 ||
-        Read16(main + 10) < 50 - 16 ||
+        mainSector[27] != 4 || mirror[27] != 4 ||
+        Read16(mainSector + 10) < 50 - 16 ||
         Read16(mirror + 10) < 50 - 16 ||
-        ValidateTag(main, kind, lbn) != UdfsRecoveryProbeValidLayout ||
+        ValidateTag(mainSector, kind, lbn) != UdfsRecoveryProbeValidLayout ||
         ValidateTag(mirror, kind, lbn) != UdfsRecoveryProbeValidLayout ||
         (a + 1 != b && b + 1 != a))
         return 0;
     for (i = 0; i < UDFS_RECOVERY_SECTOR_SIZE; ++i)
         if (i != 4 && i != 8 && i != 9 && i != 48 && i != 49 &&
-            main[i] != mirror[i])
+            mainSector[i] != mirror[i])
             return 0;
     return 1;
 }
@@ -463,7 +463,7 @@ ValidFidRecordInSector(const uint8_t *fid, uint32_t available,
  * changed name or neighboring record is not an eligible recovery hint. */
 static int
 DirectoryFidPairLiveDeleted(
-    const uint8_t main[UDFS_RECOVERY_SECTOR_SIZE],
+    const uint8_t mainSector[UDFS_RECOVERY_SECTOR_SIZE],
     const uint8_t mirror[UDFS_RECOVERY_SECTOR_SIZE],
     uint32_t lbn, int *liveOnMirror, uint32_t *childLbn,
     uint32_t *recordOffset)
@@ -471,7 +471,7 @@ DirectoryFidPairLiveDeleted(
     uint32_t offset, matches = 0;
     for (offset = 0; offset <= UDFS_RECOVERY_SECTOR_SIZE - 40;
          offset += 4) {
-        const uint8_t *a = main + offset, *b = mirror + offset;
+        const uint8_t *a = mainSector + offset, *b = mirror + offset;
         const uint8_t *live, *deleted;
         uint32_t aLength, bLength, j;
         int liveMirror;
@@ -504,7 +504,7 @@ DirectoryFidPairLiveDeleted(
                     local == 18 || (local >= 20 && local < 36))
                     continue;
             }
-            if (main[j] != mirror[j]) break;
+            if (mainSector[j] != mirror[j]) break;
         }
         if (j != UDFS_RECOVERY_SECTOR_SIZE || ++matches != 1)
             return 0;
@@ -1804,7 +1804,7 @@ PlanLiveFidCopy(const UDFS_RECOVERY_READER *reader,
                 UDFS_RECOVERY_PROBE *result,
                 UDFS_RECOVERY_REPAIR_PLAN *plan)
 {
-    uint8_t main[UDFS_RECOVERY_SECTOR_SIZE];
+    uint8_t mainSector[UDFS_RECOVERY_SECTOR_SIZE];
     uint8_t mirror[UDFS_RECOVERY_SECTOR_SIZE];
     const uint8_t *live, *deleted;
     int liveOnMirror;
@@ -1814,19 +1814,19 @@ PlanLiveFidCopy(const UDFS_RECOVERY_READER *reader,
         result->MirrorDirectorySplitCount ||
         !result->FidSplitSeen || plan->FidEditCount)
         return UdfsRecoveryProbeCorrupt;
-    status = ReadSector(reader, result, result->FidSplitMainLba, main);
+    status = ReadSector(reader, result, result->FidSplitMainLba, mainSector);
     if (status != UdfsRecoveryProbeValidLayout) return status;
     status = ReadSector(reader, result, result->FidSplitMirrorLba,
                         mirror);
     if (status != UdfsRecoveryProbeValidLayout) return status;
-    if (!DirectoryFidPairLiveDeleted(main, mirror,
+    if (!DirectoryFidPairLiveDeleted(mainSector, mirror,
             result->FidSplitLbn, &liveOnMirror, &child, &offset) ||
         (uint8_t)liveOnMirror != result->FidSplitLiveOnMirror ||
         child != result->FidSplitChildLbn ||
         offset != result->FidSplitRecordOffset)
         return UdfsRecoveryProbeCorrupt;
-    live = liveOnMirror ? mirror : main;
-    deleted = liveOnMirror ? main : mirror;
+    live = liveOnMirror ? mirror : mainSector;
+    deleted = liveOnMirror ? mainSector : mirror;
     plan->FidEdit.Lba = liveOnMirror ?
         result->FidSplitMainLba : result->FidSplitMirrorLba;
     plan->FidLiveLba = liveOnMirror ?
