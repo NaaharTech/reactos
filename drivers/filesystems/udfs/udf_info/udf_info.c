@@ -5444,16 +5444,23 @@ UDFLoadPreviousVAT(
     BOOLEAN Opened = FALSE;
     const uint32 MaxPreviousVatBytes = 16U * 1024U * 1024U;
 
-    if (!PreviousVatLbn || PreviousVatLbn == CurrentVatLbn ||
+    if (!PreviousVatLbn)
+        return;
+    if (PreviousVatLbn == CurrentVatLbn ||
         PreviousVatLbn >= Vcb->Partitions[PartNdx].PartitionLen ||
         Vcb->FSBM_BitCount > MAXULONG / sizeof(uint32) ||
-        Vcb->SessionEndLba < Vcb->Partitions[PartNdx].PartitionRoot)
+        Vcb->SessionEndLba < Vcb->Partitions[PartNdx].PartitionRoot) {
+        UDFPrint(("UDF VAT recovery: previous VAT location %lx is unusable\n",
+                  PreviousVatLbn));
         return;
+    }
 
     PreviousFile = (PUDF_FILE_INFO)MyAllocatePoolTag__(
         UDF_FILE_INFO_MT, sizeof(UDF_FILE_INFO), MEM_VATFINF_TAG);
-    if (!PreviousFile)
+    if (!PreviousFile) {
+        UDFPrint(("UDF VAT recovery: unable to allocate previous VAT file info\n"));
         return;
+    }
     RtlZeroMemory(PreviousFile, sizeof(UDF_FILE_INFO));
     PreviousFile->NextLinkedFile = PreviousFile->PrevLinkedFile = PreviousFile;
 
@@ -5468,74 +5475,110 @@ UDFLoadPreviousVAT(
                                    PreviousFile);
     }
     Vcb->Vat = CurrentVat;
-    if (!NT_SUCCESS(Status))
+    if (!NT_SUCCESS(Status)) {
+        UDFPrint(("UDF VAT recovery: cannot open previous VAT at LBN %lx (%08lx)\n",
+                  PreviousVatLbn, (ULONG)Status));
         goto cleanup;
+    }
     Opened = TRUE;
 
     if (!PreviousFile->Dloc || !PreviousFile->Dloc->FileEntry ||
         !Vcb->VatFileInfo || !Vcb->VatFileInfo->Dloc ||
-        !Vcb->VatFileInfo->Dloc->FileEntry)
+        !Vcb->VatFileInfo->Dloc->FileEntry) {
+        UDFPrint(("UDF VAT recovery: previous/current VAT file entry is unavailable\n"));
         goto cleanup;
+    }
     FileSize = UDFGetFileSize(PreviousFile);
     if (FileSize <= 0 || FileSize > MAXULONG ||
-        FileSize > (LONGLONG)MaxPreviousVatBytes + 0xffff)
+        FileSize > (LONGLONG)MaxPreviousVatBytes + 0xffff) {
+        UDFPrint(("UDF VAT recovery: previous VAT size %I64d is invalid\n",
+                  FileSize));
         goto cleanup;
+    }
     Length = (uint32)FileSize;
     if (!Length ||
         ((icbtag*)(PreviousFile->Dloc->FileEntry + 1))->fileType !=
-            ((icbtag*)(Vcb->VatFileInfo->Dloc->FileEntry + 1))->fileType)
+            ((icbtag*)(Vcb->VatFileInfo->Dloc->FileEntry + 1))->fileType) {
+        UDFPrint(("UDF VAT recovery: previous file is not the expected VAT type\n"));
         goto cleanup;
+    }
     Data = (int8*)DbgAllocatePool(PagedPool, Length);
-    if (!Data)
+    if (!Data) {
+        UDFPrint(("UDF VAT recovery: unable to allocate %lu-byte previous VAT\n",
+                  Length));
         goto cleanup;
+    }
     Vcb->Vat = NULL;
     Status = UDFReadFile__(IrpContext, Vcb, PreviousFile, 0, Length, FALSE,
                            Data);
     Vcb->Vat = CurrentVat;
-    if (!NT_SUCCESS(Status))
+    if (!NT_SUCCESS(Status)) {
+        UDFPrint(("UDF VAT recovery: read previous VAT failed (%08lx)\n",
+                  (ULONG)Status));
         goto cleanup;
+    }
 
     if (Vcb->Partitions[PartNdx].PartitionType == UDF_VIRTUAL_MAP15) {
         struct VirtualAllocationTable15* Header;
-        if (Length < sizeof(*Header))
+        if (Length < sizeof(*Header)) {
+            UDFPrint(("UDF VAT recovery: previous VAT 1.5 header is truncated\n"));
             goto cleanup;
+        }
         Offset = Length - sizeof(*Header);
         Header = (struct VirtualAllocationTable15*)(Data + Offset);
         EntryOffset = 0;
         EntryBytes = Offset;
         if (Header->previousVATICB == PreviousVatLbn ||
-            Header->previousVATICB == CurrentVatLbn)
+            Header->previousVATICB == CurrentVatLbn) {
+            UDFPrint(("UDF VAT recovery: previous VAT chain loops at LBN %lx\n",
+                      PreviousVatLbn));
             goto cleanup;
+        }
     } else {
         struct VirtualAllocationTable20* Header;
-        if (Length < sizeof(*Header))
+        if (Length < sizeof(*Header)) {
+            UDFPrint(("UDF VAT recovery: previous VAT 2.x header is truncated\n"));
             goto cleanup;
+        }
         Header = (struct VirtualAllocationTable20*)Data;
         Offset = Header->lengthHeader;
         if (Offset < sizeof(*Header) || Offset > Length ||
             Header->lengthImpUse > Offset - sizeof(*Header) ||
             Header->previousVatICBLoc == PreviousVatLbn ||
-            Header->previousVatICBLoc == CurrentVatLbn)
+            Header->previousVatICBLoc == CurrentVatLbn) {
+            UDFPrint(("UDF VAT recovery: previous VAT 2.x header/chain is invalid\n"));
             goto cleanup;
+        }
         EntryOffset = Offset;
         EntryBytes = Length - Offset;
     }
-    if (!EntryBytes || (EntryBytes % sizeof(uint32)))
+    if (!EntryBytes || (EntryBytes % sizeof(uint32))) {
+        UDFPrint(("UDF VAT recovery: previous VAT entry data length %lu is invalid\n",
+                  EntryBytes));
         goto cleanup;
+    }
     EntryCount = EntryBytes / sizeof(uint32);
     if (EntryCount > Vcb->FSBM_BitCount ||
         EntryBytes > MaxPreviousVatBytes ||
-        Vcb->Partitions[PartNdx].PartitionLen == 0)
+        Vcb->Partitions[PartNdx].PartitionLen == 0) {
+        UDFPrint(("UDF VAT recovery: previous VAT entry count %lu is out of bounds\n",
+                  EntryCount));
         goto cleanup;
+    }
     MaxEntry = min(Vcb->SessionEndLba - Vcb->Partitions[PartNdx].PartitionRoot,
                    Vcb->Partitions[PartNdx].PartitionLen - 1);
     Vcb->PreviousVat = (uint32*)DbgAllocatePool(NonPagedPool,
                                                 EntryCount * sizeof(uint32));
-    if (!Vcb->PreviousVat)
+    if (!Vcb->PreviousVat) {
+        UDFPrint(("UDF VAT recovery: unable to allocate %lu previous mappings\n",
+                  EntryCount));
         goto cleanup;
+    }
     for (i = 0; i < EntryCount; ++i) {
         uint32 Entry = ((uint32*)(Data + EntryOffset))[i];
         if (Entry != UDF_VAT_FREE_ENTRY && Entry > MaxEntry) {
+            UDFPrint(("UDF VAT recovery: entry %lu maps beyond the partition (%lx)\n",
+                      i, Entry));
             DbgFreePool(Vcb->PreviousVat);
             Vcb->PreviousVat = NULL;
             goto cleanup;
@@ -5543,6 +5586,8 @@ UDFLoadPreviousVAT(
         Vcb->PreviousVat[i] = Entry;
     }
     Vcb->PreviousVatCount = EntryCount;
+    UDFPrint(("UDF VAT recovery: loaded previous VAT at LBN %lx with %lu entries\n",
+              PreviousVatLbn, EntryCount));
 
 cleanup:
     Vcb->Vat = CurrentVat;
@@ -7158,27 +7203,45 @@ UDFTryRecoverTaggedSectorFromPreviousVAT(
                      (CurrentEntry ? CurrentEntry : Location);
     if (CurrentBlock64 > MAXULONG || (uint32)CurrentBlock64 != Block)
         return FALSE;
+    UDFPrint(("UDF VAT recovery: testing LBN %lx at damaged block %lx against prior mapping\n",
+              Location, Block));
     PreviousBlock64 = (uint64)Root +
                       (PreviousEntry ? PreviousEntry : Location);
     if (PreviousBlock64 >= (uint64)Vcb->SessionEndLba + 1 ||
-        PreviousBlock64 > MAXULONG || PreviousBlock64 == Block)
+        PreviousBlock64 > MAXULONG) {
+        UDFPrint(("UDF VAT recovery: prior block %I64u is outside the session\n",
+                  PreviousBlock64));
         return FALSE;
+    }
+    if (PreviousBlock64 == Block) {
+        UDFPrint(("UDF VAT recovery: prior mapping points to failed block %lx\n",
+                  Block));
+        return FALSE;
+    }
     PreviousBlock = (uint32)PreviousBlock64;
 
     PreviousBuffer = (int8*)DbgAllocatePool(NonPagedPool, Vcb->SectorSize);
-    if (!PreviousBuffer)
+    if (!PreviousBuffer) {
+        UDFPrint(("UDF VAT recovery: unable to allocate sector buffer\n"));
         return FALSE;
+    }
     Status = UDFReadSectors(IrpContext, Vcb, FALSE, PreviousBlock, 1, FALSE,
                             PreviousBuffer);
-    if (NT_SUCCESS(Status) &&
-        UDFTaggedSectorValid(Vcb, PreviousBuffer, Location)) {
-        RtlCopyMemory(Buffer, PreviousBuffer, Vcb->SectorSize);
-        Vcb->Vat[Location] = PreviousEntry;
-        if (!(Vcb->VcbState & VCB_STATE_VOLUME_READ_ONLY))
-            UDFSetModified(Vcb);
-        UDFPrint(("UDF: recovered tagged block %x from previous VAT block %x\n",
-                  Block, PreviousBlock));
-        Status = STATUS_SUCCESS;
+    if (NT_SUCCESS(Status)) {
+        if (UDFTaggedSectorValid(Vcb, PreviousBuffer, Location)) {
+            RtlCopyMemory(Buffer, PreviousBuffer, Vcb->SectorSize);
+            Vcb->Vat[Location] = PreviousEntry;
+            if (!(Vcb->VcbState & VCB_STATE_VOLUME_READ_ONLY))
+                UDFSetModified(Vcb);
+            UDFPrint(("UDF VAT recovery: restored block %lx from prior block %lx\n",
+                      Block, PreviousBlock));
+        } else {
+            UDFPrint(("UDF VAT recovery: prior block %lx has an invalid tag for LBN %lx\n",
+                      PreviousBlock, Location));
+        }
+    } else {
+        UDFPrint(("UDF VAT recovery: read of prior block %lx failed (%08lx)\n",
+                  PreviousBlock, (ULONG)Status));
     }
     DbgFreePool(PreviousBuffer);
     return NT_SUCCESS(Status) &&
@@ -7213,7 +7276,8 @@ UDFReadTagged(
         RC = UDFReadSectors(IrpContext, Vcb, FALSE, Block, 1, FALSE, Buf);
         if (!NT_SUCCESS(RC)) {
             UDFPrint(("UDF: Block=%x, Location=%x: read failed\n", Block, Location));
-            if (!UDFTryRecoverTaggedSectorFromPreviousVAT(
+            if (!(Vcb->Vat && Vcb->PreviousVat) ||
+                !UDFTryRecoverTaggedSectorFromPreviousVAT(
                     IrpContext, Vcb, Buf, Block, Location))
                 try_return(RC);
             RC = STATUS_SUCCESS;
@@ -7254,9 +7318,11 @@ UDFReadTagged(
             }
         }
 
-        if (!UDFTaggedSectorValid(Vcb, Buf, Location))
+        if (!UDFTaggedSectorValid(Vcb, Buf, Location) &&
+            Vcb->Vat && Vcb->PreviousVat) {
             UDFTryRecoverTaggedSectorFromPreviousVAT(
                 IrpContext, Vcb, Buf, Block, Location);
+        }
 
         *Ident = PTag->tagIdent;
 
