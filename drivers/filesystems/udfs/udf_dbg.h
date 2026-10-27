@@ -20,43 +20,28 @@
 
 //======================================
 
-//#define ALWAYS_CHECK_WAIT_TIMEOUT
-//#define PRINT_ALWAYS
-
 #ifdef UDF_DBG
-
-//#define CHECK_ALLOC_FRAMES
 
 //#define TRACK_SYS_ALLOCS
 //#define TRACK_SYS_ALLOC_CALLERS
 
-// Use internal deadlock detector
-//#define USE_DLD
-
 #endif //UDF_DBG
 
-#define PROTECTED_MEM_RTL
-
-//#define UDF_SIMULATE_WRITES
-
-//#define USE_PERF_PRINT
-
-#define USE_KD_PRINT
-#define USE_MM_PRINT
-#define USE_AD_PRINT
-#define UDF_DUMP_EXTENT
+//#define USE_KD_PRINT
+//#define USE_MM_PRINT
+//#define USE_AD_PRINT
+//#define UDF_DUMP_EXTENT
 //#define USE_TH_PRINT
 //#define USE_TIME_PRINT
-//#define CHECK_REF_COUNTS
 
 //======================================
 
-#if defined UDF_DBG || defined PRINT_ALWAYS
+#if defined UDF_DBG
 
   ULONG
   _cdecl
   DbgPrint(
-      PCH Format,
+      const char* Format,
       ...
       );
 
@@ -82,12 +67,6 @@
     #define TmPrint(_x_) {UdfTimeStamp++;KdPrint(("TM:%d: ",UdfTimeStamp));KdPrint(_x_);}
   #else
     #define TmPrint KdPrint
-  #endif //USE_MM_PRINT
-
-  #ifdef USE_PERF_PRINT
-    #define PerfPrint(_x_) DbgPrint _x_
-  #else
-    #define PerfPrint(_x_) {NOTHING;}
   #endif //USE_MM_PRINT
 
   #ifdef USE_AD_PRINT
@@ -118,18 +97,6 @@
   #define ExtPrint(_x_)  {NOTHING;}
 
 #endif // defined UDF_DBG || defined PRINT_ALWAYS
-
-NTSTATUS
-DbgWaitForSingleObject_(
-    IN PVOID Object,
-    IN PLARGE_INTEGER Timeout OPTIONAL
-    );
-
-#if defined ALWAYS_CHECK_WAIT_TIMEOUT
-  #define DbgWaitForSingleObject(o, to)   DbgWaitForSingleObject_(o, to)
-#else
-  #define DbgWaitForSingleObject(o, to)   KeWaitForSingleObject(o, Executive, KernelMode, FALSE, to);
-#endif
 
 #ifdef UDF_DBG
 
@@ -179,41 +146,9 @@ VOID DebugFreePool(PVOID addr);
 
 #endif //TRACK_SYS_ALLOCS
 
-
-#ifdef PROTECTED_MEM_RTL
-
-#define DbgMoveMemory(d, s, l)   \
-_SEH2_TRY {                               \
-    RtlMoveMemory(d, s, l);               \
-} _SEH2_EXCEPT (EXCEPTION_EXECUTE_HANDLER) {  \
-    BrutePoint();                         \
-} _SEH2_END;
-
-#define DbgCopyMemory(d, s, l)   \
-_SEH2_TRY {                               \
-    RtlCopyMemory(d, s, l);               \
-} _SEH2_EXCEPT (EXCEPTION_EXECUTE_HANDLER) {  \
-    BrutePoint();                         \
-} _SEH2_END;
-
-__inline
-ULONG
-DbgCompareMemory(PVOID d, PVOID s, ULONG l) {
-    _SEH2_TRY {
-        return RtlCompareMemory(d, s, l);
-    } _SEH2_EXCEPT (EXCEPTION_EXECUTE_HANDLER) {
-        BrutePoint();
-    } _SEH2_END;
-    return -1;
-}
-
-#else //PROTECTED_MEM_RTL
-
 #define DbgMoveMemory(d, s, l)     RtlMoveMemory(d, s, l)
 #define DbgCopyMemory(d, s, l)     RtlCopyMemory(d, s, l)
 #define DbgCompareMemory(d, s, l)  RtlCompareMemory(d, s, l)
-
-#endif //PROTECTED_MEM_RTL
 
 //#define KdPrint(_x_)
 
@@ -234,26 +169,6 @@ DbgCompareMemory(PVOID d, PVOID s, ULONG l) {
 #define ValidateFileInfo(fi)  {}
 #endif
 
-#if defined (_X86_) && defined (_MSC_VER)
-
-__inline VOID UDFTouch(IN PVOID addr)
-{
-    __asm {
-        mov  eax,addr
-        mov  al,[byte ptr eax]
-    }
-}
-
-#else   // NO X86 optimization , use generic C/C++
-
-__inline VOID UDFTouch(IN PVOID addr)
-{
-    UCHAR a = ((PUCHAR)addr)[0];
-    a = a;
-}
-
-#endif // _X86_
-
 #else // UDF_DBG
 
 #define DbgAllocatePool(x,y) ExAllocatePoolWithTag(x,y,'Fnwd')
@@ -270,14 +185,12 @@ __inline VOID UDFTouch(IN PVOID addr)
 #define BrutePoint() {}
 #define ValidateFileInfo(fi)  {}
 
-#define UDFTouch(addr) {}
-
 #endif // UDF_DBG
 
 #if defined UDF_DBG || defined PRINT_ALWAYS
 
 #define KdDump(a,b)                         \
-if((a)!=NULL) {                             \
+if ((a)!=NULL) {                            \
     ULONG i;                                \
     for(i=0; i<(b); i++) {                  \
         ULONG c;                            \

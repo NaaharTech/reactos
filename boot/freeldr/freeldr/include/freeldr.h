@@ -96,6 +96,7 @@
 #include <fs/fat.h>
 #include <fs/ntfs.h>
 #include <fs/iso.h>
+#include <fs/udf.h>
 #include <fs/pxe.h>
 #include <fs/btrfs.h>
 

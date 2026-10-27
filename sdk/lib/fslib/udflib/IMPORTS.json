@@ -1,0 +1,66 @@
+{
+  "upstream": "newfs-udf-linux 1a33d3793988c6ead4c97d8eeb64c5c568d66a86 plus already validated local metadata mirror changes",
+  "files": [
+    {
+      "source": "src/newfs-udf-linux/udf_create.c",
+      "file": "udf_create.c",
+      "sha256": "2b8a5fefbba7d9b7b7fc26f4cd24d9259bc02a04e092d0976938df7dbbea34cd"
+    },
+    {
+      "source": "src/newfs-udf-linux/udf_write.c",
+      "file": "udf_write.c",
+      "sha256": "385a1de706f539f2e90a98d6f409d33c76687135d0adced01e3eab9c85c2247d"
+    },
+    {
+      "source": "src/newfs-udf-linux/udf_osta.c",
+      "file": "udf_osta.c",
+      "sha256": "cff00cf4ddb7bb082807eefa1653987e1be8332de205de7980f2dba181d958af"
+    },
+    {
+      "source": "src/newfs-udf-linux/udf_create.h",
+      "file": "udf_create.h",
+      "sha256": "68f4a64a676f1fb26b4d956d2a6f0a77a90d1596e51e26ef350a5a121d824967"
+    },
+    {
+      "source": "src/newfs-udf-linux/udf_write.h",
+      "file": "udf_write.h",
+      "sha256": "cd8369209aa29b7b1951989db38ab7f4331ed2a98b9f6b97099cb0b244eb6169"
+    },
+    {
+      "source": "src/newfs-udf-linux/udf_osta.h",
+      "file": "udf_osta.h",
+      "sha256": "8315ae3f27d29874e30fd414da5bcc54ca356e85828021def3cdf22b9a085f1e"
+    },
+    {
+      "source": "src/newfs-udf-linux/udf_bswap.h",
+      "file": "udf_bswap.h",
+      "sha256": "151eaebe46bada89469c5c376c38fa938cd64c32ad2b0c4086d5d48f06020ac1"
+    },
+    {
+      "source": "src/newfs-udf-linux/ecma167-udf.h",
+      "file": "ecma167-udf.h",
+      "sha256": "c3f72c1e26c9aee7e4ee79662f4b6af59a796fc94185c9d3befa6e7c38d2c3f3"
+    },
+    {
+      "source": "src/newfs-udf-linux/unicode.h",
+      "file": "unicode.h",
+      "sha256": "611fbd24ab90408959a745c811bcaefcaa92b3798852ad5e70647544f151e79d"
+    },
+    {
+      "source": "src/newfs-udf-linux/cdio.h",
+      "file": "cdio.h",
+      "sha256": "348aedd096bacd24ecd2417a0f35628d4a2e52df68141bb063d9a2ef09f0a502"
+    },
+    {
+      "source": "src/newfs-udf-linux/cdio_mmc_structs.h",
+      "file": "cdio_mmc_structs.h",
+      "sha256": "0250a53d64d6e739a898c3218ce66a1abe6af5126f64b74e728e37a54be01e51"
+    },
+    {
+      "source": "src/newfs-udf-linux/newfs_udf.h",
+      "file": "newfs_udf.h",
+      "sha256": "619aa0332fcbaab9b07497a87124cdc07d93cbfae2955115640823626e44d065"
+    }
+  ],
+  "adaptation": "Only system include adaptation in core C files; native handles, heap, UTC and error unwinding are in compat.h/udflib.c."
+}

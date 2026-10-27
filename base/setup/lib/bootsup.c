@@ -1210,6 +1210,102 @@ InstallFatBootcodeToPartition(
 
 static
 NTSTATUS
+InstallUdfBootcodeToPartition(
+    _In_ PCUNICODE_STRING SystemRootPath,
+    _In_ PCUNICODE_STRING SourceRootPath,
+    _In_ PCUNICODE_STRING DestinationArcPath)
+{
+    NTSTATUS Status;
+    BOOLEAN DoesFreeLdrExist;
+    WCHAR SrcPath[MAX_PATH];
+    WCHAR DstPath[MAX_PATH];
+
+    /* UDF partition */
+    DPRINT("System path: '%wZ'\n", SystemRootPath);
+
+    /* Install the bootloader */
+    Status = InstallBootloaderFiles(SystemRootPath, SourceRootPath);
+    if (!NT_SUCCESS(Status))
+    {
+        DPRINT1("InstallBootloaderFiles() failed (Status %lx)\n", Status);
+        return Status;
+    }
+
+    /* Prepare for possibly updating 'freeldr.ini' */
+    DoesFreeLdrExist = DoesFileExist_2(SystemRootPath->Buffer, L"freeldr.ini");
+    if (DoesFreeLdrExist)
+    {
+        /* Update existing 'freeldr.ini' */
+        DPRINT1("Update existing 'freeldr.ini'\n");
+        Status = UpdateFreeLoaderIni(SystemRootPath->Buffer, DestinationArcPath->Buffer);
+        if (!NT_SUCCESS(Status))
+        {
+            DPRINT1("UpdateFreeLoaderIni() failed (Status %lx)\n", Status);
+            return Status;
+        }
+    }
+
+    /* Create or update 'freeldr.ini' */
+    if (DoesFreeLdrExist == FALSE)
+    {
+        /* Create new 'freeldr.ini' */
+        DPRINT1("Create new 'freeldr.ini'\n");
+
+        if (IsThereAValidBootSector(SystemRootPath->Buffer))
+        {
+            PCWSTR BootSector = L"BOOTSECT.OLD";
+
+            Status = CreateFreeLoaderIniForReactOSAndBootSector(
+                         SystemRootPath->Buffer, DestinationArcPath->Buffer,
+                         L"Previous", L"\"Previous boot sector\"",
+                         SystemRootPath->Buffer, BootSector);
+            if (!NT_SUCCESS(Status))
+            {
+                DPRINT1("CreateFreeLoaderIniForReactOSAndBootSector() failed (Status %lx)\n", Status);
+                return Status;
+            }
+
+            /* Save current bootsector */
+            CombinePaths(DstPath, ARRAYSIZE(DstPath), 2, SystemRootPath->Buffer, BootSector);
+
+            DPRINT1("Save bootsector: %S ==> %S\n", SystemRootPath->Buffer, DstPath);
+            Status = SaveBootSector(SystemRootPath->Buffer, DstPath, SECTORSIZE);
+            if (!NT_SUCCESS(Status))
+            {
+                DPRINT1("SaveBootSector() failed (Status %lx)\n", Status);
+                return Status;
+            }
+        }
+        else
+        {
+            Status = CreateFreeLoaderIniForReactOS(SystemRootPath->Buffer, DestinationArcPath->Buffer);
+            if (!NT_SUCCESS(Status))
+            {
+                DPRINT1("CreateFreeLoaderIniForReactOS() failed (Status %lx)\n", Status);
+                return Status;
+            }
+        }
+
+    }
+
+    /* Install new bootsector on the disk */
+    /* Install UDF bootcode */
+    CombinePaths(SrcPath, ARRAYSIZE(SrcPath), 2, SourceRootPath->Buffer, L"\\loader\\udf.bin");
+
+    DPRINT1("Install UDF bootcode: %S ==> %S\n", SrcPath, SystemRootPath->Buffer);
+    /* The UDF VBR needs to open FREELDR.SYS before locking the volume. */
+    Status = InstallUdfBootCodeToDisk(SrcPath, SystemRootPath->Buffer);
+    if (!NT_SUCCESS(Status))
+    {
+        DPRINT1("InstallBootCodeToDisk(UDF) failed (Status %lx)\n", Status);
+        return Status;
+    }
+
+    return STATUS_SUCCESS;
+}
+
+static
+NTSTATUS
 InstallBtrfsBootcodeToPartition(
     _In_ PCUNICODE_STRING SystemRootPath,
     _In_ PCUNICODE_STRING SourceRootPath,
@@ -1425,6 +1521,10 @@ InstallVBRToPartition(
         return InstallNtfsBootcodeToPartition(SystemRootPath,
                                               SourceRootPath,
                                               DestinationArcPath);
+    }
+    else if (_wcsicmp(FileSystemName, L"UDF") == 0)
+    {
+        return InstallUdfBootcodeToPartition(SystemRootPath, SourceRootPath, DestinationArcPath);
     }
     else if (_wcsicmp(FileSystemName, L"BTRFS") == 0)
     {

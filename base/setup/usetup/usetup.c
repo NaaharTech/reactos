@@ -2431,6 +2431,11 @@ Restart:
         /* In unattended mode, preselect the file system */
         switch (USetupData.FsType)
         {
+            /* 2 selects UDF 2.50. */
+            case 2:
+                DefaultFs = L"UDF";
+                break;
+
             /* 1 is for BtrFS */
             case 1:
                 DefaultFs = L"BTRFS";
@@ -2767,37 +2772,11 @@ FsVolCallback(
 
         if (ChkInfo->ErrorStatus == STATUS_NOT_SUPPORTED)
         {
-            RtlStringCbPrintfA(Buffer,
-                               sizeof(Buffer),
-                               "Setup is currently unable to check a partition formatted in %S.\n"
-                               "\n"
-                               "  \x07  Press ENTER to continue Setup.\n"
-                               "  \x07  Press F3 to quit Setup.",
-                               ChkInfo->Volume->Info.FileSystem);
-
-            PopupError(Buffer,
-                       MUIGetString(STRING_QUITCONTINUE),
-                       NULL, POPUP_WAIT_NONE);
-
-            while (TRUE)
-            {
-                CONSOLE_ConInKey(Ir);
-
-                if (Ir->Event.KeyEvent.uChar.AsciiChar == 0x00 &&
-                    Ir->Event.KeyEvent.wVirtualKeyCode == VK_F3)  /* F3 */
-                {
-                    if (ConfirmQuit(Ir))
-                    {
-                        FsVolContext->NextPageOnAbort = QUIT_PAGE;
-                        return FSVOL_ABORT;
-                    }
-                    return FSVOL_SKIP;
-                }
-                else if (Ir->Event.KeyEvent.uChar.AsciiChar == VK_RETURN) /* ENTER */
-                {
-                    return FSVOL_SKIP;
-                }
-            }
+            DPRINT1("Filesystem check unavailable for %S; skipping without a health verdict\n",
+                    ChkInfo->Volume->Info.FileSystem);
+            CONSOLE_SetStatusText("   %S check skipped: checker unavailable.",
+                                  ChkInfo->Volume->Info.FileSystem);
+            return FSVOL_SKIP;
         }
         else if (!NT_SUCCESS(ChkInfo->ErrorStatus))
         {

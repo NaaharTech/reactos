@@ -23,11 +23,7 @@
 #include "Include/platform.h"
 #include "ecma_167.h"
 
-#ifdef UDF_LIMIT_DIR_SIZE
-typedef uint8 uint_di;
-#else //UDF_LIMIT_DIR_SIZE
 typedef uint32 uint_di;
-#endif //UDF_LIMIT_DIR_SIZE
 
 typedef struct _UDFTrackMap {
     uint32 FirstLba;
@@ -40,12 +36,6 @@ typedef struct _UDFTrackMap {
     uint8  NWA_V;
 
     uint8  Flags;
-#define     TrackMap_AllowCopyBit_variated     0x01
-#define     TrackMap_CopyBit_variated          0x02
-#define     TrackMap_Try_variation             0x04
-#define     TrackMap_Use_variation             0x08
-#define     TrackMap_FixFPAddressing           0x10
-#define     TrackMap_FixMRWAddressing          0x20
 
     // are used only if FixFPAddressing is enabled
     uint32 TrackFPOffset;
@@ -76,6 +66,8 @@ typedef struct _EXTENT_INFO {
 #define EXTENT_FLAG_ALLOC_STD             0x00
 #define EXTENT_FLAG_ALLOC_SEQUENTIAL      0x01
 #define EXTENT_FLAG_ALLOC_MASK            0x03
+#define EXTENT_FLAG_IGNORE_HINT           0x04
+#define EXTENT_FLAG_FE_LOCALITY           0x08
 #define EXTENT_FLAG_PREALLOCATED          0x80
 #define EXTENT_FLAG_CUT_PREALLOCATED      0x40
 #define EXTENT_FLAG_VERIFY                0x20
@@ -137,8 +129,6 @@ typedef struct _DIR_INDEX_HDR {
     uint_di     FrameCount;
     uint_di     LastFrameCount;  // in items
     uint_di     DelCount;
-    EXTENT_INFO FECharge;        // file entry charge
-    EXTENT_INFO FEChargeSDir;    // file entry charge for streams
     ULONG       DIFlags;
 //    struct _DIR_INDEX_ITEM* FrameList[0];
 } DIR_INDEX_HDR, *PDIR_INDEX_HDR;
@@ -245,6 +235,23 @@ typedef struct _DIR_INDEX_ITEM {
     case of equal Lba of deleted & created FileEntries.
 
 */
+struct FCB;
+struct _UDF_DATALOC_INFO;
+
+/* On-disk FREE bits prepared before a final-link FID tombstone.  RAM keeps
+ * these blocks allocated until the last FCB/Dloc reference disappears. */
+typedef struct _UDF_DELETE_PREFREE_RANGE {
+    uint32 FirstBit;
+    uint32 BitCount;
+    uint8 Metadata;
+} UDF_DELETE_PREFREE_RANGE, *PUDF_DELETE_PREFREE_RANGE;
+
+typedef struct _UDF_DELETE_PREFREE {
+    struct _UDF_DELETE_PREFREE* Next;
+    struct _UDF_DATALOC_INFO* Dloc;
+    uint32 RangeCount;
+    UDF_DELETE_PREFREE_RANGE Ranges[1];
+} UDF_DELETE_PREFREE, *PUDF_DELETE_PREFREE;
 
 typedef struct _UDF_DATALOC_INFO {
 
@@ -252,7 +259,7 @@ typedef struct _UDF_DATALOC_INFO {
     NT-specific field. As soon as NT supports HardLink concept it
     has own structure describing the file's actual data.
 */
-    struct _UDFNTRequiredFCB* CommonFcb; // pointer to corresponding NtReqFcb
+	struct FCB* CommonFcb; // pointer to corresponding FCB
 /**
     Describes on-disk location of  user  data.  If  the  file  is
     recorded using IN_ICB method this  structure  points  to  the
@@ -297,6 +304,7 @@ typedef struct _UDF_DATALOC_INFO {
         Presence of this bit means that given FileEntry represents a Stream Dir.
 */
     uint32      FE_Flags;              // FileEntry flags
+    PUDF_DELETE_PREFREE DeletePrefree; // held until deferred allocation release
 /**
     Counter of currently opened directory tree instances  (files)
     pointing to given data. It is introduced because UDF supports
@@ -310,6 +318,10 @@ typedef struct _UDF_DATALOC_INFO {
     should be NULL.
 */
     PDIR_INDEX_HDR DirIndex;           // for Directory objects only
+    struct _UDF_DIR_APPEND_CACHE* DirectoryAppend;
+    int64 DirectoryCommittedLength;
+    BOOLEAN DirectoryCommitKnown;
+    struct _UDF_DIRECTORY_FE_CHECKPOINT* DirectoryFECheckpoint;
     struct _UDF_FILE_INFO* LinkedFileInfo;
 /**
     Points  to  the  FileInfo  describing   the   StreamDirectory
@@ -317,7 +329,9 @@ typedef struct _UDF_DATALOC_INFO {
     StreamDirectory this field must bu NULL.
 */
     struct _UDF_FILE_INFO* SDirInfo;
-} UDF_DATALOC_INFO, *PUDF_DATALOC_INFO;
+} UDF_DATALOC_INFO;
+
+typedef UDF_DATALOC_INFO* PUDF_DATALOC_INFO;
 
 /// Was modified & should be flushed
 #define UDF_FE_FLAG_FE_MODIFIED  (0x01)
@@ -333,6 +347,12 @@ typedef struct _UDF_DATALOC_INFO {
 #define UDF_FE_FLAG_IS_DEL_SDIR  (0x20)
 /// Dloc is being initialized, don't touch it now
 #define UDF_FE_FLAG_UNDER_INIT   (0x40)
+// Block freeing deferred to teardown (cleanup removed FID but kept blocks allocated)
+#define UDF_FE_FLAG_FREE_DEFERRED (0x80)
+/* New cached ordinary file: no valid FID has been accepted for publication. */
+#define UDF_FE_FLAG_NEW_UNPUBLISHED (0x100)
+/* Cached new-file payload must drain before live FE/FID publication. */
+#define UDF_FE_FLAG_CACHED_DATA_PENDING (0x200)
 
 
 #define UDF_FILE_INFO_MT PagedPool
@@ -359,7 +379,7 @@ typedef struct _UDF_FILE_INFO {
     internal use this field may be NULL.  Each  Fcb  has  a  back
     pointer to FileInfo, so both structures are accessable.
 */
-    struct _UDFFileControlBlock* Fcb;  // pointer to corresponding Fcb (null if absent)
+    struct FCB* Fcb;  // pointer to corresponding Fcb (null if absent)
 /**
     Points to the structure describing  actual  data  location  &
     file attributes. See #UDF_DATALOC_INFO for more information.
@@ -447,6 +467,18 @@ typedef struct _UDF_DIR_SCAN_CONTEXT {
     uint_di i;
 } UDF_DIR_SCAN_CONTEXT, *PUDF_DIR_SCAN_CONTEXT;
 
+/**
+    Directory enumeration context for find/open operations.
+    Separates directory search from file open operations.
+*/
+typedef struct _DIR_ENUM_CONTEXT {
+    PUDF_FILE_INFO ParentInfo;        // Parent directory FileInfo
+    PDIR_INDEX_HDR DirIndex;          // Directory index header
+    PDIR_INDEX_ITEM DirNdx;           // Found directory entry (or NULL)
+    uint_di Index;                    // Index of found entry
+    BOOLEAN ShortNameMatch;           // TRUE if matched by 8.3 short name
+} DIR_ENUM_CONTEXT, *PDIR_ENUM_CONTEXT;
+
 typedef EXT_RELOCATION_ENTRY  EXT_RELOC_MAP;
 typedef PEXT_RELOCATION_ENTRY PEXT_RELOC_MAP;
 
@@ -456,49 +488,10 @@ typedef struct _UDF_ALLOCATION_CACHE_ITEM {
     EXTENT_INFO Ext;
 } UDF_ALLOCATION_CACHE_ITEM, *PUDF_ALLOCATION_CACHE_ITEM;
 
-/*
-#define MEM_DIR_HDR_TAG     (ULONG)"DirHdr"
-#define MEM_DIR_NDX_TAG     (ULONG)"DirNdx"
-#define MEM_DLOC_NDX_TAG    (ULONG)"DlocNdx"
-#define MEM_DLOC_INF_TAG    (ULONG)"DlocInf"
-#define MEM_FNAME_TAG       (ULONG)"FName"
-#define MEM_FNAME16_TAG     (ULONG)"FName16"
-#define MEM_FNAMECPY_TAG    (ULONG)"FNameC"
-#define MEM_FE_TAG          (ULONG)"FE"
-#define MEM_XFE_TAG         (ULONG)"xFE"
-#define MEM_FID_TAG         (ULONG)"FID"
-#define MEM_FINF_TAG        (ULONG)"FInf"
-#define MEM_VATFINF_TAG     (ULONG)"FInfVat"
-#define MEM_SDFINF_TAG      (ULONG)"SDirFInf"
-#define MEM_EXTMAP_TAG      (ULONG)"ExtMap"
-#define MEM_ALLOCDESC_TAG   (ULONG)"AllocDesc"
-#define MEM_SHAD_TAG        (ULONG)"SHAD"
-#define MEM_LNGAD_TAG       (ULONG)"LNGAD"
-*/
-
-#define MEM_DIR_HDR_TAG     'DirH'
-#define MEM_DIR_NDX_TAG     'DirN'
-#define MEM_DLOC_NDX_TAG    'Dloc'
-#define MEM_DLOC_INF_TAG    'Dloc'
-#define MEM_FNAME_TAG       'FNam'
-#define MEM_FNAME16_TAG     'FNam'
-#define MEM_FNAMECPY_TAG    'FNam'
-#define MEM_FE_TAG          'FE'
-#define MEM_XFE_TAG         'xFE"'
-#define MEM_FID_TAG         'FID'
-#define MEM_FINF_TAG        'FInf'
-#define MEM_VATFINF_TAG     'FInf'
-#define MEM_SDFINF_TAG      'SDir'
-#define MEM_EXTMAP_TAG      'ExtM'
-#define MEM_ALLOCDESC_TAG   'Allo'
-#define MEM_SHAD_TAG        'SHAD'
-#define MEM_LNGAD_TAG       'LNGA'
-#define MEM_ALLOC_CACHE_TAG 'hcCA'
+// Pool tags are defined in nodetype.h
 
 #define UDF_DEFAULT_LAST_LBA_CD     276159
 #define UDF_DEFAULT_LAST_LBA_DVD    0x23053f
-#define UDF_DEFAULT_FE_CHARGE       128
-#define UDF_DEFAULT_FE_CHARGE_SDIR  1
 #define UDF_WRITE_MAX_RETRY         4
 #define UDF_READ_MAX_RETRY          4
 #define UDF_READY_MAX_RETRY         5
@@ -508,10 +501,8 @@ typedef struct _UDF_ALLOCATION_CACHE_ITEM {
 #define UDF_INVALID_LINK_COUNT      0xffff
 #define UDF_MAX_LINK_COUNT          0x7fff
 
-#define UDF_MAX_EXTENT_LENGTH       (UDF_EXTENT_LENGTH_MASK & ~(2048-1))
-
 #define UDF_MAX_READ_REVISION       0x0260
-#define UDF_MAX_WRITE_REVISION      0x0201
+#define UDF_MAX_WRITE_REVISION      0x0250
 
 #define UDF_MAX_LVID_CHAIN_LENGTH   1024
 #define UDF_LVID_TTL                1024
@@ -520,7 +511,7 @@ typedef struct _UDF_ALLOCATION_CACHE_ITEM {
 
 #define UDF_FLUSH_FLAGS_LITE        (0x80000000)
 
-#if defined UDF_DBG || defined _CONSOLE
+#if defined UDF_DBG
 //#define UDF_CHECK_DISK_ALLOCATION
 
 //#define UDF_TRACK_ONDISK_ALLOCATION
@@ -541,16 +532,5 @@ typedef struct _UDF_ALLOCATION_CACHE_ITEM {
 #endif //UDF_TRACK_ALLOC_FREE_EXTENT
 
 #endif //UDF_DBG
-
-typedef struct _UDF_VERIFY_CTX {
-    uint8*     StoredBitMap;
-    ULONG      ItemCount;
-    LIST_ENTRY vrfList;
-    ERESOURCE  VerifyLock;
-    KEVENT     vrfEvent;
-    uint32     WaiterCount;
-    uint32     QueuedCount;
-    BOOLEAN    VInited;
-} UDF_VERIFY_CTX, *PUDF_VERIFY_CTX;
 
 #endif /* _UDF_REL_H_ */

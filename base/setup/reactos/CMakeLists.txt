@@ -18,3 +18,8 @@ target_link_libraries(reactos zlib_solo) ## We use USETUP's cabinet implementati
 add_delay_importlibs(reactos setuplib)
 add_importlibs(reactos advapi32 gdi32 user32 comctl32 shlwapi setupapi msvcrt kernel32 ntdll)
 add_cd_file(TARGET reactos DESTINATION reactos NO_CAB FOR bootcd)
+
+# Local host GCC emits this preexisting warning in treelist.c.
+if(UDFS_R35_LAB)
+    target_compile_options(reactos PRIVATE -Wno-unused-but-set-variable)
+endif()

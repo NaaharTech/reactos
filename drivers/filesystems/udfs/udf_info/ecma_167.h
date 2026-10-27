@@ -476,6 +476,10 @@ typedef struct {
 #define UDF_FILE_TYPE_SYMLINK   0x0cU
 #define UDF_FILE_TYPE_STREAMDIR 0x0dU /* ECMA 167 4/13 */
 
+#define UDF_FILE_TYPE_METADATA        0xfaU
+#define UDF_FILE_TYPE_METADATA_MIRROR 0xfbU
+#define UDF_FILE_TYPE_METADATA_BITMAP 0xfcU
+
 /* ICB Flags (ECMA 167 4/14.6.8) */
 #define ICB_FLAG_ALLOC_MASK     0x0007U
 #define ICB_FLAG_SORTED         0x0008U
@@ -488,6 +492,7 @@ typedef struct {
 #define ICB_FLAG_SYSTEM         0x0400U
 #define ICB_FLAG_TRANSFORMED    0x0800U
 #define ICB_FLAG_MULTIVERSIONS  0x1000U
+#define ICB_FLAG_STREAM         0x2000U
 
 /* ICB Flags Allocation type(ECMA 167 4/14.6.8) */
 #define ICB_FLAG_AD_SHORT    0

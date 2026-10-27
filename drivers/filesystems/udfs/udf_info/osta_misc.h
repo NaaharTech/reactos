@@ -17,7 +17,7 @@
 #define UDF_CHAR_SET_TYPE   0
 #define UDF_CHAR_SET_INFO   "OSTA Compressed Unicode"
 
-#define UDF_ID_DEVELOPER    ("*WINNT " VER_STR_PRODUCT_NAME " UDF")
+#define UDF_ID_DEVELOPER    "*ReactOS UDFS"
 
 #define UDF_ID_DEVELOPER_ADAPTEC  "*Adaptec DirectCD"
 

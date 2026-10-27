@@ -109,6 +109,9 @@ InstallNtfsBootCode(
     IN HANDLE RootPartition);
 
 
+NTSTATUS InstallUdfBootCode(PCWSTR SrcPath, HANDLE RootPartition);
+NTSTATUS InstallUdfBootCodeToDisk(PCWSTR SrcPath, PCWSTR RootPath);
+
 //
 // Formatting routines
 //
