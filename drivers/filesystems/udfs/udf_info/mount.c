@@ -2013,10 +2013,11 @@ UDFLoadLogicalVol(
                     Vcb->Partitions[i].PartitionType = UDF_VIRTUAL_MAP15;
                 } else
                 if ( (udfis->currentRev == 0x0200) ||
-                    (udfis->currentRev == 0x0201) /*||
+                    (udfis->currentRev == 0x0201) ||
+                    (udfis->currentRev == 0x0250) /*||
                     (Vcb->CurrentUDFRev == 0x0200) ||
                     (Vcb->CurrentUDFRev == 0x0201)*/ ) {
-                    UDFPrint(("Found VAT 2.00\n"));
+                    UDFPrint(("Found VAT 2.x\n"));
                     Vcb->Partitions[i].PartitionType = UDF_VIRTUAL_MAP20;
                 }
                 status = STATUS_SUCCESS;
@@ -3646,4 +3647,3 @@ try_exit:   NOTHING;
     return(RC);
 
 } // end UDFGetDiskInfoAndVerify()
-
