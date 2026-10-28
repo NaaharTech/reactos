@@ -615,6 +615,14 @@ UDFFlushVolume(
             if (!NT_SUCCESS(Status))
                 return Status;
 
+            /* UDFUmount__ only issues its device barriers when the LVID or
+             * bitmap changed. FE/FID/data sectors written above can still sit
+             * in the lower device's volatile cache at shutdown/dismount, so
+             * always finish a full flush with a barrier. */
+            Status = UDFBarrierFlushDevice(Vcb->TargetDeviceObject);
+            if (!NT_SUCCESS(Status))
+                return Status;
+
             if (!CloseDeferred) {
                 UDFPreClrModified(Vcb);
                 UDFClrModified(Vcb);
