@@ -5439,11 +5439,15 @@ UDFLoadVAT(
     NTSTATUS status;
     PUDF_FILE_INFO VatFileInfo;
     uint32 len, i=0, j, to_read;
-    uint32 Offset, hdrOffset;
+    uint32 Offset;
     uint32 root;
     uint16 PartNum;
-//    uint32 VatFirstLba = 0;
-    int8* VatOldData;
+    int8* VatOldData = NULL;
+    uint32* Vat = NULL;
+    uint32 VatCount;
+    uint32 MaxEntry;
+    uint64 VatAllocationBytes;
+    LONGLONG VatFileSize;
     uint32 VatLba[6] = { Vcb->SessionEndLba,
                         Vcb->SessionEndLba - 2,
                         Vcb->SessionEndLba - 3,
@@ -5452,8 +5456,12 @@ UDFLoadVAT(
                         0 };
 
     if (Vcb->Vat) return STATUS_SUCCESS;
-    if (!Vcb->CDR_Mode) return STATUS_SUCCESS;
-    // disable VAT for now. We'll reenable it if VAT is successfuly loaded
+    if (!Vcb->Partitions || PartNdx >= Vcb->PartitionMaps)
+        return STATUS_INVALID_PARAMETER;
+    if (!Vcb->CDR_Mode &&
+        Vcb->Partitions[PartNdx].PartitionType != UDF_VIRTUAL_MAP25)
+        return STATUS_SUCCESS;
+    // Disable VAT translation while opening and reading the VAT file itself.
     Vcb->CDR_Mode = FALSE;
     PartNum = Vcb->Partitions[PartNdx].PartitionNum;
     root = Vcb->Partitions[PartNdx].PartitionRoot;
@@ -5483,148 +5491,174 @@ retry_load_vat:
         Vcb->VatFileInfo = NULL;
         return status;
     }
-    len = (uint32)UDFGetFileSize(VatFileInfo);
-    if (Vcb->Partitions[PartNdx].PartitionType == UDF_VIRTUAL_MAP15) {
-        // load Vat 1.50 header
-        UDFPrint(("Load VAT 1.50\n"));
-        struct VirtualAllocationTable15* Buf;
-        if (((icbtag*)(VatFileInfo->Dloc->FileEntry+1))->fileType != UDF_FILE_TYPE_VAT15) {
-            status = STATUS_FILE_CORRUPT_ERROR;
-            goto err_vat_15;
-        }
-        Buf = (struct VirtualAllocationTable15*)MyAllocatePool__(NonPagedPool, sizeof(struct VirtualAllocationTable15));
-        if (!Buf) {
-err_vat_15_2:
-            status = STATUS_INSUFFICIENT_RESOURCES;
-err_vat_15:
-            UDFCloseFile__(IrpContext, Vcb, VatFileInfo);
-            UDFCleanUpFile__(Vcb, VatFileInfo);
-            MyFreePool__(VatFileInfo);
-            Vcb->VatFileInfo = NULL;
-            return status;
-        }
-        Offset = 0;
-        to_read =
-        hdrOffset = len - sizeof(struct VirtualAllocationTable15);
-        MyFreePool__(Buf);
-
-        Vcb->minUDFReadRev  =
-        Vcb->minUDFWriteRev =
-        Vcb->maxUDFWriteRev = 0x0150;
-
-        Vcb->numFiles =
-        Vcb->numDirs  = -1;
-
-    } else
-    if (Vcb->Partitions[PartNdx].PartitionType == UDF_VIRTUAL_MAP20) {
-        // load Vat 2.00 header
-        UDFPrint(("Load VAT 2.00\n"));
-        struct VirtualAllocationTable20* Buf;
-        if (((icbtag*)(VatFileInfo->Dloc->FileEntry+1))->fileType != UDF_FILE_TYPE_VAT20) {
-            status = STATUS_FILE_CORRUPT_ERROR;
-            goto err_vat_15;
-        }
-        Buf = (struct VirtualAllocationTable20*)MyAllocatePool__(NonPagedPool, sizeof(struct VirtualAllocationTable20));
-        if (!Buf) goto err_vat_15_2;
-        Offset = Buf->lengthHeader;
-        to_read = len - Offset;
-        hdrOffset = 0;
-        MyFreePool__(Buf);
-
-        //TODO: Read VirtualAllocationTable20
-        //TODO: fix Use-After-Free
-
-        Vcb->minUDFReadRev  = Buf->minReadRevision;
-        Vcb->minUDFWriteRev = Buf->minWriteRevision;
-        Vcb->maxUDFWriteRev = Buf->maxWriteRevision;
-
-        Vcb->numFiles = Buf->numFIDSFiles;
-        Vcb->numDirs  = Buf->numFIDSDirectories;
-
-    } else {
-        // unknown (or wrong) VAT format
-        UDFPrint(("unknown (or wrong) VAT format\n"));
+    if (!VatFileInfo->Dloc || !VatFileInfo->Dloc->FileEntry) {
         status = STATUS_FILE_CORRUPT_ERROR;
-        goto err_vat_15;
+        goto err_vat;
     }
-    // read VAT & remember old version
-    Vcb->Vat = (uint32*)DbgAllocatePool(NonPagedPool, Vcb->FSBM_BitCount*sizeof(uint32) );
-    if (!Vcb->Vat) {
-        goto err_vat_15_2;
+    VatFileSize = UDFGetFileSize(VatFileInfo);
+    if (VatFileSize <= 0 || VatFileSize > MAXULONG ||
+        !Vcb->FSBM_BitCount ||
+        Vcb->FSBM_BitCount > MAXULONG / sizeof(uint32) ||
+        Vcb->NWA < root ||
+        Vcb->NWA - root >= Vcb->FSBM_BitCount ||
+        root > MAXULONG - Vcb->FSBM_BitCount) {
+        status = STATUS_FILE_CORRUPT_ERROR;
+        goto err_vat;
     }
-    // store base version of VAT in memory
+    len = (uint32)VatFileSize;
     VatOldData = (int8*)DbgAllocatePool(PagedPool, len);
     if (!VatOldData) {
-        DbgFreePool(Vcb->Vat);
-        Vcb->Vat = NULL;
-        goto err_vat_15_2;
+        status = STATUS_INSUFFICIENT_RESOURCES;
+        goto err_vat;
     }
-    status = UDFReadFile__(IrpContext, Vcb, VatFileInfo, 0, len, FALSE, VatOldData);
-    if (!NT_SUCCESS(status)) {
-        UDFCloseFile__(IrpContext, Vcb, VatFileInfo);
+    status = UDFReadFile__(IrpContext, Vcb, VatFileInfo, 0, len, FALSE,
+                           VatOldData);
+    if (!NT_SUCCESS(status))
+        goto err_vat;
+    if (((icbtag*)(VatFileInfo->Dloc->FileEntry + 1))->fileType ==
+        UDF_FILE_TYPE_VAT15 &&
+        Vcb->Partitions[PartNdx].PartitionType == UDF_VIRTUAL_MAP15) {
+        if (len < sizeof(struct VirtualAllocationTable15)) {
+            status = STATUS_FILE_CORRUPT_ERROR;
+            goto err_vat;
+        }
+        Offset = 0;
+        to_read = len - sizeof(struct VirtualAllocationTable15);
+        Vcb->minUDFReadRev =
+        Vcb->minUDFWriteRev =
+        Vcb->maxUDFWriteRev = 0x0150;
+        Vcb->numFiles =
+        Vcb->numDirs = -1;
+    } else if (((icbtag*)(VatFileInfo->Dloc->FileEntry + 1))->fileType ==
+                   UDF_FILE_TYPE_VAT20 &&
+               (Vcb->Partitions[PartNdx].PartitionType ==
+                    UDF_VIRTUAL_MAP20 ||
+                Vcb->Partitions[PartNdx].PartitionType ==
+                    UDF_VIRTUAL_MAP25)) {
+        struct VirtualAllocationTable20* Header;
+        if (len < sizeof(struct VirtualAllocationTable20)) {
+            status = STATUS_FILE_CORRUPT_ERROR;
+            goto err_vat;
+        }
+        Header = (struct VirtualAllocationTable20*)VatOldData;
+        Offset = Header->lengthHeader;
+        if (Offset < sizeof(*Header) || Offset > len ||
+            Header->lengthImpUse > Offset - sizeof(*Header)) {
+            status = STATUS_FILE_CORRUPT_ERROR;
+            goto err_vat;
+        }
+        to_read = len - Offset;
+        Vcb->minUDFReadRev = Header->minReadRevision;
+        Vcb->minUDFWriteRev = Header->minWriteRevision;
+        Vcb->maxUDFWriteRev = Header->maxWriteRevision;
+        Vcb->numFiles = Header->numFIDSFiles;
+        Vcb->numDirs = Header->numFIDSDirectories;
+    } else {
+        status = STATUS_FILE_CORRUPT_ERROR;
+        goto err_vat;
+    }
+
+    if (!to_read || (to_read % sizeof(uint32)) ||
+        to_read / sizeof(uint32) > Vcb->FSBM_BitCount) {
+        status = STATUS_FILE_CORRUPT_ERROR;
+        goto err_vat;
+    }
+    VatCount = to_read / sizeof(uint32);
+    MaxEntry = min(Vcb->Partitions[PartNdx].PartitionLen,
+                   Vcb->FSBM_BitCount);
+    if (!MaxEntry) {
+        status = STATUS_FILE_CORRUPT_ERROR;
+        goto err_vat;
+    }
+    MaxEntry--;
+    for (i = 0; i < VatCount; i++) {
+        uint32 Entry;
+        RtlCopyMemory(&Entry, VatOldData + Offset + i * sizeof(uint32),
+                      sizeof(Entry));
+        if (Entry != UDF_VAT_FREE_ENTRY && Entry > MaxEntry) {
+            status = STATUS_FILE_CORRUPT_ERROR;
+            goto err_vat;
+        }
+    }
+
+    VatAllocationBytes = (uint64)Vcb->FSBM_BitCount * sizeof(uint32);
+    if (VatAllocationBytes > MAXULONG) {
+        status = STATUS_FILE_CORRUPT_ERROR;
+        goto err_vat;
+    }
+    Vat = (uint32*)DbgAllocatePool(NonPagedPool, (SIZE_T)VatAllocationBytes);
+    if (!Vat) {
+        status = STATUS_INSUFFICIENT_RESOURCES;
+        goto err_vat;
+    }
+    /* VAT entries and in-memory mappings are partition-relative. Preserve
+     * the identity map before the append point, then overlay the on-disc VAT. */
+    for (i = 0; i <= Vcb->NWA - root; i++)
+        Vat[i] = i;
+    RtlCopyMemory(Vat, VatOldData + Offset, to_read);
+    RtlFillMemory(&Vat[Vcb->NWA - root],
+                  (Vcb->FSBM_BitCount - (Vcb->NWA - root)) * sizeof(uint32),
+                  0xff);
+
+    Vcb->Vat = Vat;
+    Vat = NULL;
+    Vcb->InitVatCount =
+    Vcb->VatCount = VatCount;
+    Vcb->VatPartNdx = PartNdx;
+    Vcb->CDR_Mode = TRUE;
+    len = Vcb->VatCount;
+    for (i = 0; i < len; i++) {
+        if (Vcb->Vat[i] == UDF_VAT_FREE_ENTRY) {
+            if (Vcb->BitmapFcb) {
+                UDFPinBitmapPage(Vcb, i);
+                RtlSetBits(&Vcb->BitmapRtl, i - Vcb->BitmapPageStartLbn, 1);
+                UDFDirtyBitmapPage(Vcb);
+            } else {
+                UDFSetFreeBit(Vcb->FSBM_Bitmap, i);
+            }
+        }
+    }
+    UDFUnpinBitmapPage(Vcb);
+    len = root + Vcb->FSBM_BitCount;
+    for (i = Vcb->NWA; i < len;) {
+        for (j = 0; (j < PACKETSIZE_UDF) && (i < len); j++, i++) {
+            ULONG lbn_pf = i - root;
+            if (Vcb->BitmapFcb) {
+                UDFPinBitmapPage(Vcb, lbn_pf);
+                RtlSetBits(&Vcb->BitmapRtl,
+                           lbn_pf - Vcb->BitmapPageStartLbn, 1);
+                UDFDirtyBitmapPage(Vcb);
+            } else {
+                UDFSetFreeBit(Vcb->FSBM_Bitmap, lbn_pf);
+            }
+        }
+        for (j = 0; (j < 7) && (i < len); j++, i++) {
+            ULONG lbn_pf = i - root;
+            if (Vcb->BitmapFcb) {
+                UDFPinBitmapPage(Vcb, lbn_pf);
+                RtlClearBits(&Vcb->BitmapRtl,
+                             lbn_pf - Vcb->BitmapPageStartLbn, 1);
+                UDFDirtyBitmapPage(Vcb);
+            } else {
+                UDFSetUsedBit(Vcb->FSBM_Bitmap, lbn_pf);
+            }
+        }
+    }
+    UDFUnpinBitmapPage(Vcb);
+    DbgFreePool(VatOldData);
+    return status;
+
+err_vat:
+    if (VatOldData)
+        DbgFreePool(VatOldData);
+    if (Vat)
+        DbgFreePool(Vat);
+    if (VatFileInfo) {
+        if (VatFileInfo->Dloc)
+            UDFCloseFile__(IrpContext, Vcb, VatFileInfo);
         UDFCleanUpFile__(Vcb, VatFileInfo);
         MyFreePool__(VatFileInfo);
-        DbgFreePool(Vcb->Vat);
-        DbgFreePool(VatOldData);
-        Vcb->Vat = NULL;
         Vcb->VatFileInfo = NULL;
-    } else {
-        // initialize VAT
-        // !!! NOTE !!!
-        // Both VAT copies - in-memory & on-disc
-        // contain _relative_ addresses
-        len = Vcb->NWA - root;
-        for(i=0; i<=len; i++) {
-            Vcb->Vat[i] = i;
-        }
-        RtlCopyMemory(Vcb->Vat, VatOldData+Offset, to_read);
-        Vcb->InitVatCount =
-        Vcb->VatCount = to_read/sizeof(uint32);
-        Vcb->VatPartNdx = PartNdx;
-        Vcb->CDR_Mode = TRUE;
-        len = Vcb->VatCount;
-        RtlFillMemory(&(Vcb->Vat[Vcb->NWA-root]), (Vcb->FSBM_BitCount-(Vcb->NWA-root))*sizeof(uint32), 0xff);
-        // sync VAT and FSBM (bitmap is LBN-indexed)
-        for(i=0; i<len; i++) {
-            if (Vcb->Vat[i] == UDF_VAT_FREE_ENTRY) {
-                if (Vcb->BitmapFcb) {
-                    UDFPinBitmapPage(Vcb, i);
-                    RtlSetBits(&Vcb->BitmapRtl, i - Vcb->BitmapPageStartLbn, 1);
-                    UDFDirtyBitmapPage(Vcb);
-                } else {
-                    UDFSetFreeBit(Vcb->FSBM_Bitmap, i);
-                }
-            }
-        }
-        UDFUnpinBitmapPage(Vcb);
-        len = root + Vcb->FSBM_BitCount;  // end of partition in PSN (bitmap is LBN-indexed)
-        // "pre-format" reserved area
-        for(i=Vcb->NWA; i<len;) {
-            for (j = 0; (j < PACKETSIZE_UDF) && (i < len); j++, i++)
-            {
-                ULONG lbn_pf = i - root;
-                if (Vcb->BitmapFcb) {
-                    UDFPinBitmapPage(Vcb, lbn_pf);
-                    RtlSetBits(&Vcb->BitmapRtl, lbn_pf - Vcb->BitmapPageStartLbn, 1);
-                    UDFDirtyBitmapPage(Vcb);
-                } else {
-                    UDFSetFreeBit(Vcb->FSBM_Bitmap, lbn_pf);
-                }
-            }
-            for (j = 0; (j < 7) && (i < len); j++, i++)
-            {
-                ULONG lbn_pf = i - root;
-                if (Vcb->BitmapFcb) {
-                    UDFPinBitmapPage(Vcb, lbn_pf);
-                    RtlClearBits(&Vcb->BitmapRtl, lbn_pf - Vcb->BitmapPageStartLbn, 1);
-                    UDFDirtyBitmapPage(Vcb);
-                } else {
-                    UDFSetUsedBit(Vcb->FSBM_Bitmap, lbn_pf);
-                }
-            }
-        }
-        UDFUnpinBitmapPage(Vcb);
-        DbgFreePool(VatOldData);
     }
     return status;
 } // end UDFLoadVAT()
@@ -7502,6 +7536,8 @@ UDFRecordVAT(
     EntityID* eID;
 
     if (!(Vat = Vcb->Vat) || !VatFileInfo) return STATUS_INVALID_PARAMETER;
+    if (Vcb->Partitions[PartNdx].PartitionType == UDF_VIRTUAL_MAP25)
+        return STATUS_MEDIA_WRITE_PROTECTED;
     // Disable VAT-based translation
     Vcb->Vat = NULL;
     // sync VAT and FSBM

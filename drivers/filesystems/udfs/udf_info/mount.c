@@ -2018,6 +2018,18 @@ UDFLoadLogicalVol(
                     (Vcb->CurrentUDFRev == 0x0201)*/ ) {
                     UDFPrint(("Found VAT 2.00\n"));
                     Vcb->Partitions[i].PartitionType = UDF_VIRTUAL_MAP20;
+                } else if (udfis->currentRev == 0x0250) {
+                    /*
+                     * The standard VAT 2.50 header is compatible with the
+                     * 2.x reader, but this driver has no crash-safe VAT
+                     * update protocol yet. Keep such volumes readable and
+                     * refuse writes until the private CoW format is available.
+                     */
+                    UDFPrint(("Found VAT 2.50 (read-only)\n"));
+                    Vcb->Partitions[i].PartitionType = UDF_VIRTUAL_MAP25;
+                    Vcb->VcbState |= VCB_STATE_VOLUME_READ_ONLY;
+                } else {
+                    return STATUS_UNRECOGNIZED_MEDIA;
                 }
                 status = STATUS_SUCCESS;
             }
@@ -2782,7 +2794,8 @@ UDFLoadPartDesc(
                     return RC;
 
                 if ((Vcb->Partitions[i].PartitionType == UDF_VIRTUAL_MAP15) ||
-                    (Vcb->Partitions[i].PartitionType == UDF_VIRTUAL_MAP20)) {
+                    (Vcb->Partitions[i].PartitionType == UDF_VIRTUAL_MAP20) ||
+                    (Vcb->Partitions[i].PartitionType == UDF_VIRTUAL_MAP25)) {
                     RC = UDFLoadVAT(IrpContext, Vcb, i);
                     if (!NT_SUCCESS(RC))
                         return RC;
@@ -2907,7 +2920,8 @@ UDFVerifyPartDesc(
                     return RC;
 
                 if ((Vcb->Partitions[i].PartitionType == UDF_VIRTUAL_MAP15) ||
-                    (Vcb->Partitions[i].PartitionType == UDF_VIRTUAL_MAP20)) {
+                    (Vcb->Partitions[i].PartitionType == UDF_VIRTUAL_MAP20) ||
+                    (Vcb->Partitions[i].PartitionType == UDF_VIRTUAL_MAP25)) {
 /*                    RC = UDFLoadVAT(Vcb, i);
                     if (!NT_SUCCESS(RC))
                         return RC;

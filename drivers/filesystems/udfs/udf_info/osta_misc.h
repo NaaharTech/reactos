@@ -92,6 +92,7 @@ typedef struct _SPARABLE_PARTITION_MAP
 #define UDF_TYPE1_MAP15         0x1511U
 #define UDF_VIRTUAL_MAP15       0x1512U
 #define UDF_VIRTUAL_MAP20       0x2012U
+#define UDF_VIRTUAL_MAP25       0x2512U
 #define UDF_SPARABLE_MAP15      0x1522U
 #define UDF_METADATA_MAP25      0x2522U
 
