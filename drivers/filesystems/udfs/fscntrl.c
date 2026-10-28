@@ -779,7 +779,6 @@ UDFCleanupVCB(
     MyFreeMemoryAndPointer(Vcb->Partitions);
     MyFreeMemoryAndPointer(Vcb->LVid);
     MyFreeMemoryAndPointer(Vcb->Vat);
-    MyFreeMemoryAndPointer(Vcb->PreviousVat);
     MyFreeMemoryAndPointer(Vcb->SparingTable);
 
     // Teardown bitmap cache stream (per-page mode) or free NonPagedPool buffer (legacy)

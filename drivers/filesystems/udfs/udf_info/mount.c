@@ -2013,11 +2013,10 @@ UDFLoadLogicalVol(
                     Vcb->Partitions[i].PartitionType = UDF_VIRTUAL_MAP15;
                 } else
                 if ( (udfis->currentRev == 0x0200) ||
-                    (udfis->currentRev == 0x0201) ||
-                    (udfis->currentRev == 0x0250) /*||
+                    (udfis->currentRev == 0x0201) /*||
                     (Vcb->CurrentUDFRev == 0x0200) ||
                     (Vcb->CurrentUDFRev == 0x0201)*/ ) {
-                    UDFPrint(("Found VAT 2.x\n"));
+                    UDFPrint(("Found VAT 2.00\n"));
                     Vcb->Partitions[i].PartitionType = UDF_VIRTUAL_MAP20;
                 }
                 status = STATUS_SUCCESS;
