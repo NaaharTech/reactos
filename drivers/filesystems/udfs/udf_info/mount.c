@@ -1955,6 +1955,8 @@ UDFLoadLogicalVol(
     uint16 i, offset;
     uint8 type;
     NTSTATUS status = STATUS_SUCCESS;
+    BOOLEAN HasVirtualMap = FALSE;
+    BOOLEAN HasMetadataMap = FALSE;
     UDFPrint(("UDF: LogicalVolDesc\n"));
     // Validate partition map counter
     if (!(Vcb->Partitions)) {
@@ -2011,6 +2013,7 @@ UDFLoadLogicalVol(
                     (Vcb->CurrentUDFRev == 0x0150)*/ ) {
                     UDFPrint(("Found VAT 1.50\n"));
                     Vcb->Partitions[i].PartitionType = UDF_VIRTUAL_MAP15;
+                    HasVirtualMap = TRUE;
                 } else
                 if ( (udfis->currentRev == 0x0200) ||
                     (udfis->currentRev == 0x0201) /*||
@@ -2018,6 +2021,7 @@ UDFLoadLogicalVol(
                     (Vcb->CurrentUDFRev == 0x0201)*/ ) {
                     UDFPrint(("Found VAT 2.00\n"));
                     Vcb->Partitions[i].PartitionType = UDF_VIRTUAL_MAP20;
+                    HasVirtualMap = TRUE;
                 } else if (udfis->currentRev == 0x0250) {
                     /*
                      * The standard VAT 2.50 header is compatible with the
@@ -2028,6 +2032,7 @@ UDFLoadLogicalVol(
                     UDFPrint(("Found VAT 2.50 (read-only)\n"));
                     Vcb->Partitions[i].PartitionType = UDF_VIRTUAL_MAP25;
                     Vcb->VcbState |= VCB_STATE_VOLUME_READ_ONLY;
+                    HasVirtualMap = TRUE;
                 } else {
                     return STATUS_UNRECOGNIZED_MEDIA;
                 }
@@ -2045,6 +2050,7 @@ UDFLoadLogicalVol(
                 UDFPrint(("Found metadata partition\n"));
                 PMETADATA_PARTITION_MAP mpm = (PMETADATA_PARTITION_MAP)(((uint8*)(lvd+1))+offset);
                 Vcb->Partitions[i].PartitionType = UDF_METADATA_MAP25;
+                HasMetadataMap = TRUE;
 
                 Vcb->MetadataRef = i;
                 Vcb->MetadataMirrorFELoc = mpm->metadataMirrorFELocation;
@@ -2070,6 +2076,18 @@ UDFLoadLogicalVol(
             Vcb->Partitions[i].VolumeSeqNum = upm2->volSeqNum;
             Vcb->Partitions[i].PartitionNum = upm2->partitionNum;
         }
+    }
+
+    /*
+     * The current driver has no on-disk marker or transactional mapping
+     * protocol for a volume combining VAT and metadata maps. Do not interpret
+     * an arbitrary mixed layout as writable; existing standard layouts are
+     * unaffected, and the private format must opt in explicitly once its
+     * generation records and recovery path are implemented.
+     */
+    if (HasVirtualMap && HasMetadataMap) {
+        UDFPrint(("UDF: combined VAT/metadata layout is not recognized; mounting read-only\n"));
+        Vcb->VcbState |= VCB_STATE_VOLUME_READ_ONLY;
     }
 
     if (fileset) {
