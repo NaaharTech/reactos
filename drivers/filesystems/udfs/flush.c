@@ -625,7 +625,7 @@ UDFFlushVolume(
         ;
     } _SEH2_END;
 
-    return NT_SUCCESS(Status) ? ret_val : Status;
+    return ret_val;
 } // end UDFFlushLogicalVolume()
 
 
