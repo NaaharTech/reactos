@@ -98,6 +98,8 @@ typedef struct _UDFS_RECOVERY_PROBE {
     uint64_t MaxUniqueId;
     uint32_t FailureObjectLbn;
     uint16_t FailureObjectRef;
+    /* recovery_core.c line of the first failed namespace check, 0 if none. */
+    uint32_t FailureLine;
     /* One bounded empty-directory pre-FID deletion transaction. */
     uint32_t DirectoryLinkFixParentLbn;
     uint32_t DirectoryLinkFixChildLbn;
