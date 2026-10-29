@@ -607,10 +607,13 @@ delete_attempt_done:
             !(Fcb->FcbState & UDF_FCB_DELETED) &&
             !(Vcb->VcbState & VCB_STATE_VOLUME_READ_ONLY) &&
             NextFileInfo &&
-            !UDFCanDeferDirectoryAppendCleanup(Vcb, NextFileInfo, FileObject) &&
-            !UDFCanDeferDirectoryAttributesCleanup(IrpContext, Vcb,
-                                                  NextFileInfo, FileObject) &&
-            !UDFDeferNewFileMetadata(IrpContext, Vcb, NextFileInfo)) {
+            // Regular files are always flushed here; only directories may
+            // keep a pending append or attribute-only update in memory.
+            (!(Fcb->FcbState & UDF_FCB_DIRECTORY) ||
+             (!UDFCanDeferDirectoryAppendCleanup(Vcb, NextFileInfo, FileObject) &&
+              !UDFCanDeferDirectoryAttributesCleanup(IrpContext, Vcb,
+                                                    NextFileInfo, FileObject) &&
+              !UDFDeferNewFileMetadata(IrpContext, Vcb, NextFileInfo)))) {
             NTSTATUS FlushStatus = UDFFlushFile__(IrpContext, Vcb,
                                                   NextFileInfo, 0);
             if (NT_SUCCESS(UnlinkError) && !NT_SUCCESS(FlushStatus))
