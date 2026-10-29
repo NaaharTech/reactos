@@ -1193,6 +1193,33 @@ UDFGetFileSizeFromDirNdx(
 /*
     This routine sets lengthAllocDesc field in (Ext)FileEntry
  */
+/* Length of the allocation descriptors stored in the FE block itself. When
+ * the sequence continues in an Allocation Extent Descriptor, the FE block
+ * ends with padding that is too short for another descriptor. Keep it out
+ * of L_AD, which must be a whole number of descriptors. */
+static uint32
+UDFInFEAllocDescLen(
+    IN PUDF_FILE_INFO FileInfo,
+    IN uint16 IcbFlags
+    )
+{
+    PUDF_DATALOC_INFO Dloc = FileInfo->Dloc;
+    uint32 Space, AdSize;
+
+    if (!Dloc->AllocLoc.Length)
+        return (uint32)(Dloc->DataLoc.Length);
+    Space = Dloc->AllocLoc.Mapping[0].extLength - Dloc->AllocLoc.Offset;
+    if ((uint64)Dloc->AllocLoc.Length <= Space)
+        return (uint32)(Dloc->AllocLoc.Length);
+    switch (IcbFlags & ICB_FLAG_ALLOC_MASK) {
+    case ICB_FLAG_AD_SHORT: AdSize = sizeof(SHORT_AD); break;
+    case ICB_FLAG_AD_LONG:  AdSize = sizeof(LONG_AD); break;
+    case ICB_FLAG_AD_EXTENDED: AdSize = sizeof(EXT_AD); break;
+    default: return Space;
+    }
+    return Space - (Space % AdSize);
+}
+
 void
 UDFSetAllocDescLen(
     IN PVCB Vcb,
@@ -1202,27 +1229,16 @@ UDFSetAllocDescLen(
     uint16 Ident;
 
     ValidateFileInfo(FileInfo);
+    UNREFERENCED_PARAMETER(Vcb);
 
     FileInfo->Dloc->FE_Flags |= UDF_FE_FLAG_FE_MODIFIED;
     Ident = FileInfo->Dloc->FileEntry->tagIdent;
     if (Ident == TID_FILE_ENTRY) {
         PFILE_ENTRY fe = (PFILE_ENTRY)(FileInfo->Dloc->FileEntry);
-        if (FileInfo->Dloc->AllocLoc.Length) {
-            fe->lengthAllocDescs = min(FileInfo->Dloc->AllocLoc.Mapping[0].extLength -
-                                       FileInfo->Dloc->AllocLoc.Offset,
-                                       (uint32)(FileInfo->Dloc->AllocLoc.Length));
-        } else {
-            fe->lengthAllocDescs = (uint32)(FileInfo->Dloc->DataLoc.Length);
-        }
+        fe->lengthAllocDescs = UDFInFEAllocDescLen(FileInfo, fe->icbTag.flags);
     } else if (Ident == TID_EXTENDED_FILE_ENTRY) {
         PEXTENDED_FILE_ENTRY fe = (PEXTENDED_FILE_ENTRY)(FileInfo->Dloc->FileEntry);
-        if (FileInfo->Dloc->AllocLoc.Length) {
-            fe->lengthAllocDescs = min(FileInfo->Dloc->AllocLoc.Mapping[0].extLength -
-                                       FileInfo->Dloc->AllocLoc.Offset,
-                                       (uint32)(FileInfo->Dloc->AllocLoc.Length));
-        } else {
-            fe->lengthAllocDescs = (uint32)(FileInfo->Dloc->DataLoc.Length);
-        }
+        fe->lengthAllocDescs = UDFInFEAllocDescLen(FileInfo, fe->icbTag.flags);
     }
 } // end UDFSetAllocDescLen()
 
