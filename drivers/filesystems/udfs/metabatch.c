@@ -89,10 +89,8 @@ UDFDeferNewFileMetadata(PIRP_CONTEXT IrpContext, PVCB Vcb, PUDF_FILE_INFO FileIn
                                    FO_WRITE_THROUGH | FO_NO_INTERMEDIATE_BUFFERING))
         return FALSE;
     if (IrpContext->MajorFunction == IRP_MJ_CLEANUP) {
-        BOOLEAN result = FlagOn(irpSp->FileObject->Flags, FO_CACHE_SUPPORTED) != 0;
-        if (result) UDF_METADATA_COUNT(Vcb,22);
-        else UDF_METADATA_COUNT(Vcb,25);
-        return result;
+        UDF_METADATA_COUNT(Vcb,25);
+        return FALSE;
     }
     if (IrpContext->MajorFunction == IRP_MJ_WRITE) {
         /* A zero-byte allocation update changes no payload. For real data
