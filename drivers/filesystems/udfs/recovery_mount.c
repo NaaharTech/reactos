@@ -230,10 +230,10 @@ UDFRecoverDirtyVolumeBeforeLoad(PIRP_CONTEXT IrpContext, PVCB Vcb)
     UDFPrint(("UDFS recovery: anchor %lx VDS %lx, probe %u at %lx\n",
               (ULONG)before.AnchorLba, (ULONG)before.VdsStartLba,
               (ULONG)status, (ULONG)before.FailureLba));
-    UDFPrint(("UDFS recovery: files %lu dirs %lu, physical blocks %lu, object %u:%lx\n",
+    UDFPrint(("UDFS recovery: files %lu dirs %lu, physical blocks %lu, object %u:%lx, check line %lu\n",
               (ULONG)before.FilesVisited, (ULONG)before.DirectoriesVisited,
               (ULONG)before.PartitionBlocks, (ULONG)before.FailureObjectRef,
-              (ULONG)before.FailureObjectLbn));
+              (ULONG)before.FailureObjectLbn, (ULONG)before.FailureLine));
     /* The probe has not written anything yet. Incomplete validation keeps
      * the pre-existing dirty/read-only mount policy. */
     if (status == UdfsRecoveryProbeNoMemory ||

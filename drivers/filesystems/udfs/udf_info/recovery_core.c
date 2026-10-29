@@ -724,6 +724,20 @@ typedef struct _RECOVERY_GRAPH {
     RECOVERY_SECTOR_CACHE MetadataBitmapCache;
 } RECOVERY_GRAPH;
 
+/* Remember where the namespace walk first failed. The line number names the
+ * exact check in this file, so a refused recovery can be diagnosed from the
+ * mount log without a copy of the disk. Later failures keep the first one. */
+static UDFS_RECOVERY_PROBE_STATUS
+GraphFail(RECOVERY_GRAPH *graph, UDFS_RECOVERY_PROBE_STATUS status,
+          uint32_t line)
+{
+    if (status != UdfsRecoveryProbeValidLayout &&
+        !graph->Result->FailureLine)
+        graph->Result->FailureLine = line;
+    return status;
+}
+#define GRAPH_FAIL(status) GraphFail(graph, (status), __LINE__)
+
 static UDFS_RECOVERY_PROBE_STATUS
 GraphMetadataBitIsFree(RECOVERY_GRAPH *graph, uint32_t lbn, int *freeBit)
 {
@@ -969,12 +983,12 @@ GraphOwn(RECOVERY_GRAPH *graph, uint16_t ref, uint32_t lbn,
         UDFS_RECOVERY_PROBE_STATUS status;
         limit = graph->Result->PartitionBlocks;
         if (lbn >= limit || blocks > limit - lbn)
-            return UdfsRecoveryProbeCorrupt;
+            return GRAPH_FAIL(UdfsRecoveryProbeCorrupt);
         status = BitmapSetRange(graph->Reader, &graph->PhysicalOwned,
                                  lbn, blocks, &overlap);
-        if (status != UdfsRecoveryProbeValidLayout) return status;
+        if (status != UdfsRecoveryProbeValidLayout) return GRAPH_FAIL(status);
         if (overlap > UINT32_MAX - graph->Result->OverlapBlocks)
-            return UdfsRecoveryProbeCorrupt;
+            return GRAPH_FAIL(UdfsRecoveryProbeCorrupt);
         graph->Result->OverlapBlocks += overlap;
         graph->Result->OwnedPhysicalBlocks += blocks - overlap;
         return UdfsRecoveryProbeValidLayout;
@@ -983,10 +997,10 @@ GraphOwn(RECOVERY_GRAPH *graph, uint16_t ref, uint32_t lbn,
         owned = graph->MetadataOwned;
         count = &graph->Result->OwnedMetadataBlocks;
     } else {
-        return UdfsRecoveryProbeUnsupported;
+        return GRAPH_FAIL(UdfsRecoveryProbeUnsupported);
     }
     if (lbn >= limit || blocks > limit - lbn)
-        return UdfsRecoveryProbeCorrupt;
+        return GRAPH_FAIL(UdfsRecoveryProbeCorrupt);
     for (i = 0; i < blocks; ++i) {
         if (BitIsSet(owned, lbn + i))
             graph->Result->OverlapBlocks++;
@@ -1006,23 +1020,23 @@ GraphReadLogical(RECOVERY_GRAPH *graph, uint16_t ref,
     uint32_t physical;
     if (ref == 0) {
         if (lbn >= graph->Result->PartitionBlocks)
-            return UdfsRecoveryProbeCorrupt;
+            return GRAPH_FAIL(UdfsRecoveryProbeCorrupt);
         physical = graph->Result->PartitionStart + lbn;
     } else if (ref == 1) {
         status = MapMetadataBlock(graph->Result, graph->Metadata,
                                   lbn, &physical);
-        if (status != UdfsRecoveryProbeValidLayout) return status;
+        if (status != UdfsRecoveryProbeValidLayout) return GRAPH_FAIL(status);
         if (graph->Result->FidSplitCount &&
             lbn == graph->Result->FidSplitLbn) {
             if (physical != graph->Result->FidSplitMainLba)
-                return UdfsRecoveryProbeCorrupt;
+                return GRAPH_FAIL(UdfsRecoveryProbeCorrupt);
             if (graph->Result->FidSplitLiveOnMirror)
                 physical = graph->Result->FidSplitMirrorLba;
         }
     } else {
-        return UdfsRecoveryProbeUnsupported;
+        return GRAPH_FAIL(UdfsRecoveryProbeUnsupported);
     }
-    return ReadSector(graph->Reader, graph->Result, physical, sector);
+    return GRAPH_FAIL(ReadSector(graph->Reader, graph->Result, physical, sector));
 }
 
 static UDFS_RECOVERY_PROBE_STATUS
@@ -1035,7 +1049,7 @@ GraphPush(RECOVERY_GRAPH *graph, uint16_t ref, uint32_t lbn,
     uint32_t capacity;
     if (graph->QueueCount == graph->QueueCapacity) {
         if (graph->QueueCapacity >= 1024 * 1024)
-            return UdfsRecoveryProbeUnsupported;
+            return GRAPH_FAIL(UdfsRecoveryProbeUnsupported);
         capacity = graph->QueueCapacity ? graph->QueueCapacity * 2 : 1024;
         replacement = (RECOVERY_GRAPH_ENTRY *)graph->Reader->Allocate(
             graph->Reader->Context, (size_t)capacity * sizeof(*replacement));
@@ -1074,31 +1088,31 @@ GraphVisit(RECOVERY_GRAPH *graph, const RECOVERY_GRAPH_ENTRY *entry,
         visited = graph->MetadataVisited;
         directories = graph->MetadataDirs;
         limit = graph->Result->MetadataBlocks;
-    } else return UdfsRecoveryProbeUnsupported;
+    } else return GRAPH_FAIL(UdfsRecoveryProbeUnsupported);
     if (entry->Lbn >= limit || entry->Bytes != UDFS_RECOVERY_SECTOR_SIZE)
-        return UdfsRecoveryProbeUnsupported;
+        return GRAPH_FAIL(UdfsRecoveryProbeUnsupported);
     *alreadyVisited = entry->Ref == 0 ?
         BitmapBitIsSet(&graph->PhysicalVisited, entry->Lbn) :
         BitIsSet(visited, entry->Lbn);
     if (*alreadyVisited) {
         if (entry->StreamRole)
-            return UdfsRecoveryProbeCorrupt;
+            return GRAPH_FAIL(UdfsRecoveryProbeCorrupt);
         int isDirectory = entry->Ref == 0 ?
             BitmapBitIsSet(&graph->PhysicalDirs, entry->Lbn) :
             BitIsSet(directories, entry->Lbn);
         if (entry->Directory || isDirectory != entry->Directory)
-            return UdfsRecoveryProbeCorrupt;
+            return GRAPH_FAIL(UdfsRecoveryProbeCorrupt);
         return UdfsRecoveryProbeValidLayout;
     }
     if (entry->Ref == 0) {
         uint32_t overlap;
         status = BitmapSetRange(graph->Reader, &graph->PhysicalVisited,
                                  entry->Lbn, 1, &overlap);
-        if (status != UdfsRecoveryProbeValidLayout) return status;
+        if (status != UdfsRecoveryProbeValidLayout) return GRAPH_FAIL(status);
         if (entry->Directory) {
             status = BitmapSetRange(graph->Reader, &graph->PhysicalDirs,
                                      entry->Lbn, 1, &overlap);
-            if (status != UdfsRecoveryProbeValidLayout) return status;
+            if (status != UdfsRecoveryProbeValidLayout) return GRAPH_FAIL(status);
         }
     } else {
         SetBit(visited, entry->Lbn);
@@ -1134,17 +1148,17 @@ GraphParseFileAds(RECOVERY_GRAPH *graph, const RECOVERY_GRAPH_ENTRY *file,
         attrOffset = 208; adOffset = 212; dataOffset = 216;
     } else if (Read16(fe) == 261) {
         attrOffset = 168; adOffset = 172; dataOffset = 176;
-    } else return UdfsRecoveryProbeCorrupt;
+    } else return GRAPH_FAIL(UdfsRecoveryProbeCorrupt);
     if (mode != 0 && mode != 1 && mode != 3)
-        return UdfsRecoveryProbeUnsupported;
+        return GRAPH_FAIL(UdfsRecoveryProbeUnsupported);
     if (Read32(fe + attrOffset) > UDFS_RECOVERY_SECTOR_SIZE - dataOffset)
-        return UdfsRecoveryProbeCorrupt;
+        return GRAPH_FAIL(UdfsRecoveryProbeCorrupt);
     start = dataOffset + Read32(fe + attrOffset);
     length = Read32(fe + adOffset);
     if (start > UDFS_RECOVERY_SECTOR_SIZE ||
         length > UDFS_RECOVERY_SECTOR_SIZE - start ||
         Read16(fe + 10) < start + length - 16)
-        return UdfsRecoveryProbeCorrupt;
+        return GRAPH_FAIL(UdfsRecoveryProbeCorrupt);
     *modeOut = mode;
     *inlineStart = start;
     *inlineLength = length;
@@ -1152,7 +1166,7 @@ GraphParseFileAds(RECOVERY_GRAPH *graph, const RECOVERY_GRAPH_ENTRY *file,
     dataExtents->FileBytes = Read64(fe + 56);
     if (mode == 3)
         return dataExtents->FileBytes <= length ?
-            UdfsRecoveryProbeValidLayout : UdfsRecoveryProbeCorrupt;
+            UdfsRecoveryProbeValidLayout : GRAPH_FAIL(UdfsRecoveryProbeCorrupt);
 
     memcpy(source, fe, sizeof(source));
     sourceStart = start;
@@ -1166,7 +1180,7 @@ GraphParseFileAds(RECOVERY_GRAPH *graph, const RECOVERY_GRAPH_ENTRY *file,
             sourceStart > UDFS_RECOVERY_SECTOR_SIZE ||
             sourceLength > UDFS_RECOVERY_SECTOR_SIZE - sourceStart ||
             Read16(source + 10) < sourceStart + sourceLength - 16)
-            return UdfsRecoveryProbeCorrupt;
+            return GRAPH_FAIL(UdfsRecoveryProbeCorrupt);
         for (offset = sourceStart; offset < sourceStart + sourceLength;
              offset += step) {
             uint32_t encoded = Read32(source + offset);
@@ -1178,7 +1192,7 @@ GraphParseFileAds(RECOVERY_GRAPH *graph, const RECOVERY_GRAPH_ENTRY *file,
             if (!bytes) continue;
             if (kind == 3) {
                 if (haveNext || bytes < UDFS_RECOVERY_SECTOR_SIZE)
-                    return UdfsRecoveryProbeUnsupported;
+                    return GRAPH_FAIL(UdfsRecoveryProbeUnsupported);
                 nextLbn = lbn;
                 nextRef = ref;
                 nextBytes = bytes;
@@ -1186,15 +1200,15 @@ GraphParseFileAds(RECOVERY_GRAPH *graph, const RECOVERY_GRAPH_ENTRY *file,
             } else if (kind == 0 || kind == 1) {
                 RECOVERY_EXTENT *extent;
                 if (haveNext || dataExtents->Count == UDFS_RECOVERY_MAX_EXTENTS)
-                    return UdfsRecoveryProbeUnsupported;
+                    return GRAPH_FAIL(UdfsRecoveryProbeUnsupported);
                 /* An allocated but unrecorded AD owns its blocks.  It is
                  * valid in an ordinary file, but cannot supply FID bytes. */
                 if (kind == 1 &&
                     (file->Directory || file->StreamRole == 1 ||
                      (bytes & (UDFS_RECOVERY_SECTOR_SIZE - 1))))
-                    return UdfsRecoveryProbeUnsupported;
+                    return GRAPH_FAIL(UdfsRecoveryProbeUnsupported);
                 status = GraphOwn(graph, ref, lbn, bytes);
-                if (status != UdfsRecoveryProbeValidLayout) return status;
+                if (status != UdfsRecoveryProbeValidLayout) return GRAPH_FAIL(status);
                 extent = &dataExtents->Items[dataExtents->Count++];
                 extent->Ref = ref;
                 extent->Lbn = lbn;
@@ -1203,28 +1217,28 @@ GraphParseFileAds(RECOVERY_GRAPH *graph, const RECOVERY_GRAPH_ENTRY *file,
                                  UDFS_RECOVERY_SECTOR_SIZE;
                 dataBytes += bytes;
             } else {
-                return UdfsRecoveryProbeUnsupported;
+                return GRAPH_FAIL(UdfsRecoveryProbeUnsupported);
             }
         }
         if (!haveNext) break;
         if (seenCount == 32 || nextBytes != UDFS_RECOVERY_SECTOR_SIZE)
-            return UdfsRecoveryProbeUnsupported;
+            return GRAPH_FAIL(UdfsRecoveryProbeUnsupported);
         for (offset = 0; offset < seenCount; ++offset)
             if (seenLbn[offset] == nextLbn && seenRef[offset] == nextRef)
-                return UdfsRecoveryProbeCorrupt;
+                return GRAPH_FAIL(UdfsRecoveryProbeCorrupt);
         seenLbn[seenCount] = nextLbn;
         seenRef[seenCount++] = nextRef;
         status = GraphOwn(graph, nextRef, nextLbn, nextBytes);
-        if (status != UdfsRecoveryProbeValidLayout) return status;
+        if (status != UdfsRecoveryProbeValidLayout) return GRAPH_FAIL(status);
         status = GraphReadLogical(graph, nextRef, nextLbn, source);
-        if (status != UdfsRecoveryProbeValidLayout) return status;
+        if (status != UdfsRecoveryProbeValidLayout) return GRAPH_FAIL(status);
         status = ValidateTag(source, 258, nextLbn);
-        if (status != UdfsRecoveryProbeValidLayout) return status;
+        if (status != UdfsRecoveryProbeValidLayout) return GRAPH_FAIL(status);
         sourceStart = 24;
         sourceLength = Read32(source + 20);
     }
     return dataBytes >= dataExtents->FileBytes ?
-        UdfsRecoveryProbeValidLayout : UdfsRecoveryProbeCorrupt;
+        UdfsRecoveryProbeValidLayout : GRAPH_FAIL(UdfsRecoveryProbeCorrupt);
 }
 
 static UDFS_RECOVERY_PROBE_STATUS
@@ -1238,7 +1252,7 @@ GraphReadDirectory(RECOVERY_GRAPH *graph,
     UDFS_RECOVERY_PROBE_STATUS status;
     uint32_t copied = 0, i;
     if (!extents->FileBytes || extents->FileBytes > 16 * 1024 * 1024)
-        return UdfsRecoveryProbeUnsupported;
+        return GRAPH_FAIL(UdfsRecoveryProbeUnsupported);
     *length = (uint32_t)extents->FileBytes;
     *directory = (uint8_t *)graph->Reader->Allocate(graph->Reader->Context,
                                                      *length);
@@ -1261,14 +1275,14 @@ GraphReadDirectory(RECOVERY_GRAPH *graph,
             status = GraphReadLogical(graph, extent->Ref,
                         extent->Lbn + byteOffset / UDFS_RECOVERY_SECTOR_SIZE,
                         sector);
-            if (status != UdfsRecoveryProbeValidLayout) return status;
+            if (status != UdfsRecoveryProbeValidLayout) return GRAPH_FAIL(status);
             memcpy(*directory + copied, sector, take);
             copied += take;
         }
     }
     (void)file;
     return copied == *length ? UdfsRecoveryProbeValidLayout :
-           UdfsRecoveryProbeCorrupt;
+           GRAPH_FAIL(UdfsRecoveryProbeCorrupt);
 }
 
 static UDFS_RECOVERY_PROBE_STATUS
@@ -1286,7 +1300,7 @@ GraphScanFids(RECOVERY_GRAPH *graph,
         uint32_t checksum = 0, i;
         uint8_t attributes;
         UDFS_RECOVERY_PROBE_STATUS status;
-        if (length - offset < 38) return UdfsRecoveryProbeCorrupt;
+        if (length - offset < 38) return GRAPH_FAIL(UdfsRecoveryProbeCorrupt);
         rawLength = 38 + Read16(fid + 36) + fid[19];
         recordLength = (rawLength + 3) & ~3U;
         crcLength = Read16(fid + 10);
@@ -1297,12 +1311,12 @@ GraphScanFids(RECOVERY_GRAPH *graph,
             Read16(fid + 16) != 1 || (attributes & ~0x1fU) ||
             crcLength < rawLength - 16 ||
             crcLength > recordLength - 16)
-            return UdfsRecoveryProbeCorrupt;
+            return GRAPH_FAIL(UdfsRecoveryProbeCorrupt);
         for (i = 0; i < 16; ++i)
             if (i != 4) checksum += fid[i];
         if ((uint8_t)checksum != fid[4] ||
             TagCrc(fid + 16, crcLength) != Read16(fid + 8))
-            return UdfsRecoveryProbeCorrupt;
+            return GRAPH_FAIL(UdfsRecoveryProbeCorrupt);
         if (mode == 3) {
             expectedLbn = directoryFile->Lbn;
         } else {
@@ -1311,14 +1325,14 @@ GraphScanFids(RECOVERY_GRAPH *graph,
                 if (remaining < extents->Items[i].Bytes) break;
                 remaining -= extents->Items[i].Bytes;
             }
-            if (i == extents->Count) return UdfsRecoveryProbeCorrupt;
+            if (i == extents->Count) return GRAPH_FAIL(UdfsRecoveryProbeCorrupt);
             expectedLbn = extents->Items[i].Lbn +
                           remaining / UDFS_RECOVERY_SECTOR_SIZE;
             recordSectorOffset =
                 remaining % UDFS_RECOVERY_SECTOR_SIZE;
         }
         if (Read32(fid + 12) != expectedLbn)
-            return UdfsRecoveryProbeCorrupt;
+            return GRAPH_FAIL(UdfsRecoveryProbeCorrupt);
         if (graph->Result->FidSplitCount &&
             expectedLbn == graph->Result->FidSplitLbn &&
             recordSectorOffset ==
@@ -1328,7 +1342,7 @@ GraphScanFids(RECOVERY_GRAPH *graph,
                 Read16(fid + 28) != 1 ||
                 Read32(fid + 24) !=
                     graph->Result->FidSplitChildLbn)
-                return UdfsRecoveryProbeCorrupt;
+                return GRAPH_FAIL(UdfsRecoveryProbeCorrupt);
             graph->Result->FidSplitSeen = 1;
             graph->Result->FidSplitParentLbn =
                 directoryFile->Lbn;
@@ -1341,7 +1355,7 @@ GraphScanFids(RECOVERY_GRAPH *graph,
                 Read32(fid + 20) != UDFS_RECOVERY_SECTOR_SIZE ||
                 Read32(fid + 24) != directoryFile->ParentLbn ||
                 Read16(fid + 28) != directoryFile->ParentRef)
-                return UdfsRecoveryProbeCorrupt;
+                return GRAPH_FAIL(UdfsRecoveryProbeCorrupt);
         }
         if (!(attributes & (4 | 8))) {
             uint32_t encoded = Read32(fid + 20);
@@ -1351,9 +1365,9 @@ GraphScanFids(RECOVERY_GRAPH *graph,
             if (encoded >> 30 || !fid[19] ||
                 (fid[38 + Read16(fid + 36)] != 8 &&
                  fid[38 + Read16(fid + 36)] != 16))
-                return UdfsRecoveryProbeCorrupt;
+                return GRAPH_FAIL(UdfsRecoveryProbeCorrupt);
             status = RecoveryName(fid, name, &nameLength, &hash);
-            if (status != UdfsRecoveryProbeValidLayout) return status;
+            if (status != UdfsRecoveryProbeValidLayout) return GRAPH_FAIL(status);
             slot = hash & (nameCapacity - 1);
             while (names[slot].OffsetPlusOne) {
                 if (names[slot].Hash == hash) {
@@ -1361,17 +1375,17 @@ GraphScanFids(RECOVERY_GRAPH *graph,
                     uint32_t otherLength, otherHash;
                     const uint8_t *previous = directory + names[slot].OffsetPlusOne - 1;
                     status = RecoveryName(previous, other, &otherLength, &otherHash);
-                    if (status != UdfsRecoveryProbeValidLayout) return status;
+                    if (status != UdfsRecoveryProbeValidLayout) return GRAPH_FAIL(status);
                     if (nameLength == otherLength &&
                         !RecoveryDifference(name, other, nameLength))
-                        return UdfsRecoveryProbeCorrupt;
+                        return GRAPH_FAIL(UdfsRecoveryProbeCorrupt);
                 }
                 slot = (slot + 1) & (nameCapacity - 1);
             }
             names[slot].Hash = hash;
             names[slot].OffsetPlusOne = offset + 1;
             if (directoryFile->StreamRole == 1 && (attributes & 2))
-                return UdfsRecoveryProbeUnsupported;
+                return GRAPH_FAIL(UdfsRecoveryProbeUnsupported);
             if (attributes & 2) subdirectories++;
             else if (directoryFile->StreamRole != 1)
                 graph->FileReferences++;
@@ -1381,16 +1395,16 @@ GraphScanFids(RECOVERY_GRAPH *graph,
                                 directoryFile->Ref, directoryFile->Lbn,
                                 directoryFile->StreamRole == 1 ? 2 : 0,
                                 directoryFile->StreamOwnerUniqueId);
-            if (status != UdfsRecoveryProbeValidLayout) return status;
+            if (status != UdfsRecoveryProbeValidLayout) return GRAPH_FAIL(status);
         }
         offset += recordLength;
     }
     if (offset != length || parents != 1)
-        return UdfsRecoveryProbeCorrupt;
+        return GRAPH_FAIL(UdfsRecoveryProbeCorrupt);
     /* Stream objects are owned by the graph but omitted from UDFS's LVID
      * file count.  The stream directory's parent points to the base FE. */
     if (directoryFile->StreamRole == 1)
-        return subdirectories || links ? UdfsRecoveryProbeCorrupt :
+        return subdirectories || links ? GRAPH_FAIL(UdfsRecoveryProbeCorrupt) :
                UdfsRecoveryProbeValidLayout;
     if (graph->Result->MirrorDirectorySplitCount &&
         directoryFile->Ref == 1 &&
@@ -1402,7 +1416,7 @@ GraphScanFids(RECOVERY_GRAPH *graph,
             (expected != links &&
              expected !=
                 graph->Result->MirrorDirectoryMirrorLinks))
-            return UdfsRecoveryProbeCorrupt;
+            return GRAPH_FAIL(UdfsRecoveryProbeCorrupt);
         graph->Result->DirectoryLinkFixCount = 1;
         graph->Result->DirectoryLinkFixParentRef = directoryFile->Ref;
         graph->Result->DirectoryLinkFixParentLbn = directoryFile->Lbn;
@@ -1419,7 +1433,7 @@ GraphScanFids(RECOVERY_GRAPH *graph,
     if (subdirectories + 1 != (uint32_t)links + 1 ||
         graph->Result->DirectoryLinkFixCount ||
         directoryFile->Ref != 1)
-        return UdfsRecoveryProbeCorrupt;
+        return GRAPH_FAIL(UdfsRecoveryProbeCorrupt);
     {
         uint32_t child = UINT32_MAX, count = 0, cursor = 0;
         while (cursor < length) {
@@ -1429,21 +1443,21 @@ GraphScanFids(RECOVERY_GRAPH *graph,
                 int freeBit = 0;
                 UDFS_RECOVERY_PROBE_STATUS status;
                 if (Read16(fid + 28) != 1)
-                    return UdfsRecoveryProbeUnsupported;
+                    return GRAPH_FAIL(UdfsRecoveryProbeUnsupported);
                 status = GraphMetadataBitIsFree(graph, Read32(fid + 24),
                                                 &freeBit);
                 if (status != UdfsRecoveryProbeValidLayout)
-                    return status;
+                    return GRAPH_FAIL(status);
                 if (freeBit) {
                     if (++count > 1)
-                        return UdfsRecoveryProbeCorrupt;
+                        return GRAPH_FAIL(UdfsRecoveryProbeCorrupt);
                     child = Read32(fid + 24);
                 }
             }
             cursor += size;
         }
         if (count != 1)
-            return UdfsRecoveryProbeCorrupt;
+            return GRAPH_FAIL(UdfsRecoveryProbeCorrupt);
         graph->Result->DirectoryLinkFixCount = 1;
         graph->Result->DirectoryLinkFixParentRef = directoryFile->Ref;
         graph->Result->DirectoryLinkFixParentLbn = directoryFile->Lbn;
@@ -1471,36 +1485,36 @@ GraphProcessFile(RECOVERY_GRAPH *graph, const RECOVERY_GRAPH_ENTRY *file)
 
     status = GraphVisit(graph, file, &alreadyVisited);
     if (status != UdfsRecoveryProbeValidLayout || alreadyVisited)
-        return status;
+        return GRAPH_FAIL(status);
     status = GraphReadLogical(graph, file->Ref, file->Lbn, fe);
-    if (status != UdfsRecoveryProbeValidLayout) return status;
+    if (status != UdfsRecoveryProbeValidLayout) return GRAPH_FAIL(status);
     kind = Read16(fe);
     if (kind != 261 && kind != 266)
-        return UdfsRecoveryProbeCorrupt;
+        return GRAPH_FAIL(UdfsRecoveryProbeCorrupt);
     status = ValidateTag(fe, kind, file->Lbn);
-    if (status != UdfsRecoveryProbeValidLayout) return status;
+    if (status != UdfsRecoveryProbeValidLayout) return GRAPH_FAIL(status);
     if (fe[27] != (file->StreamRole == 1 ? 13 :
                    (file->Directory ? 4 : 5)))
-        return UdfsRecoveryProbeCorrupt;
+        return GRAPH_FAIL(UdfsRecoveryProbeCorrupt);
     flags = Read16(fe + 34);
     links = Read16(fe + 48);
     if (kind == 266) streamIcbBytes = Read32(fe + 152);
     if (file->StreamRole == 1) {
         if (links || streamIcbBytes || (flags & 0x2000))
-            return UdfsRecoveryProbeCorrupt;
+            return GRAPH_FAIL(UdfsRecoveryProbeCorrupt);
     } else if (file->StreamRole == 2) {
         if (links != 1 || streamIcbBytes || !(flags & 0x2000))
-            return UdfsRecoveryProbeCorrupt;
+            return GRAPH_FAIL(UdfsRecoveryProbeCorrupt);
     } else {
         if (!links || (flags & 0x2000))
-            return UdfsRecoveryProbeCorrupt;
+            return GRAPH_FAIL(UdfsRecoveryProbeCorrupt);
         if (streamIcbBytes) {
             if (file->Directory || kind != 266 ||
                 streamIcbBytes != UDFS_RECOVERY_SECTOR_SIZE || links != 2)
-                return UdfsRecoveryProbeUnsupported;
+                return GRAPH_FAIL(UdfsRecoveryProbeUnsupported);
         } else if (!file->Directory && links != 1) {
             /* Ordinary hard links still require per-link accounting. */
-            return UdfsRecoveryProbeUnsupported;
+            return GRAPH_FAIL(UdfsRecoveryProbeUnsupported);
         }
     }
     uniqueId = Read64(fe + (kind == 266 ? 200 : 160));
@@ -1509,25 +1523,25 @@ GraphProcessFile(RECOVERY_GRAPH *graph, const RECOVERY_GRAPH_ENTRY *file)
          * named streams.  Reject unbound or mismatched references. */
         if (!file->StreamOwnerUniqueId ||
             uniqueId != file->StreamOwnerUniqueId)
-            return UdfsRecoveryProbeCorrupt;
+            return GRAPH_FAIL(UdfsRecoveryProbeCorrupt);
     } else {
         status = GraphRecordUniqueId(graph, uniqueId, file->Directory &&
             file->Ref == file->ParentRef && file->Lbn == file->ParentLbn);
-        if (status != UdfsRecoveryProbeValidLayout) return status;
+        if (status != UdfsRecoveryProbeValidLayout) return GRAPH_FAIL(status);
     }
     if (uniqueId > graph->Result->MaxUniqueId)
         graph->Result->MaxUniqueId = uniqueId;
     status = GraphOwn(graph, file->Ref, file->Lbn, file->Bytes);
-    if (status != UdfsRecoveryProbeValidLayout) return status;
+    if (status != UdfsRecoveryProbeValidLayout) return GRAPH_FAIL(status);
     status = GraphParseFileAds(graph, file, fe, dataExtents,
                                &inlineStart, &inlineLength, &mode);
     if (status != UdfsRecoveryProbeValidLayout)
-        return status;
+        return GRAPH_FAIL(status);
     if (streamIcbBytes) {
         status = GraphPush(graph, Read16(fe + 160), Read32(fe + 156),
                            streamIcbBytes, 0, file->Ref, file->Lbn,
                            1, uniqueId);
-        if (status != UdfsRecoveryProbeValidLayout) return status;
+        if (status != UdfsRecoveryProbeValidLayout) return GRAPH_FAIL(status);
     }
     if (file->Directory && graph->Result->DirectoryLinkFixCount &&
         file->Ref == 1 &&
@@ -1538,13 +1552,13 @@ GraphProcessFile(RECOVERY_GRAPH *graph, const RECOVERY_GRAPH_ENTRY *file)
                 graph->Result->DirectoryLinkFixParentLbn ||
             mode != 3 || dataExtents->FileBytes != 40 ||
             Read16(fe + 48) != 1)
-            return UdfsRecoveryProbeCorrupt;
+            return GRAPH_FAIL(UdfsRecoveryProbeCorrupt);
         graph->Result->DirectoryLinkFixChildVerified = 1;
     }
     if (!file->Directory && file->Ref == 1 && mode == 3)
         SetBit(graph->MetadataInlineFileFes, file->Lbn);
     if (!file->Directory && file->StreamRole != 1)
-        return status;
+        return GRAPH_FAIL(status);
     status = GraphReadDirectory(graph, file, fe, dataExtents,
                                 inlineStart, mode, &directory, &dirLength);
     if (status == UdfsRecoveryProbeValidLayout) {
@@ -1564,7 +1578,7 @@ GraphProcessFile(RECOVERY_GRAPH *graph, const RECOVERY_GRAPH_ENTRY *file)
         graph->Reader->Free(graph->Reader->Context, names);
     if (directory)
         graph->Reader->Free(graph->Reader->Context, directory);
-    return status;
+    return GRAPH_FAIL(status);
 }
 
 /* Collect only free-to-owned bitmap transitions justified by the complete
@@ -1973,7 +1987,7 @@ GraphRun(const UDFS_RECOVERY_READER *reader, UDFS_RECOVERY_PROBE *result,
     fsdRef = Read16(lvd + 256);
     if (fsdEncoded >> 30 ||
         (fsdEncoded & 0x3fffffff) != UDFS_RECOVERY_SECTOR_SIZE) {
-        status = UdfsRecoveryProbeUnsupported;
+        status = GRAPH_FAIL(UdfsRecoveryProbeUnsupported);
         goto done;
     }
     status = GraphOwn(graph, fsdRef, Read32(lvd + 252),
@@ -1984,13 +1998,13 @@ GraphRun(const UDFS_RECOVERY_READER *reader, UDFS_RECOVERY_PROBE *result,
     status = ValidateTag(fsd, 256, Read32(lvd + 252));
     if (status != UdfsRecoveryProbeValidLayout) goto done;
     if (Read16(fsd + 10) < 416 - 16) {
-        status = UdfsRecoveryProbeCorrupt;
+        status = GRAPH_FAIL(UdfsRecoveryProbeCorrupt);
         goto done;
     }
     rootEncoded = Read32(fsd + 400);
     if (rootEncoded >> 30 ||
         (rootEncoded & 0x3fffffff) != UDFS_RECOVERY_SECTOR_SIZE) {
-        status = UdfsRecoveryProbeUnsupported;
+        status = GRAPH_FAIL(UdfsRecoveryProbeUnsupported);
         goto done;
     }
     status = GraphPush(graph, Read16(fsd + 408),
@@ -2009,7 +2023,7 @@ GraphRun(const UDFS_RECOVERY_READER *reader, UDFS_RECOVERY_PROBE *result,
     }
 
     if (graph->FileReferences != result->FilesVisited) {
-        status = UdfsRecoveryProbeCorrupt;
+        status = GRAPH_FAIL(UdfsRecoveryProbeCorrupt);
         goto done;
     }
 
@@ -2082,7 +2096,7 @@ GraphRun(const UDFS_RECOVERY_READER *reader, UDFS_RECOVERY_PROBE *result,
                     if (RecoveryDifference(fsd, graph->PhysicalBitmapCache.Data,
                                UDFS_RECOVERY_SECTOR_SIZE) != 0) {
                         result->FailureLba = mainLba;
-                        status = UdfsRecoveryProbeCorrupt;
+                        status = GRAPH_FAIL(UdfsRecoveryProbeCorrupt);
                         goto done;
                     }
                     result->ReferencedFreeMirrorBlocksCompared++;
@@ -2116,7 +2130,7 @@ GraphRun(const UDFS_RECOVERY_READER *reader, UDFS_RECOVERY_PROBE *result,
                 result->DirectoryLinkFixParentLbn ||
             result->FidSplitChildLbn !=
                 result->DirectoryLinkFixChildLbn) {
-            status = UdfsRecoveryProbeCorrupt;
+            status = GRAPH_FAIL(UdfsRecoveryProbeCorrupt);
             goto done;
         }
         if (plan) {
@@ -2129,7 +2143,7 @@ GraphRun(const UDFS_RECOVERY_READER *reader, UDFS_RECOVERY_PROBE *result,
         (!result->DirectoryLinkFixCount ||
          result->DirectoryLinkFixParentLbn !=
             result->MirrorDirectoryLbn)) {
-        status = UdfsRecoveryProbeCorrupt;
+        status = GRAPH_FAIL(UdfsRecoveryProbeCorrupt);
         goto done;
     }
     if (result->DirectoryLinkFixCount) {
@@ -2141,7 +2155,7 @@ GraphRun(const UDFS_RECOVERY_READER *reader, UDFS_RECOVERY_PROBE *result,
               result->FirstReferencedFreeMetadataLbn !=
                   result->DirectoryLinkFixChildLbn ||
               result->ReferencedFreePhysicalBlocks))) {
-            status = UdfsRecoveryProbeCorrupt;
+            status = GRAPH_FAIL(UdfsRecoveryProbeCorrupt);
             goto done;
         }
         if (plan) {
