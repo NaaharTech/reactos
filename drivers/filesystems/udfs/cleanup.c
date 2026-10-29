@@ -26,31 +26,6 @@ UDFAutoUnlock (
     IN PVCB Vcb
     );
 
-/* Called under this directory's FCB resource. An indexed, referenced FCB
- * and its Dloc retain the unpublished append generation. Final teardown
- * drains it before removing the FCB/LCB; an explicit flush drains before FE.
- * Ordinary file cleanup and all error/write-through boundaries stay eager.
- * Directory FileObjects do not carry FO_CACHE_SUPPORTED (create.c); the
- * pending generation was already admitted by a cached child cleanup. */
-static BOOLEAN
-UDFCanDeferDirectoryAppendCleanup(PVCB Vcb, PUDF_FILE_INFO FileInfo,
-                                  PFILE_OBJECT FileObject)
-{
-    PFCB fcb;
-    if (!FileInfo || !FileInfo->Dloc || !(fcb = FileInfo->Fcb) ||
-        FileInfo->Dloc->CommonFcb != fcb ||
-        !(fcb->FcbState & UDF_FCB_DIRECTORY) ||
-        (fcb->FcbState & (UDF_FCB_DELETE_ON_CLOSE | UDF_FCB_DELETED)) ||
-        !(fcb->FcbState & FCB_STATE_IN_FCB_TABLE) || fcb->FcbReference <= 0 ||
-        !FileInfo->Dloc->DirIndex || UDFIsAStream(FileInfo) || UDFIsAStreamDir(FileInfo) ||
-        Vcb->VcbCondition != VcbMounted ||
-        FlagOn(Vcb->VcbState, VCB_STATE_VOLUME_READ_ONLY | UDF_VCB_FLAGS_DEAD) ||
-        !FileObject ||
-        FlagOn(FileObject->Flags, FO_WRITE_THROUGH | FO_NO_INTERMEDIATE_BUFFERING))
-        return FALSE;
-    return UDFDirectoryAppendPending(FileInfo);
-}
-
 /* Limit asynchronous cached-data scheduling to the same canonical,
  * single-link unpublished owner as metadata batching. Embedded payload,
  * mixed noncached opens, zero tails, streams and WT retain eager cleanup.
@@ -598,8 +573,8 @@ delete_attempt_done:
             }
         }
 
-        // Keep structural updates eager. Only an owned unpublished append or
-        // a proved attribute-only directory generation may remain resident.
+        // Keep structural updates eager. Only a proved attribute-only
+        // directory generation may remain resident.
         // Final teardown flushes before removing the canonical FCB/LCB;
         // explicit flush never takes either cleanup-only exception.
         if (!Fcb->FcbCleanup &&
@@ -607,7 +582,6 @@ delete_attempt_done:
             !(Fcb->FcbState & UDF_FCB_DELETED) &&
             !(Vcb->VcbState & VCB_STATE_VOLUME_READ_ONLY) &&
             NextFileInfo &&
-            !UDFCanDeferDirectoryAppendCleanup(Vcb, NextFileInfo, FileObject) &&
             !UDFCanDeferDirectoryAttributesCleanup(IrpContext, Vcb,
                                                   NextFileInfo, FileObject) &&
             !UDFDeferNewFileMetadata(IrpContext, Vcb, NextFileInfo)) {
@@ -668,19 +642,10 @@ delete_attempt_done:
                 ) {
                 UDF_CHECK_PAGING_IO_RESOURCE(DirInfo->Fcb);
                 UDFAcquireFcbExclusive(IrpContext, DirInfo->Fcb, FALSE);
-                /* An append buffer owns the unpublished directory bytes and
-                 * keeps its FE dirty. The indexed, referenced parent remains
-                 * authoritative; teardown/explicit flush drains before FE
-                 * publication. Ordinary child FE cleanup above is unchanged. */
-                BOOLEAN DeferAppend =
-                    FlagOn(FileObject->Flags, FO_CACHE_SUPPORTED) &&
-                    (UDFCanDeferDirectoryAppendCleanup(Vcb, DirInfo, FileObject) ||
-                     (UDFDeferNewFileMetadata(IrpContext, Vcb, NextFileInfo) &&
-                      DirInfo == NextFileInfo->ParentFile &&
-                      DirInfo->Dloc->CommonFcb == DirInfo->Fcb &&
-                      DirInfo->Fcb->FcbReference > 0 &&
-                      FlagOn(DirInfo->Fcb->FcbState, FCB_STATE_IN_FCB_TABLE)));
-                if (!DeferAppend) {
+                /* The child's new FID may only be in this directory's append
+                 * buffer. Flushing the directory drains it, so the name is on
+                 * disk together with the file entry written above. */
+                {
                     NTSTATUS FlushStatus = UDFFlushFile__(IrpContext, Vcb,
                                                            DirInfo,
                                                            UDF_FLUSH_FLAGS_LITE);
