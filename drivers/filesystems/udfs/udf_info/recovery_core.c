@@ -1176,11 +1176,22 @@ GraphParseFileAds(RECOVERY_GRAPH *graph, const RECOVERY_GRAPH_ENTRY *file,
         uint32_t nextLbn = 0, nextBytes = 0;
         uint16_t nextRef = 0;
         int haveNext = 0;
-        if (sourceLength % step ||
-            sourceStart > UDFS_RECOVERY_SECTOR_SIZE ||
+        uint32_t tail;
+        if (sourceStart > UDFS_RECOVERY_SECTOR_SIZE ||
             sourceLength > UDFS_RECOVERY_SECTOR_SIZE - sourceStart ||
             Read16(source + 10) < sourceStart + sourceLength - 16)
             return GRAPH_FAIL(UdfsRecoveryProbeCorrupt);
+        /* Older UDFS builds counted the zero padding after the last
+         * descriptor of a continued FE block in L_AD. Accept only that
+         * shape: a tail shorter than one descriptor, entirely zero. */
+        tail = sourceLength % step;
+        if (tail) {
+            for (offset = sourceStart + sourceLength - tail;
+                 offset < sourceStart + sourceLength; ++offset)
+                if (source[offset])
+                    return GRAPH_FAIL(UdfsRecoveryProbeCorrupt);
+            sourceLength -= tail;
+        }
         for (offset = sourceStart; offset < sourceStart + sourceLength;
              offset += step) {
             uint32_t encoded = Read32(source + offset);
@@ -1220,6 +1231,9 @@ GraphParseFileAds(RECOVERY_GRAPH *graph, const RECOVERY_GRAPH_ENTRY *file,
                 return GRAPH_FAIL(UdfsRecoveryProbeUnsupported);
             }
         }
+        /* That padding only exists in front of a continuation. */
+        if (tail && !haveNext)
+            return GRAPH_FAIL(UdfsRecoveryProbeCorrupt);
         if (!haveNext) break;
         if (seenCount == 32 || nextBytes != UDFS_RECOVERY_SECTOR_SIZE)
             return GRAPH_FAIL(UdfsRecoveryProbeUnsupported);
