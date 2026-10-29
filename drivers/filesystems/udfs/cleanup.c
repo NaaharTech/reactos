@@ -671,18 +671,14 @@ delete_attempt_done:
                 ) {
                 UDF_CHECK_PAGING_IO_RESOURCE(DirInfo->Fcb);
                 UDFAcquireFcbExclusive(IrpContext, DirInfo->Fcb, FALSE);
-                /* An append buffer owns the unpublished directory bytes and
-                 * keeps its FE dirty. The indexed, referenced parent remains
-                 * authoritative; teardown/explicit flush drains before FE
-                 * publication. Ordinary child FE cleanup above is unchanged. */
+                /* A regular file's new FID may only be in its parent's
+                 * append buffer. Flush the parent so the name reaches the
+                 * disk together with the file entry flushed above. Only a
+                 * directory's own cleanup may keep its parent deferred. */
                 BOOLEAN DeferAppend =
+                    FlagOn(Fcb->FcbState, UDF_FCB_DIRECTORY) &&
                     FlagOn(FileObject->Flags, FO_CACHE_SUPPORTED) &&
-                    (UDFCanDeferDirectoryAppendCleanup(Vcb, DirInfo, FileObject) ||
-                     (UDFDeferNewFileMetadata(IrpContext, Vcb, NextFileInfo) &&
-                      DirInfo == NextFileInfo->ParentFile &&
-                      DirInfo->Dloc->CommonFcb == DirInfo->Fcb &&
-                      DirInfo->Fcb->FcbReference > 0 &&
-                      FlagOn(DirInfo->Fcb->FcbState, FCB_STATE_IN_FCB_TABLE)));
+                    UDFCanDeferDirectoryAppendCleanup(Vcb, DirInfo, FileObject);
                 if (!DeferAppend) {
                     NTSTATUS FlushStatus = UDFFlushFile__(IrpContext, Vcb,
                                                            DirInfo,
