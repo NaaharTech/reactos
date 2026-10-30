@@ -663,6 +663,7 @@ UDFIndexDirectory(
             UDFNormalizeFileName(&(DirNdx->FName), valueCRC);
 
             DirNdx->FI_Flags |= UDFBuildHashEntry(Vcb, &(DirNdx->FName), &(DirNdx->hashes), HASH_ALL);
+            UDFLoadDirNdxShortName(DirNdx, FileId);
         }
         if ((FileId->fileCharacteristics & FILE_METADATA)
                        ||
@@ -1098,7 +1099,7 @@ UDFFindFile(
                 !(DirNdx->FI_Flags & UDF_FI_FLAG_DOS) &&
                 (DirNdx->hashes.hDos == hashes.hLfn) &&
                 (k == (uint_di)(-1))) {
-                UDFDOSName(Vcb, &ShortName, &(DirNdx->FName), ScanContext.i < 2) ;
+                UDFGetDirNdxShortName(Vcb, DirNdx, ScanContext.i < 2, &ShortName);
                 if (!RtlCompareUnicodeString(&ShortName, Name, IgnoreCase))
                     k = ScanContext.i;
             }
@@ -1125,7 +1126,7 @@ UDFFindFile(
                 !(DirNdx->FI_Flags & UDF_FI_FLAG_DOS) &&
                 (DirNdx->hashes.hDos == hashes.hLfn) &&
                 (k == (uint_di)(-1))) {
-                UDFDOSName(Vcb, &ShortName, &(DirNdx->FName), ScanContext.i < 2 );
+                UDFGetDirNdxShortName(Vcb, DirNdx, ScanContext.i < 2, &ShortName);
                 if (!RtlCompareUnicodeString(&ShortName, Name, IgnoreCase)) {
                     k = ScanContext.i;
                 }

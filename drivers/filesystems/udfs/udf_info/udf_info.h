@@ -277,10 +277,6 @@ UDFIsIllegalChar(
     IN BOOLEAN IsStream
     );
 
-// translate udfName to dosName using OSTA compliant.
-#define  UDFDOSName__(Vcb, DosName, UdfName, FileInfo) \
-    UDFDOSName(Vcb, DosName, UdfName, (FileInfo) && ((FileInfo)->Index < 2));
-
 void
 __fastcall UDFDOSName(IN PVCB Vcb,
                     IN OUT PUNICODE_STRING DosName,
@@ -289,17 +285,6 @@ __fastcall UDFDOSName(IN PVCB Vcb,
 
 void
 __fastcall UDFDOSName201(IN OUT PUNICODE_STRING DosName,
-                       IN PUNICODE_STRING UdfName,
-                       IN BOOLEAN KeepIntact);
-
-void
-__fastcall UDFDOSName200(IN OUT PUNICODE_STRING DosName,
-                       IN PUNICODE_STRING UdfName,
-                       IN BOOLEAN KeepIntact,
-                       IN BOOLEAN Mode150);
-
-void
-__fastcall UDFDOSName100(IN OUT PUNICODE_STRING DosName,
                        IN PUNICODE_STRING UdfName,
                        IN BOOLEAN KeepIntact);
 
