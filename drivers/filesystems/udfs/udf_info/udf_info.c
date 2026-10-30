@@ -287,12 +287,13 @@ UDFIsIllegalChar(
     IN BOOLEAN IsStream
     )
 {
-    if (Char < 0xFF &&
-        !FsRtlIsAnsiCharacterLegal((UCHAR)Char,
-                                   IsStream ? FSRTL_NTFS_STREAM_LEGAL : FSRTL_HPFS_LEGAL)) {
-
-        return FALSE;
-    }
+    /* Used to build 8.3 names. FsRtlIsAnsiCharacterLegal returns TRUE for a
+     * legal character, so the result must be inverted; FAT rules also exclude
+     * "+,;=[]", which are not valid in a short name. Characters outside the
+     * single-byte range cannot be represented and are always replaced. */
+    if (Char < 0xFF)
+        return !FsRtlIsAnsiCharacterLegal((UCHAR)Char,
+                                          IsStream ? FSRTL_NTFS_STREAM_LEGAL : FSRTL_FAT_LEGAL);
 
     return TRUE;
 } // end UDFIsIllegalChar()
