@@ -1129,6 +1129,11 @@ GraphVisit(RECOVERY_GRAPH *graph, const RECOVERY_GRAPH_ENTRY *entry,
     return UdfsRecoveryProbeValidLayout;
 }
 
+/* Bound the work for one file's descriptor chain. Each continuation block
+ * holds about 30 long ADs, so this allows far more extents than any file
+ * the driver writes, while a damaged chain still ends quickly. */
+#define RECOVERY_MAX_AD_CONTINUATIONS 65536U
+
 static UDFS_RECOVERY_PROBE_STATUS
 GraphParseFileAds(RECOVERY_GRAPH *graph, const RECOVERY_GRAPH_ENTRY *file,
                   const uint8_t fe[UDFS_RECOVERY_SECTOR_SIZE],
@@ -1138,9 +1143,11 @@ GraphParseFileAds(RECOVERY_GRAPH *graph, const RECOVERY_GRAPH_ENTRY *file,
     uint8_t source[UDFS_RECOVERY_SECTOR_SIZE];
     uint32_t mode = Read16(fe + 34) & 7;
     uint32_t attrOffset, adOffset, dataOffset;
-    uint32_t start, length, sourceStart, sourceLength, seenCount = 0;
-    uint32_t seenLbn[32];
-    uint16_t seenRef[32];
+    uint32_t start, length, sourceStart, sourceLength, continuations = 0;
+    /* Only directories and stream directories are read back through the
+     * extent list. A regular file's extents are owned and counted only, so
+     * a heavily fragmented file is not limited by the list capacity. */
+    int keepExtents = file->Directory || file->StreamRole == 1;
     UDFS_RECOVERY_PROBE_STATUS status;
     uint64_t dataBytes = 0;
 
@@ -1209,8 +1216,9 @@ GraphParseFileAds(RECOVERY_GRAPH *graph, const RECOVERY_GRAPH_ENTRY *file,
                 nextBytes = bytes;
                 haveNext = 1;
             } else if (kind == 0 || kind == 1) {
-                RECOVERY_EXTENT *extent;
-                if (haveNext || dataExtents->Count == UDFS_RECOVERY_MAX_EXTENTS)
+                if (haveNext ||
+                    (keepExtents &&
+                     dataExtents->Count == UDFS_RECOVERY_MAX_EXTENTS))
                     return GRAPH_FAIL(UdfsRecoveryProbeUnsupported);
                 /* An allocated but unrecorded AD owns its blocks.  It is
                  * valid in an ordinary file, but cannot supply FID bytes. */
@@ -1220,12 +1228,15 @@ GraphParseFileAds(RECOVERY_GRAPH *graph, const RECOVERY_GRAPH_ENTRY *file,
                     return GRAPH_FAIL(UdfsRecoveryProbeUnsupported);
                 status = GraphOwn(graph, ref, lbn, bytes);
                 if (status != UdfsRecoveryProbeValidLayout) return GRAPH_FAIL(status);
-                extent = &dataExtents->Items[dataExtents->Count++];
-                extent->Ref = ref;
-                extent->Lbn = lbn;
-                extent->Bytes = bytes;
-                extent->Blocks = (bytes + UDFS_RECOVERY_SECTOR_SIZE - 1) /
-                                 UDFS_RECOVERY_SECTOR_SIZE;
+                if (dataExtents->Count < UDFS_RECOVERY_MAX_EXTENTS) {
+                    RECOVERY_EXTENT *extent =
+                        &dataExtents->Items[dataExtents->Count++];
+                    extent->Ref = ref;
+                    extent->Lbn = lbn;
+                    extent->Bytes = bytes;
+                    extent->Blocks = (bytes + UDFS_RECOVERY_SECTOR_SIZE - 1) /
+                                     UDFS_RECOVERY_SECTOR_SIZE;
+                }
                 dataBytes += bytes;
             } else {
                 return GRAPH_FAIL(UdfsRecoveryProbeUnsupported);
@@ -1235,15 +1246,18 @@ GraphParseFileAds(RECOVERY_GRAPH *graph, const RECOVERY_GRAPH_ENTRY *file,
         if (tail && !haveNext)
             return GRAPH_FAIL(UdfsRecoveryProbeCorrupt);
         if (!haveNext) break;
-        if (seenCount == 32 || nextBytes != UDFS_RECOVERY_SECTOR_SIZE)
+        if (++continuations > RECOVERY_MAX_AD_CONTINUATIONS ||
+            nextBytes != UDFS_RECOVERY_SECTOR_SIZE)
             return GRAPH_FAIL(UdfsRecoveryProbeUnsupported);
-        for (offset = 0; offset < seenCount; ++offset)
-            if (seenLbn[offset] == nextLbn && seenRef[offset] == nextRef)
+        {
+            /* A continuation block that is already owned is either a loop
+             * in this chain or shared with another object. */
+            uint32_t overlapBefore = graph->Result->OverlapBlocks;
+            status = GraphOwn(graph, nextRef, nextLbn, nextBytes);
+            if (status != UdfsRecoveryProbeValidLayout) return GRAPH_FAIL(status);
+            if (graph->Result->OverlapBlocks != overlapBefore)
                 return GRAPH_FAIL(UdfsRecoveryProbeCorrupt);
-        seenLbn[seenCount] = nextLbn;
-        seenRef[seenCount++] = nextRef;
-        status = GraphOwn(graph, nextRef, nextLbn, nextBytes);
-        if (status != UdfsRecoveryProbeValidLayout) return GRAPH_FAIL(status);
+        }
         status = GraphReadLogical(graph, nextRef, nextLbn, source);
         if (status != UdfsRecoveryProbeValidLayout) return GRAPH_FAIL(status);
         status = ValidateTag(source, 258, nextLbn);
