@@ -48,6 +48,7 @@ list(APPEND SOURCE
     TerminateProcess.c
     TunnelCache.c
     UEFIFirmware.c
+    VirtualAllocPool.c
     WideCharToMultiByte.c
     WriteFile.c
 )

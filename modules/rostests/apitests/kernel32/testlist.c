@@ -45,6 +45,7 @@ extern void func_SystemFirmware(void);
 extern void func_TerminateProcess(void);
 extern void func_TunnelCache(void);
 extern void func_UEFIFirmware(void);
+extern void func_VirtualAllocPool(void);
 extern void func_WideCharToMultiByte(void);
 
 const struct test winetest_testlist[] =
@@ -92,6 +93,7 @@ const struct test winetest_testlist[] =
     { "TerminateProcess",            func_TerminateProcess },
     { "TunnelCache",                 func_TunnelCache },
     { "UEFIFirmware",                func_UEFIFirmware },
+    { "VirtualAllocPool",            func_VirtualAllocPool },
     { "WideCharToMultiByte",         func_WideCharToMultiByte },
     { 0, 0 }
 };
